@@ -1,18 +1,17 @@
-from handlers import admin, user
+from telegram.ext import ApplicationBuilder
 from database import init_db
+from handlers import admin
 
-# تهيئة قاعدة البيانات قبل تشغيل البوت
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+
+# إنشاء قاعدة البيانات إذا لم تكن موجودة
 init_db()
 
-from telegram.ext import ApplicationBuilder
-
-# إعدادات البوت
-BOT_TOKEN = "YOUR_BOT_TOKEN"
-
+# إعداد البوت
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-# إضافة Handlers
+# إضافة الـ ConversationHandler
 app.add_handler(admin.admin_conversation_handler)
 
-# تشغيل البوت
+print("[INFO] Bot is running...")
 app.run_polling()
