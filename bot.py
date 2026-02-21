@@ -1,24 +1,19 @@
-import os
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder
+import config, asyncio
+from database import init_db
+from handlers import admin, public, user
 
-# جلب التوكن من متغير البيئة
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+async def main():
+    await init_db()
+    app = ApplicationBuilder().token(config.BOT_TOKEN).build()
+    # إعداد القنوات
+    app.bot_data["PUBLIC_CHANNEL"] = config.PUBLIC_CHANNEL
 
-if not BOT_TOKEN:
-    raise ValueError("يرجى ضبط متغير البيئة BOT_TOKEN في Railway")
+    # تسجيل الهاندلرز
+    admin.register_handlers(app)
+    public.register_handlers(app)
+    user.register_handlers(app)
 
-# دالة start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("مرحباً! البوت يعمل 🎉")
+    await app.run_polling()
 
-# انشاء التطبيق
-app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-# إضافة الهاندلر للأمر /start
-app.add_handler(CommandHandler("start", start))
-
-# تشغيل البوت
-if __name__ == "__main__":
-    print("البوت يعمل الآن...")
-    app.run_polling()
+asyncio.run(main())
