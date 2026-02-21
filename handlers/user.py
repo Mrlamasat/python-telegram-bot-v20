@@ -1,8 +1,17 @@
-# يمكنك إضافة هنا أوامر المستخدم العادية
+# bot.py
 from telegram import Update
-from telegram.ext import ContextTypes, CommandHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("هذا البوت لإدارة الفيديوهات. استخدم /start للنشر.")
+# دالة الرد على /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("مرحبًا! البوت يعمل بنجاح ✅")
 
-# يمكنك تسجيل الـ handlers في bot.py إذا أردت
+# هنا تبني التطبيق باستخدام توكن البوت
+if __name__ == "__main__":
+    app = ApplicationBuilder().token("YOUR_BOT_TOKEN").build()
+
+    # إضافة الهاندلر لأمر /start
+    app.add_handler(CommandHandler("start", start))
+
+    # تشغيل البوت بالـ polling
+    app.run_polling()
