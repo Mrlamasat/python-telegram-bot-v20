@@ -1,15 +1,22 @@
-from telegram.ext import ApplicationBuilder
-from handlers import admin, user
-from database import init_db
+import os
+from dotenv import load_dotenv
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# تهيئة قاعدة البيانات
-init_db()
+# تحميل متغيرات البيئة
+load_dotenv()
+TOKEN = os.getenv("BOT_TOKEN")
+
+# تعريف الأمر /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("مرحباً! البوت يعمل 🎉")
 
 # إنشاء التطبيق
-app = ApplicationBuilder().token("YOUR_BOT_TOKEN").build()
+app = ApplicationBuilder().token(TOKEN).build()
 
-# إضافة Handlers
-app.add_handler(admin.admin_conversation_handler)
+# إضافة المعالجات
+app.add_handler(CommandHandler("start", start))
 
-# شغّل البوت
-app.run_polling()
+# تشغيل البوت
+if __name__ == "__main__":
+    app.run_polling()
