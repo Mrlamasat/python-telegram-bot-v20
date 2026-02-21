@@ -1,40 +1,42 @@
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import ConversationHandler, MessageHandler, filters
-from config import STORAGE_CHANNEL_ID, PUBLIC_CHANNEL_ID
-from database import db
-import uuid
+# admin.py
 
-VIDEO, POSTER, TITLE, EPISODE, QUALITY = range(5)
+from telegram import Update
+from telegram.ext import ContextTypes, ConversationHandler
 
-async def start_upload(update, context):
-    if update.effective_chat.id != STORAGE_CHANNEL_ID:
-        return ConversationHandler.END
+# حالة بداية المحادثة
+START, TITLE = range(2)
 
-    video = update.message.video or update.message.document
-    if not video:
-        return ConversationHandler.END
-
-    context.user_data.clear()
-
-    context.user_data["video_id"] = str(uuid.uuid4())
-    context.user_data["file_id"] = video.file_id
-    context.user_data["duration"] = f"{video.duration//60}:{video.duration%60:02d}"
-
-    await update.message.reply_text("📸 أرسل صورة البوستر")
-    return POSTER
-
-
-async def receive_poster(update, context):
-    context.user_data["poster_id"] = update.message.photo[-1].file_id
-    await update.message.reply_text("✏️ أرسل عنوان المسلسل (أو اكتب تخطي)")
+# دالة البداية
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("أهلاً! ارسل عنوانك:")
     return TITLE
 
+# دالة لمعالجة العنوان
+async def handle_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    title_text = update.message.text
 
-async def receive_title(update, context):
-    if update.message.text.lower() != "تخطي":
-        context.user_data["title"] = update.message.text
-    else:
-        context.user_data["title"] = ""
+    # هنا ممكن تعمل أي عملية تريدها بالعنوان و user_id
+    await update.message.reply_text(f"تم تسجيل العنوان: {title_text} للمستخدم: {user_id}")
+
+    # إنهاء المحادثة
+    return ConversationHandler.END
+
+# دالة إلغاء المحادثة
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("تم إلغاء العملية.")
+    return ConversationHandler.END
+
+# تعريف ConversationHandler
+from telegram.ext import CommandHandler, MessageHandler, filters
+
+admin_conversation_handler = ConversationHandler(
+    entry_points=[CommandHandler('start', start)],
+    states={
+        TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_title)],
+    },
+    fallbacks=[CommandHandler('cancel', cancel)],
+)        context.user_data["title"] = ""
 
     await update.message.reply_text("🔢 أرسل رقم الحلقة")
     return EPISODE
