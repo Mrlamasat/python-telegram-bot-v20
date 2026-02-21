@@ -1,78 +1,103 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters
+from database import DB_PATH
 import sqlite3
+import os
 
-DB_PATH = "/app/data/videos.db"
-PUBLIC_CHANNEL_ID = "@YourChannelUsername"  # عدل حسب قناتك
+START, TITLE, EPISODE, QUALITY = range(4)
+PUBLIC_CHANNEL_ID = "@YourChannelUsername"  # عدّل على حسب قناتك
 
-# مراحل المحادثة
-TITLE, EPISODE, QUALITY = range(3)
+# محفظة مؤقتة لتخزين البيانات قبل الإضافة للقاعدة
+pending = {}
 
-# دالة البداية
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text("أهلاً! أرسل عنوان الحلقة:")
+    user_id = update.message.from_user.id
+    pending[user_id] = {}
+    await update.message.reply_text("أهلاً! ارسل عنوان الحلقة:")
     return TITLE
 
-# دالة حفظ العنوان
-async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["title"] = update.message.text
+async def handle_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user.id
+    if user not in pending:
+        return ConversationHandler.END
+
+    pending[user]["title"] = update.message.text
     await update.message.reply_text("🔢 أرسل رقم الحلقة:")
     return EPISODE
 
-# دالة حفظ رقم الحلقة
-async def receive_episode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        context.user_data["episode"] = int(update.message.text)
-    except ValueError:
-        await update.message.reply_text("يرجى إدخال رقم صحيح للحلقة.")
-        return EPISODE
+async def handle_episode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user.id
+    if user not in pending:
+        return ConversationHandler.END
+
+    pending[user]["episode"] = int(update.message.text)
     await update.message.reply_text("🎞 اختر الجودة (1080p / 720p / 480p):")
     return QUALITY
 
-# دالة حفظ الجودة ونشر الحلقة
-async def receive_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["quality"] = update.message.text
-    data = context.user_data
+async def handle_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user.id
+    if user not in pending:
+        return ConversationHandler.END
 
-    # إدخال البيانات في قاعدة البيانات
+    pending[user]["quality"] = update.message.text
+
+    data = pending[user]
+    data["video_id"] = str(user) + "_" + str(data["episode"])  # مثال لتوليد ID
+    data["file_id"] = "FILE_ID_PLACEHOLDER"
+    data["poster_id"] = "POSTER_ID_PLACEHOLDER"
+    data["duration"] = "00:20:00"
+
+    # إضافة للقاعدة
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO videos (title, episode, quality)
-        VALUES (?, ?, ?)
-    """, (data["title"], data["episode"], data["quality"]))
+        INSERT INTO videos VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        data["video_id"],
+        data["file_id"],
+        data["poster_id"],
+        data["title"],
+        data["episode"],
+        data["quality"],
+        data["duration"]
+    ))
     conn.commit()
     conn.close()
 
     caption = f"""
-🎬 {data['title']}
-🔢 الحلقة: {data['episode']}
-✨ الجودة: {data['quality']}
+{data['title']}
+🎬 الحلقة {data['episode']}
+⏱ {data['duration']}
+✨ {data['quality']}
 """
 
-    # زر مشاهدة الحلقة (يمكن تعديل الرابط)
     keyboard = [
-        [InlineKeyboardButton("▶️ مشاهدة الحلقة", url=f"https://t.me/{context.bot.username}?start={data['episode']}")]
+        [InlineKeyboardButton("👍 0", callback_data=f"like_{data['video_id']}")],
+        [InlineKeyboardButton("▶️ مشاهدة الحلقة",
+         url=f"https://t.me/{context.bot.username}?start={data['video_id']}")]
     ]
 
-    await update.message.reply_text("✅ تم تسجيل ونشر الحلقة بنجاح!", reply_markup=InlineKeyboardMarkup(keyboard))
-    context.user_data.clear()
+    await context.bot.send_photo(
+        chat_id=PUBLIC_CHANNEL_ID,
+        photo=data["poster_id"],
+        caption=caption,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+    del pending[user]
+    await update.message.reply_text("✅ تم نشر الحلقة بنجاح")
     return ConversationHandler.END
 
-# إلغاء المحادثة
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("تم إلغاء العملية.")
-    context.user_data.clear()
     return ConversationHandler.END
 
-# ConversationHandler للإدارة
 admin_conversation_handler = ConversationHandler(
     entry_points=[CommandHandler('start', start)],
     states={
-        TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)],
-        EPISODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_episode)],
-        QUALITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_quality)],
+        TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_title)],
+        EPISODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_episode)],
+        QUALITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quality)],
     },
     fallbacks=[CommandHandler('cancel', cancel)],
 )
