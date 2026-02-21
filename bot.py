@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.INFO)
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-ADMIN_CHANNEL = -1003547072209  # قناة التخزين (تأكد من صحة الرقم)
+ADMIN_CHANNEL = -1003547072209  # قناة التخزين
 PUBLIC_CHANNEL = os.environ.get("PUBLIC_CHANNEL", "") 
 REQ_CHANNEL = os.environ.get("REQ_CHANNEL", "") # يوزر قناة الاشتراك بدون @
 
@@ -57,7 +57,7 @@ async def on_video(client, message):
     db_query("INSERT OR REPLACE INTO temp_upload (chat_id, v_id, duration, step) VALUES (?, ?, ?, ?)", 
              (ADMIN_CHANNEL, v_id, duration, "awaiting_poster"), commit=True)
     
-    await message.reply_text("✅ **تم استلام الفيديو**\n🖼 الآن أرسل (البوستر) كصورة في القناة:")
+    await message.reply_text("✅ تم استلام الفيديو\n🖼 الآن أرسل (البوستر) :")
 
 # --- استقبال البوستر (الخطوة 2) ---
 @app.on_message(filters.chat(ADMIN_CHANNEL) & filters.photo)
@@ -65,11 +65,14 @@ async def on_poster(client, message):
     state = db_query("SELECT step FROM temp_upload WHERE chat_id=?", (ADMIN_CHANNEL,), fetchone=True)
     if not state or state[0] != "awaiting_poster": return
 
-    title = message.caption if message.caption else "عنوان غير محدد"
+    # جعل العنوان فارغاً إذا لم يوجد وصف
+    title = message.caption if message.caption else ""
+    
     db_query("UPDATE temp_upload SET poster_id=?, title=?, step=? WHERE chat_id=?", 
              (message.photo.file_id, title, "awaiting_ep_num", ADMIN_CHANNEL), commit=True)
     
-    await message.reply_text(f"🖼 تم حفظ البوستر: **{title}**\n🔢 أرسل الآن **رقم الحلقة**:")
+    msg_text = f"🖼 تم حفظ البوستر: {title}" if title else "🖼 تم حفظ البوستر بنجاح"
+    await message.reply_text(f"{msg_text}\n🔢 أرسل الآن رقم الحلقة:")
 
 # --- استقبال رقم الحلقة (الخطوة 3) ---
 @app.on_message(filters.chat(ADMIN_CHANNEL) & filters.text & ~filters.command("start"))
@@ -81,7 +84,7 @@ async def on_text(client, message):
         return await message.reply_text("❌ أرسل رقماً فقط!")
     
     db_query("UPDATE temp_upload SET ep_num=?, step=? WHERE chat_id=?", 
-             (int(message.text), "awaiting_quality", ADMIN_CHANNEL), commit=True)
+                 (int(message.text), "awaiting_quality", ADMIN_CHANNEL), commit=True)
     
     btns = InlineKeyboardMarkup([
         [InlineKeyboardButton("720p", callback_data="q_720p"), InlineKeyboardButton("1080p", callback_data="q_1080p")],
@@ -102,7 +105,18 @@ async def on_quality(client, query):
 
     bot_info = await client.get_me()
     watch_link = f"https://t.me/{bot_info.username}?start={v_id}"
-    caption = f"🎬 **{title}**\n🔢 الحلقة: {ep_num}\n⏱ المدة: {duration}\n✨ الجودة: {quality}\n\n📥 اضغط الزر لمشاهدة الحلقة"
+    
+    # بناء الكابشن بذكاء (إظهار العنوان فقط إذا لم يكن فارغاً)
+    caption_parts = []
+    if title:
+        caption_parts.append(f"🎬 **{title}**")
+    
+    caption_parts.append(f"🔢 الحلقة: {ep_num}")
+    caption_parts.append(f"⏱ المدة: {duration}")
+    caption_parts.append(f"✨ الجودة: {quality}")
+    caption_parts.append(f"\n📥 اضغط الزر لمشاهدة الحلقة")
+    
+    caption = "\n".join(caption_parts)
     
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ فتح الحلقة الآن", url=watch_link)]])
     
@@ -118,12 +132,10 @@ async def send_episode_details(client, chat_id, v_id):
     ep = db_query("SELECT poster_id, title, ep_num, duration, quality FROM episodes WHERE v_id=?", (v_id,), fetchone=True)
     
     try:
-        # 1. إرسال الفيديو (سيعمل دائماً طالما الرسالة موجودة في القناة الخاصة)
         await client.copy_message(chat_id, ADMIN_CHANNEL, int(v_id), protect_content=True)
 
         if ep:
             poster_id, title, ep_num, duration, quality = ep
-            # جلب قائمة الحلقات لنفس البوستر
             all_eps = db_query("SELECT v_id, ep_num FROM episodes WHERE poster_id=? ORDER BY ep_num ASC", (poster_id,), fetchall=True)
             buttons = []
             row = []
@@ -133,14 +145,13 @@ async def send_episode_details(client, chat_id, v_id):
                 if len(row) == 4: buttons.append(row); row = []
             if row: buttons.append(row)
 
-            caption = f"🎬 **{title}**\n📦 حلقة رقم: {ep_num}\n⏱ المده: {duration}\n✨ الجودة: {quality}\n\n📖 شاهد المزيد من الحلقات:"
+            # تنسيق العرض للمستخدم
+            header = f"🎬 **{title}**\n" if title else ""
+            caption = f"{header}📦 حلقة رقم: {ep_num}\n⏱ المده: {duration}\n✨ الجودة: {quality}\n\n📖 شاهد المزيد من الحلقات:"
             await client.send_message(chat_id, caption, reply_markup=InlineKeyboardMarkup(buttons))
-        else:
-            # حل ذكي للحلقات التي ضاعت بياناتها من القاعدة ولكن ملفها موجود
-            await client.send_message(chat_id, "🎬 **تم جلب الحلقة من الأرشيف بنجاح.**\n\n*(ملاحظة: إذا لم تظهر أزرار الحلقات الأخرى، فهذا بسبب إعادة تشغيل البوت وضياع قاعدة البيانات المحلية)*")
 
-    except Exception as e:
-        await client.send_message(chat_id, "❌ عذراً، لم يتم العثور على هذه الحلقة في القناة.")
+    except Exception:
+        await client.send_message(chat_id, "❌ عذراً، لم يتم العثور على هذه الحلقة.")
 
 # --- معالج التشغيل ---
 @app.on_message(filters.command("start") & filters.private)
@@ -152,7 +163,7 @@ async def on_start(client, message):
         )
 
     if len(message.command) < 2:
-        return await message.reply_text("أهلاً بك يا محمد! استخدم روابط القناة لمشاهدة الحلقات.")
+        return await message.reply_text(f"أهلاً بك يا محمد! استخدم روابط القناة لمشاهدة الحلقات.")
 
     await send_episode_details(client, message.chat.id, message.command[1])
 
