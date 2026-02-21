@@ -14,7 +14,6 @@ def create_app() -> Application:
     app.add_handler(MessageHandler(filters.Chat(CHANNEL_ID) & filters.TEXT & filters.Regex(r"^\d+$") & ~filters.COMMAND, handle_ep_number))
     # الجودة
     app.add_handler(MessageHandler(filters.Chat(CHANNEL_ID) & filters.TEXT & ~filters.COMMAND, handle_quality))
-
     # أوامر البوت
     app.add_handler(CommandHandler("start", start_handler, filters=filters.ChatType.PRIVATE))
     # الضغط على أي حلقة
