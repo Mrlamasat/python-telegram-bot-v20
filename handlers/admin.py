@@ -85,7 +85,8 @@ async def receive_quality(update, context):
 
     await update.message.reply_text("✅ تم نشر الحلقة بنجاح")
     context.user_data.clear()
-    return ConversationHandler.END async def handle_title(update, context):
+    return ConversationHandler.END 
+    async def handle_title(update, context):
     user = update.message.from_user.id
     if user not in pending:
         return
