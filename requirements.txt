@@ -1,3 +1,2 @@
-python-telegram-bot==20.3
-aiosqlite
-aiohttp
+pyrogram==2.0.103
+tgcrypto==1.2.5
