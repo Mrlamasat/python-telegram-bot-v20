@@ -7,11 +7,11 @@ from PIL import Image
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# 1. إعدادات التسجيل لمراقبة الأداء
+# 1. إعدادات التسجيل لمراقبة Logs
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 2. المتغيرات (تأكد من وجود DATABASE_URL في Railway)
+# 2. جلب المتغيرات الأساسية
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -23,21 +23,28 @@ NEW_BOT_USERNAME = "Bottemo_bot"
 
 app = Client("CinemaBot_Final_Fixed", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- 3. إدارة قاعدة البيانات (PostgreSQL المضمونة) ---
-def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
+# --- 3. إدارة قاعدة البيانات (مع مصحح الروابط التلقائي) ---
+def db_query(query, params=(), fetchone=False, commit=False):
     conn = None
     res = None
+    if not DATABASE_URL:
+        logger.error("❌ DATABASE_URL missing!")
+        return None
     try:
-        url = DATABASE_URL.replace("postgres://", "postgresql://", 1) if DATABASE_URL.startswith("postgres://") else DATABASE_URL
-        conn = psycopg2.connect(url, sslmode='require')
+        # تصحيح الرابط ليتوافق مع مكتبة psycopg2 (بايثون)
+        # يحول Postgresql:// أو postgres:// إلى postgresql://
+        final_url = DATABASE_URL.replace("Postgresql://", "postgresql://", 1)
+        if final_url.startswith("postgres://"):
+            final_url = final_url.replace("postgres://", "postgresql://", 1)
+            
+        conn = psycopg2.connect(final_url, sslmode='require', connect_timeout=10)
         cursor = conn.cursor()
         cursor.execute(query, params)
         if fetchone: res = cursor.fetchone()
-        elif fetchall: res = cursor.fetchall()
         if commit: conn.commit()
         cursor.close()
     except Exception as e:
-        logger.error(f"❌ Database Error: {e}")
+        logger.error(f"❌ DB Connection Error: {e}")
     finally:
         if conn: conn.close()
     return res
@@ -48,7 +55,7 @@ def init_db():
     logger.info("✅ Database Synchronized!")
 
 # --- 4. معالج رفع الفيديو ---
-@app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document) & ~filters.photo & ~filters.sticker)
+@app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document) & ~filters.photo)
 async def on_video(client, message):
     v_id = str(message.id)
     dur_sec = message.video.duration if message.video else getattr(message.document, "duration", 0)
@@ -58,13 +65,13 @@ async def on_video(client, message):
              (ADMIN_CHANNEL, v_id, duration, "awaiting_poster"), commit=True)
     await message.reply_text("✅ تم استلام الفيديو\n🖼 الآن أرسل (البوستر) كصورة أو ملصق:")
 
-# --- 5. معالج رفع البوستر (بمنطق الكود الناجح) ---
-@app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.photo | filters.sticker | filters.document))
+# --- 5. معالج رفع البوستر (استخدام Pillow للنشر المضمون) ---
+@app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.photo | filters.sticker))
 async def on_poster(client, message):
     res = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (ADMIN_CHANNEL,), fetchone=True)
     if not res or res[0] != "awaiting_poster": return
 
-    p_id = message.photo.file_id if message.photo else (message.sticker.file_id if message.sticker else message.document.file_id)
+    p_id = message.photo.file_id if message.photo else message.sticker.file_id
     title = message.caption if message.caption else ""
     
     db_query("UPDATE temp_upload SET poster_id=%s, title=%s, step=%s WHERE chat_id=%s", 
@@ -80,9 +87,9 @@ async def on_text(client, message):
     
     db_query("UPDATE temp_upload SET ep_num=%s, step=%s WHERE chat_id=%s", (int(message.text), "awaiting_quality", ADMIN_CHANNEL), commit=True)
     btns = InlineKeyboardMarkup([[InlineKeyboardButton("720p", callback_data="q_720p"), InlineKeyboardButton("1080p", callback_data="q_1080p")]])
-    await message.reply_text("✨ اختر جودة الفيديو:", reply_markup=btns)
+    await message.reply_text("✨ اختر جودة الفيديو لنشره:", reply_markup=btns)
 
-# --- 7. النشر النهائي (استخدام معالجة Pillow المضمونة) ---
+# --- 7. النشر النهائي في قناة الاختبار ---
 @app.on_callback_query(filters.regex(r"^q_"))
 async def on_quality(client, query):
     quality = query.data.split("_")[1]
@@ -112,24 +119,25 @@ async def on_quality(client, query):
 
     await query.message.edit_text(f"🚀 تم النشر بنجاح!")
 
-# --- 8. التشغيل والتحويل والتسجيل التلقائي ---
+# --- 8. معالجة Start والتسجيل التلقائي ---
 @app.on_message(filters.command("start") & filters.private)
 async def on_start(client, message):
     if len(message.command) > 1:
         v_id = message.command[1]
         ep = db_query("SELECT poster_id, title FROM episodes WHERE v_id=%s", (v_id,), fetchone=True)
         
-        # إذا لم تكن موجودة (حلقة قديمة)، نسجلها تلقائياً
+        # إذا لم تكن موجودة (تسجيل تلقائي)
         if not ep:
             try:
+                # التحقق من وجودها في القناة
                 msg = await client.get_messages(ADMIN_CHANNEL, int(v_id))
                 if msg:
-                    db_query("INSERT INTO episodes (v_id, poster_id, title, ep_num, duration, quality) VALUES (%s, %s, %s, %s, %s, %s)", (v_id, "auto", "حلقة قديمة", 0, "00:00", "Auto"), commit=True)
+                    db_query("INSERT INTO episodes (v_id, poster_id, title, ep_num, duration, quality) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING", (v_id, "auto", "حلقة أرشيفية", 0, "00:00", "Auto"), commit=True)
             except: pass
             
         await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(v_id), protect_content=True)
     else:
-        await message.reply_text("البوت يعمل بنجاح يا محمد!")
+        await message.reply_text("أهلاً بك يا محمد! البوت متصل وجاهز.")
 
 if __name__ == "__main__":
     init_db()
