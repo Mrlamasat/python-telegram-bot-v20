@@ -10,13 +10,15 @@ logging.basicConfig(level=logging.INFO)
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-ADMIN_CHANNEL = -1003547072209 
-PUBLIC_CHANNEL = os.environ.get("PUBLIC_CHANNEL", "") 
-REQ_CHANNEL = os.environ.get("REQ_CHANNEL", "")
+
+# --- المعرفات التي أرسلتها يا محمد ---
+ADMIN_CHANNEL = -1003547072209  # قناة التخزين (الخاصة)
+PUBLIC_CHANNEL = "@RamadanSeries26"  # القناة العامة للنشر
+REQ_CHANNEL = "RamadanSeries26" # قناة الاشتراك الإجباري (بدون @)
 
 app = Client("CinemaBot_Final", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- قاعدة البيانات ---
+# --- قاعدة البيانات المحلية ---
 def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
     conn = sqlite3.connect("cinema.db")
     cursor = conn.cursor()
@@ -41,9 +43,8 @@ init_db()
 # --- 1. استلام الفيديو ---
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document) & ~filters.photo & ~filters.sticker)
 async def on_video(client, message):
-    # نتأكد أنه فيديو وليس ملف صورة
     if message.document and "image" in (message.document.mime_type or ""):
-        return # نترك معالج الصور يتعامل معه
+        return 
 
     v_id = str(message.id)
     duration_sec = message.video.duration if message.video else getattr(message.document, "duration", 0)
@@ -53,7 +54,7 @@ async def on_video(client, message):
              (ADMIN_CHANNEL, v_id, duration, "awaiting_poster"), commit=True)
     await message.reply_text("✅ تم استلام الفيديو\n🖼 الآن أرسل (البوستر) :")
 
-# --- 2. استلام البوستر (يدعم Photo, WebP, Stickers, Documents) ---
+# --- 2. استلام البوستر (يدعم WebP والصور العادية) ---
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.photo | filters.sticker | filters.document))
 async def on_poster(client, message):
     res = db_query("SELECT step FROM temp_upload WHERE chat_id=?", (ADMIN_CHANNEL,), fetchone=True)
@@ -61,28 +62,21 @@ async def on_poster(client, message):
         return
 
     try:
-        # جلب الـ file_id حسب نوع الملف المرسل
         if message.photo:
             photo_id = message.photo.file_id
         elif message.sticker:
             photo_id = message.sticker.file_id
         elif message.document and "image" in (message.document.mime_type or ""):
             photo_id = message.document.file_id
-        else:
-            return # إذا كان ملفاً غير صوري نتجاهله
+        else: return
 
         title = message.caption if message.caption else ""
-        
-        db_query("""
-            UPDATE temp_upload 
-            SET poster_id = ?, title = ?, step = ? 
-            WHERE chat_id = ?
-        """, (photo_id, title, "awaiting_ep_num", ADMIN_CHANNEL), commit=True)
+        db_query("UPDATE temp_upload SET poster_id = ?, title = ?, step = ? WHERE chat_id = ?", 
+                 (photo_id, title, "awaiting_ep_num", ADMIN_CHANNEL), commit=True)
         
         await message.reply_text("🖼 تم حفظ البوستر بنجاح\n🔢 أرسل الآن رقم الحلقة:")
     except Exception as e:
-        logging.error(f"Error in poster: {e}")
-        await message.reply_text("⚠️ حدث خطأ في معالجة الصورة، جرب إرسالها كصورة عادية.")
+        await message.reply_text("⚠️ خطأ في الصورة، أعد المحاولة.")
 
 # --- 3. استلام رقم الحلقة ---
 @app.on_message(filters.chat(ADMIN_CHANNEL) & filters.text & ~filters.command("start"))
@@ -96,13 +90,10 @@ async def on_text(client, message):
     db_query("UPDATE temp_upload SET ep_num=?, step=? WHERE chat_id=?", 
              (int(message.text), "awaiting_quality", ADMIN_CHANNEL), commit=True)
     
-    btns = InlineKeyboardMarkup([
-        [InlineKeyboardButton("720p", callback_data="q_720p"), InlineKeyboardButton("1080p", callback_data="q_1080p")],
-        [InlineKeyboardButton("4K", callback_data="q_4K")]
-    ])
+    btns = InlineKeyboardMarkup([[InlineKeyboardButton("720p", callback_data="q_720p"), InlineKeyboardButton("1080p", callback_data="q_1080p")], [InlineKeyboardButton("4K", callback_data="q_4K")]])
     await message.reply_text("✨ اختر جودة الفيديو:", reply_markup=btns)
 
-# --- 4. النشر النهائي ---
+# --- 4. النشر النهائي الذكي ---
 @app.on_callback_query(filters.regex(r"^q_"))
 async def on_quality(client, query):
     quality = query.data.split("_")[1]
@@ -117,27 +108,25 @@ async def on_quality(client, query):
     watch_link = f"https://t.me/{bot_username}?start={v_id}"
     
     caption = ""
-    if title and title.strip():
-        caption += f"🎬 **{title}**\n"
+    if title and title.strip(): caption += f"🎬 **{title}**\n"
     caption += f"🔢 الحلقة: {ep_num}\n⏱ المدة: {duration}\n✨ الجودة: {quality}\n\n📥 اضغط الزر لمشاهدة الحلقة"
-    
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ فتح الحلقة الآن", url=watch_link)]])
     
-    if PUBLIC_CHANNEL:
+    # محاولة النشر في القناة العامة
+    try:
+        await client.send_photo(PUBLIC_CHANNEL, photo=poster_id, caption=caption, reply_markup=markup)
+    except:
         try:
-            # نستخدم send_photo، تليجرام سيقبل الـ file_id حتى لو كان أصلاً WebP
-            await client.send_photo(PUBLIC_CHANNEL, photo=poster_id, caption=caption, reply_markup=markup)
+            await client.send_document(PUBLIC_CHANNEL, document=poster_id, caption=caption, reply_markup=markup)
         except:
-            # في حال فشل إرسال الـ WebP كصورة، نرسله كرسالة نصية مع الزر
             await client.send_message(PUBLIC_CHANNEL, caption, reply_markup=markup)
     
-    await query.message.edit_text("🚀 تم نشر الحلقة بنجاح!")
+    await query.message.edit_text("🚀 تم نشر الحلقة بنجاح في القناة العامة!")
 
-# --- فحص الاشتراك وعرض الحلقة ---
+# --- فحص الاشتراك وعرض الفيديو للمستخدم ---
 async def is_subscribed(client, user_id):
-    if not REQ_CHANNEL: return True
     try:
-        member = await client.get_chat_member(REQ_CHANNEL, user_id)
+        member = await client.get_chat_member(PUBLIC_CHANNEL, user_id)
         return member.status in [enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]
     except: return False
 
@@ -158,20 +147,19 @@ async def send_episode_details(client, chat_id, v_id):
 
             header = f"🎬 **{title}**\n" if title and title.strip() else ""
             caption = f"{header}📦 حلقة رقم: {ep_num}\n⏱ المده: {duration}\n✨ الجودة: {quality}\n\n📖 شاهد المزيد من الحلقات:"
-            await message.reply_text(caption, reply_markup=InlineKeyboardMarkup(buttons))
+            await client.send_message(chat_id, caption, reply_markup=InlineKeyboardMarkup(buttons))
     except:
         await client.send_message(chat_id, "❌ عذراً، لم يتم العثور على هذه الحلقة.")
 
 @app.on_message(filters.command("start") & filters.private)
 async def on_start(client, message):
     if not await is_subscribed(client, message.from_user.id):
-        return await message.reply_text(f"⚠️ يجب الاشتراك في القناة أولاً:\n\n@{REQ_CHANNEL}",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 للاشتراك اضغط هنا", url=f"https://t.me/{REQ_CHANNEL}")]])
-        )
+        return await message.reply_text(f"⚠️ يجب الاشتراك في القناة أولاً لمشاهدة الأفلام والمسلسلات:\n\n{PUBLIC_CHANNEL}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📢 اضغط هنا للاشتراك", url=f"https://t.me/{REQ_CHANNEL}")]]))
     if len(message.command) > 1:
         await send_episode_details(client, message.chat.id, message.command[1])
     else:
-        await message.reply_text(f"أهلاً بك يا محمد!")
+        await message.reply_text("أهلاً بك يا محمد! البوت جاهز للعمل.")
 
 @app.on_callback_query(filters.regex(r"^go_"))
 async def on_navigate(client, query):
