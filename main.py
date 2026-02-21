@@ -1,41 +1,41 @@
-from pyrogram import Client, filters
-from pyrogram.handlers import CallbackQueryHandler, MessageHandler
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    MessageHandler,
+    filters,
+)
 
 from commands import callback_watch, start_handler
-from config import API_HASH, API_ID, BOT_TOKEN, CHANNEL_ID
+from config import BOT_TOKEN, CHANNEL_ID
 from handlers import handle_ep_number, handle_poster, handle_quality, handle_video
 
 
-def create_app() -> Client:
-    app = Client("BottemoBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+def create_app() -> Application:
+    app = Application.builder().token(BOT_TOKEN).build()
 
     # استقبال الفيديو
-    app.add_handler(MessageHandler(handle_video, filters.chat(CHANNEL_ID) & (filters.video | filters.document)))
+    app.add_handler(MessageHandler(filters.Chat(CHANNEL_ID) & (filters.VIDEO | filters.Document.VIDEO), handle_video))
 
     # استقبال البوستر
-    app.add_handler(MessageHandler(handle_poster, filters.chat(CHANNEL_ID) & filters.photo))
+    app.add_handler(MessageHandler(filters.Chat(CHANNEL_ID) & filters.PHOTO, handle_poster))
 
     # رقم الحلقة
     app.add_handler(
         MessageHandler(
+            filters.Chat(CHANNEL_ID) & filters.TEXT & filters.Regex(r"^\d+$") & ~filters.COMMAND,
             handle_ep_number,
-            filters.chat(CHANNEL_ID) & filters.text & filters.regex(r"^\d+$") & ~filters.command(["start"]),
         )
     )
 
     # الجودة
-    app.add_handler(
-        MessageHandler(
-            handle_quality,
-            filters.chat(CHANNEL_ID) & filters.text & ~filters.command(["start"]),
-        )
-    )
+    app.add_handler(MessageHandler(filters.Chat(CHANNEL_ID) & filters.TEXT & ~filters.COMMAND, handle_quality))
 
     # أوامر البوت
-    app.add_handler(MessageHandler(start_handler, filters.command("start") & filters.private))
+    app.add_handler(CommandHandler("start", start_handler, filters=filters.ChatType.PRIVATE))
 
     # الضغط على أي حلقة
-    app.add_handler(CallbackQueryHandler(callback_watch, filters.regex(r"^watch_")))
+    app.add_handler(CallbackQueryHandler(callback_watch, pattern=r"^watch_"))
 
     return app
 
@@ -43,7 +43,7 @@ def create_app() -> Client:
 def run_bot() -> None:
     app = create_app()
     print("✅ البوت جاهز ويعمل الآن!")
-    app.run()
+    app.run_polling()
 
 
 if __name__ == "__main__":
