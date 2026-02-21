@@ -1,11 +1,11 @@
 from telegram import Update
-from telegram.ext import ContextTypes
+from telegram.ext import ContextTypes, CommandHandler
 from database import add_episode, list_episodes
 import os
 
-CHANNEL_ID = os.environ.get("CHANNEL_ID")
+# أخذ إعدادات من البيئة
+CHANNEL_ID = os.getenv("RamadanSeries26")  # مثال: -1001234567890
 
-# ======== أمر /start ========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "مرحبًا! أنا بوت الإدارة الخاص بك.\n"
@@ -14,34 +14,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/list"
     )
 
-# ======== أمر /add ========
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 2:
-        await update.message.reply_text("استخدم: /add <العنوان> <الرابط>")
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text("الرجاء استخدام الصيغة: /add <العنوان> <الرابط>")
         return
 
-    title = context.args[0]
-    link = context.args[1]
+    title = " ".join(args[:-1])
+    link = args[-1]
 
-    # إضافة الحلقة للـ database
     add_episode(title, link)
 
-    # إرسال الحلقة للقناة إذا معرف القناة موجود
     if CHANNEL_ID:
-        try:
-            await context.bot.send_message(chat_id=CHANNEL_ID, text=f"{title}\n{link}")
-        except Exception as e:
-            await update.message.reply_text(f"تمت إضافة الحلقة لكن فشل الإرسال للقناة: {e}")
-            return
+        await context.bot.send_message(CHANNEL_ID, f"{title}: {link}")
 
     await update.message.reply_text(f"تمت إضافة الحلقة: {title}")
 
-# ======== أمر /list ========
-async def list_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     episodes = list_episodes()
     if not episodes:
-        await update.message.reply_text("لا توجد حلقات مخزنة.")
+        await update.message.reply_text("لا توجد حلقات مضافة حتى الآن.")
         return
 
-    msg = "\n".join([f"{e['title']}: {e['link']}" for e in episodes])
+    msg = "\n".join([f"{title}: {link}" for title, link in episodes])
     await update.message.reply_text(msg)
