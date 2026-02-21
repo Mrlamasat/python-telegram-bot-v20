@@ -1,26 +1,26 @@
 import sqlite3
 
-DB_PATH = "bot_data.db"
+DB_FILE = "bot_data.db"
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS videos (
             v_id TEXT PRIMARY KEY,
             duration TEXT,
             poster_id TEXT,
-            poster_caption TEXT,
             status TEXT,
             ep_num INTEGER,
-            quality TEXT
+            quality TEXT,
+            title TEXT
         )
     ''')
     conn.commit()
     conn.close()
 
 def db_execute(query, params=(), fetch=True):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute(query, params)
     conn.commit()
