@@ -7,11 +7,11 @@ from PIL import Image
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# إعداد التسجيل
+# 1. إعدادات التسجيل لمراقبة الأداء
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# المتغيرات
+# 2. المتغيرات (تأكد من وجود DATABASE_URL في Railway)
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -21,22 +21,23 @@ ADMIN_CHANNEL = -1003547072209
 TEST_CHANNEL = "@khofkrjrnrqnrnta" 
 NEW_BOT_USERNAME = "Bottemo_bot"
 
-app = Client("CinemaBot_Fixed_Upload", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client("CinemaBot_Final_Fixed", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- إدارة قاعدة البيانات ---
-def db_query(query, params=(), fetchone=False, commit=False):
+# --- 3. إدارة قاعدة البيانات (PostgreSQL المضمونة) ---
+def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
     conn = None
     res = None
     try:
-        url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        url = DATABASE_URL.replace("postgres://", "postgresql://", 1) if DATABASE_URL.startswith("postgres://") else DATABASE_URL
         conn = psycopg2.connect(url, sslmode='require')
         cursor = conn.cursor()
         cursor.execute(query, params)
         if fetchone: res = cursor.fetchone()
+        elif fetchall: res = cursor.fetchall()
         if commit: conn.commit()
         cursor.close()
     except Exception as e:
-        logger.error(f"❌ DB Error: {e}")
+        logger.error(f"❌ Database Error: {e}")
     finally:
         if conn: conn.close()
     return res
@@ -44,92 +45,91 @@ def db_query(query, params=(), fetchone=False, commit=False):
 def init_db():
     db_query('CREATE TABLE IF NOT EXISTS episodes (v_id TEXT PRIMARY KEY, poster_id TEXT, title TEXT, ep_num INTEGER, duration TEXT, quality TEXT)', commit=True)
     db_query('CREATE TABLE IF NOT EXISTS temp_upload (chat_id BIGINT PRIMARY KEY, v_id TEXT, poster_id TEXT, title TEXT, ep_num INTEGER, duration TEXT, step TEXT)', commit=True)
+    logger.info("✅ Database Synchronized!")
 
-# --- نظام الرفع الجديد (خطوة بخطوة) ---
-
-# 1. استقبال الفيديو
-@app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document) & ~filters.photo)
+# --- 4. معالج رفع الفيديو ---
+@app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document) & ~filters.photo & ~filters.sticker)
 async def on_video(client, message):
     v_id = str(message.id)
     dur_sec = message.video.duration if message.video else getattr(message.document, "duration", 0)
     duration = f"{dur_sec // 60}:{dur_sec % 60:02d}"
-    
-    db_query("INSERT INTO temp_upload (chat_id, v_id, duration, step) VALUES (%s, %s, %s, 'wait_poster') ON CONFLICT (chat_id) DO UPDATE SET v_id=EXCLUDED.v_id, step='wait_poster'", (ADMIN_CHANNEL, v_id, duration), commit=True)
-    await message.reply_text(f"✅ تم استلام الفيديو.\n🖼 الآن أرسل **البوستر** (صورة أو ملصق):")
 
-# 2. استقبال البوستر (صورة أو ملصق)
-@app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.photo | filters.sticker))
+    db_query("INSERT INTO temp_upload (chat_id, v_id, duration, step) VALUES (%s, %s, %s, %s) ON CONFLICT (chat_id) DO UPDATE SET v_id=EXCLUDED.v_id, step=EXCLUDED.step", 
+             (ADMIN_CHANNEL, v_id, duration, "awaiting_poster"), commit=True)
+    await message.reply_text("✅ تم استلام الفيديو\n🖼 الآن أرسل (البوستر) كصورة أو ملصق:")
+
+# --- 5. معالج رفع البوستر (بمنطق الكود الناجح) ---
+@app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.photo | filters.sticker | filters.document))
 async def on_poster(client, message):
-    res = db_query("SELECT v_id FROM temp_upload WHERE chat_id=%s AND step='wait_poster'", (ADMIN_CHANNEL,), fetchone=True)
-    if not res: return
-    
-    p_id = message.photo.file_id if message.photo else message.sticker.file_id
-    title = message.caption if message.caption else "عنوان تلقائي"
-    
-    db_query("UPDATE temp_upload SET poster_id=%s, title=%s, step='wait_ep_num' WHERE chat_id=%s", (p_id, title, ADMIN_CHANNEL), commit=True)
-    await message.reply_text("🔢 ممتاز! الآن أرسل **رقم الحلقة** (أرقام فقط):")
-
-# 3. استقبال رقم الحلقة
-@app.on_message(filters.chat(ADMIN_CHANNEL) & filters.text & ~filters.command("start"))
-async def on_ep_num(client, message):
     res = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (ADMIN_CHANNEL,), fetchone=True)
-    if not res or res[0] != 'wait_ep_num': return
-    
-    if not message.text.isdigit():
-        return await message.reply_text("❌ يرجى إرسال أرقام فقط لرقم الحلقة.")
-    
-    db_query("UPDATE temp_upload SET ep_num=%s, step='wait_quality' WHERE chat_id=%s", (int(message.text), ADMIN_CHANNEL), commit=True)
-    
-    # إرسال أزرار اختيار الجودة
-    buttons = InlineKeyboardMarkup([[
-        InlineKeyboardButton("720p", callback_data="q_720p"),
-        InlineKeyboardButton("1080p", callback_data="q_1080p")
-    ]])
-    await message.reply_text("✨ أخيـراً، اختر **الجودة** ليتم النشر:", reply_markup=buttons)
+    if not res or res[0] != "awaiting_poster": return
 
-# 4. اختيار الجودة والنشر النهائي
-@app.on_callback_query(filters.regex(r"^q_"))
-async def on_quality_selected(client, query):
-    quality = query.data.split("_")[1]
+    p_id = message.photo.file_id if message.photo else (message.sticker.file_id if message.sticker else message.document.file_id)
+    title = message.caption if message.caption else ""
     
-    # جلب كل البيانات من الجدول المؤقت
+    db_query("UPDATE temp_upload SET poster_id=%s, title=%s, step=%s WHERE chat_id=%s", 
+             (p_id, title, "awaiting_ep_num", ADMIN_CHANNEL), commit=True)
+    await message.reply_text("🖼 تم حفظ البوستر\n🔢 أرسل الآن رقم الحلقة:")
+
+# --- 6. معالج رقم الحلقة والجودة ---
+@app.on_message(filters.chat(ADMIN_CHANNEL) & filters.text & ~filters.command("start"))
+async def on_text(client, message):
+    res = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (ADMIN_CHANNEL,), fetchone=True)
+    if not res or res[0] != "awaiting_ep_num": return
+    if not message.text.isdigit(): return await message.reply_text("❌ أرسل رقماً!")
+    
+    db_query("UPDATE temp_upload SET ep_num=%s, step=%s WHERE chat_id=%s", (int(message.text), "awaiting_quality", ADMIN_CHANNEL), commit=True)
+    btns = InlineKeyboardMarkup([[InlineKeyboardButton("720p", callback_data="q_720p"), InlineKeyboardButton("1080p", callback_data="q_1080p")]])
+    await message.reply_text("✨ اختر جودة الفيديو:", reply_markup=btns)
+
+# --- 7. النشر النهائي (استخدام معالجة Pillow المضمونة) ---
+@app.on_callback_query(filters.regex(r"^q_"))
+async def on_quality(client, query):
+    quality = query.data.split("_")[1]
     data = db_query("SELECT v_id, poster_id, title, ep_num, duration FROM temp_upload WHERE chat_id=%s", (ADMIN_CHANNEL,), fetchone=True)
     if not data: return
-    
-    v_id, p_id, title, ep_num, duration = data
-    
-    # حفظ في الجدول النهائي
-    db_query("INSERT INTO episodes (v_id, poster_id, title, ep_num, duration, quality) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (v_id) DO UPDATE SET poster_id=EXCLUDED.poster_id, ep_num=EXCLUDED.ep_num, quality=EXCLUDED.quality", (v_id, p_id, title, ep_num, duration, quality), commit=True)
-    
-    # تنظيف المؤقت
-    db_query("DELETE FROM temp_upload WHERE chat_id=%s", (ADMIN_CHANNEL,), commit=True)
-    
-    # إرسال الخبر للقناة العامة (الاختبار)
-    link = f"https://t.me/{NEW_BOT_USERNAME}?start={v_id}"
-    await client.send_photo(TEST_CHANNEL, photo=p_id, caption=f"🎬 **{title}**\n🔢 الحلقة: {ep_num}\n✨ الجودة: {quality}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ فتح الحلقة", url=link)]]))
-    
-    await query.message.edit_text("🚀 **تم النشر بنجاح في القناة وبالقاعدة!**")
+    v_id, poster_id, title, ep_num, duration = data
 
-# --- نظام التشغيل التلقائي (للحلقات القديمة) ---
+    db_query("INSERT INTO episodes VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (v_id) DO UPDATE SET poster_id=EXCLUDED.poster_id, ep_num=EXCLUDED.ep_num, quality=EXCLUDED.quality", (v_id, poster_id, title, ep_num, duration, quality), commit=True)
+    db_query("DELETE FROM temp_upload WHERE chat_id=%s", (ADMIN_CHANNEL,), commit=True)
+
+    watch_link = f"https://t.me/{(await client.get_me()).username}?start={v_id}"
+    caption = (f"🎬 **{title}**\n" if title else "") + f"🔢 الحلقة: {ep_num}\n⏱ المدة: {duration}\n✨ الجودة: {quality}"
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ فتح الحلقة الآن", url=watch_link)]])
+
+    await query.message.edit_text("⏳ جاري معالجة الصورة والنشر...")
+
+    try:
+        file_path = await client.download_media(poster_id)
+        with Image.open(file_path) as img:
+            img = img.convert("RGB")
+            bio = io.BytesIO(); bio.name = "poster.png"
+            img.save(bio, "PNG"); bio.seek(0)
+            await client.send_photo(TEST_CHANNEL, photo=bio, caption=caption, reply_markup=markup)
+        if os.path.exists(file_path): os.remove(file_path)
+    except:
+        await client.send_photo(TEST_CHANNEL, photo=poster_id, caption=caption, reply_markup=markup)
+
+    await query.message.edit_text(f"🚀 تم النشر بنجاح!")
+
+# --- 8. التشغيل والتحويل والتسجيل التلقائي ---
 @app.on_message(filters.command("start") & filters.private)
 async def on_start(client, message):
     if len(message.command) > 1:
         v_id = message.command[1]
-        ep = db_query("SELECT poster_id, title, ep_num, duration, quality FROM episodes WHERE v_id=%s", (v_id,), fetchone=True)
+        ep = db_query("SELECT poster_id, title FROM episodes WHERE v_id=%s", (v_id,), fetchone=True)
         
-        if ep:
-            # إذا كانت مسجلة بالكامل
-            if ep[0] != "auto":
-                await client.send_photo(message.chat.id, photo=ep[0], caption=f"🎬 **{ep[1]}**\n🔢 الحلقة: {ep[2]}\n⏱ المدة: {ep[3]}\n✨ الجودة: {ep[4]}")
-            await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(v_id), protect_content=True)
-        else:
-            # تسجيل تلقائي للحلقات القديمة
+        # إذا لم تكن موجودة (حلقة قديمة)، نسجلها تلقائياً
+        if not ep:
             try:
-                await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(v_id), protect_content=True)
-                db_query("INSERT INTO episodes (v_id, poster_id, title, ep_num, duration, quality) VALUES (%s, %s, %s, %s, %s, %s)", (v_id, "auto", "حلقة قديمة", 0, "0:00", "Auto"), commit=True)
+                msg = await client.get_messages(ADMIN_CHANNEL, int(v_id))
+                if msg:
+                    db_query("INSERT INTO episodes (v_id, poster_id, title, ep_num, duration, quality) VALUES (%s, %s, %s, %s, %s, %s)", (v_id, "auto", "حلقة قديمة", 0, "00:00", "Auto"), commit=True)
             except: pass
+            
+        await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(v_id), protect_content=True)
     else:
-        await message.reply_text("أهلاً بك يا محمد!")
+        await message.reply_text("البوت يعمل بنجاح يا محمد!")
 
 if __name__ == "__main__":
     init_db()
