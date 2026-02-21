@@ -1,29 +1,24 @@
 # bot.py
-import asyncio
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ConversationHandler
-from database import init_db
+
+import os
+from telegram.ext import ApplicationBuilder, CommandHandler
 from handlers import admin
 
-async def main():
-    await init_db()
-    app = ApplicationBuilder().token("8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0").build()
+# قراءة التوكن من المتغير البيئي
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # ضع هذا المتغير في إعدادات Railway
 
-    # Conversation Handler لإضافة الحلقات
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('add', admin.start_add)],
-        states={
-            admin.TITLE: [MessageHandler(filters.VIDEO, admin.receive_video)],
-            admin.POSTER: [MessageHandler(filters.PHOTO, admin.receive_poster)],
-            admin.EPISODE_NUM: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin.receive_title)],
-            admin.QUALITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin.receive_episode_number)],
-            admin.CONFIRM: [CallbackQueryHandler(admin.receive_quality)]
-        },
-        fallbacks=[]
-    )
+async def start(update, context):
+    await update.message.reply_text("أهلاً! البوت جاهز للعمل.")
 
-    app.add_handler(conv_handler)
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    print("البوت يعمل الآن ✅")
-    await app.run_polling()
+    # إضافة الهاندلرز
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("add_episode", admin.add_episode_handler))
 
-asyncio.run(main())
+    print("البوت يعمل الآن...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
