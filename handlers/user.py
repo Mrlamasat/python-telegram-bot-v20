@@ -1,80 +1,73 @@
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-from database import db
-from config import FORCE_SUB_CHANNEL
+# handlers/user.py
 
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes, CommandHandler, MessageHandler, ConversationHandler, filters
 
-async def start(update, context):
-    if not context.args:
-        await update.message.reply_text("أرسل رابط الحلقة.")
-        return
+# مراحل المحادثة
+EPISODE, QUALITY = range(2)
 
-    video_id = context.args[0]
+# قاموس لتخزين بيانات مؤقتة لكل مستخدم
+pending = {}
 
-    member = await context.bot.get_chat_member(FORCE_SUB_CHANNEL, update.effective_user.id)
-    if member.status in ["left", "kicked"]:
-        await update.message.reply_text(f"🔒 اشترك أولاً في {FORCE_SUB_CHANNEL}")
-        return
+# دالة البداية
+async def start_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    pending[user_id] = {}
+    await update.message.reply_text("🔢 أرسل رقم الحلقة:")
+    return EPISODE
 
-    video = db("SELECT * FROM videos WHERE video_id=?", (video_id,), True)
-    if not video:
-        await update.message.reply_text("الحلقة غير موجودة.")
-        return
-
-    video = video[0]
-
-    await update.message.reply_video(video=video[1])
-
-    episodes = db(
-        "SELECT video_id, episode FROM videos WHERE poster_id=? ORDER BY episode",
-        (video[2],),
-        True
-    )
-
-    buttons = []
-    row = []
-    for v_id, ep in episodes:
-        row.append(InlineKeyboardButton(str(ep), callback_data=f"watch_{v_id}"))
-        if len(row) == 5:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-
-    await update.message.reply_text(
-        "📺 شاهد المزيد من الحلقات",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-
-
-async def watch_callback(update, context):
-    query = update.callback_query
-    await query.answer()
-
-    video_id = query.data.split("_")[1]
-
-    video = db("SELECT file_id FROM videos WHERE video_id=?", (video_id,), True)
-    if video:
-        await query.message.reply_video(video=video[0][0])
-
-
-async def like_callback(update, context):
-    query = update.callback_query
-    await query.answer()
-
-    video_id = query.data.split("_")[1]
-    user_id = query.from_user.id
+# استقبال رقم الحلقة
+async def receive_episode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if user_id not in pending:
+        return ConversationHandler.END
 
     try:
-        db("INSERT INTO likes VALUES (?, ?)", (video_id, user_id))
-    except:
-        return
+        pending[user_id]["episode"] = int(update.message.text)
+    except ValueError:
+        await update.message.reply_text("⚠️ يجب أن يكون رقم الحلقة رقماً صحيحاً. حاول مرة أخرى:")
+        return EPISODE
 
-    count = db("SELECT COUNT(*) FROM likes WHERE video_id=?", (video_id,), True)[0][0]
+    await update.message.reply_text("🎞 اختر الجودة: 1080p / 720p / 480p")
+    return QUALITY
 
-    keyboard = [
-        [InlineKeyboardButton(f"👍 {count}", callback_data=f"like_{video_id}")],
-        [InlineKeyboardButton("▶️ مشاهدة الحلقة",
-         url=f"https://t.me/{context.bot.username}?start={video_id}")]
-    ]
+# استقبال الجودة
+async def receive_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if user_id not in pending:
+        return ConversationHandler.END
 
-    await query.message.edit_reply_markup(InlineKeyboardMarkup(keyboard))
+    quality = update.message.text.lower()
+    if quality not in ["1080p", "720p", "480p"]:
+        await update.message.reply_text("⚠️ الجودة غير صالحة. اختر: 1080p / 720p / 480p")
+        return QUALITY
+
+    pending[user_id]["quality"] = quality
+
+    # هنا يمكنك إضافة أي عملية أخرى مثل حفظ البيانات في قاعدة البيانات
+    # مثال: نشر الحلقة أو إرسالها للقناة
+    await update.message.reply_text(
+        f"✅ تم تسجيل الحلقة {pending[user_id]['episode']} بجودة {pending[user_id]['quality']}"
+    )
+
+    # تنظيف البيانات المؤقتة
+    del pending[user_id]
+    return ConversationHandler.END
+
+# دالة الإلغاء
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if user_id in pending:
+        del pending[user_id]
+    await update.message.reply_text("❌ تم إلغاء العملية.")
+    return ConversationHandler.END
+
+# تعريف ConversationHandler
+user_conversation_handler = ConversationHandler(
+    entry_points=[CommandHandler("start", start_user)],
+    states={
+        EPISODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_episode)],
+        QUALITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_quality)],
+    },
+    fallbacks=[CommandHandler("cancel", cancel)],
+)
