@@ -1,26 +1,29 @@
-# database.py
-import aiosqlite
+import sqlite3
 
-DB_PATH = "data/videos.db"
+DB_PATH = "bot_data.db"
 
-async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS episodes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS videos (
+            v_id TEXT PRIMARY KEY,
+            poster_id TEXT,
             title TEXT,
-            poster TEXT,
-            video_file_id TEXT,
+            ep_num INTEGER,
+            duration TEXT,
             quality TEXT,
-            episode_number INTEGER
+            status TEXT
         )
-        """)
-        await db.commit()
+    ''')
+    conn.commit()
+    conn.close()
 
-async def add_episode(title, poster, video_file_id, quality, episode_number):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO episodes (title, poster, video_file_id, quality, episode_number) VALUES (?, ?, ?, ?, ?)",
-            (title, poster, video_file_id, quality, episode_number)
-        )
-        await db.commit()
+def db_execute(query, params=(), fetch=True):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(query, params)
+    conn.commit()
+    res = cursor.fetchall() if fetch else None
+    conn.close()
+    return res
