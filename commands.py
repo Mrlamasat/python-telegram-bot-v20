@@ -1,7 +1,6 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ContextTypes
 from telegram.error import TelegramError
-
+from telegram.ext import ContextTypes
 from db import db_execute
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
