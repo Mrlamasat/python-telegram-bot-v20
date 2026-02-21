@@ -7,7 +7,7 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ==============================
-# الإعدادات الأساسية (تأكد من صحتها)
+# الإعدادات الأساسية
 # ==============================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -21,13 +21,12 @@ ADMIN_CHANNEL = -1003547072209
 PUBLIC_CHANNELS = ["@RamadanSeries26", "@MoAlmohsen"]
 SUB_CHANNEL = "@MoAlmohsen" 
 
-# --- دالة تشفير النص (لحماية القناة من الفلترة) ---
+# --- دالة تشفير النص لحماية الحقوق ---
 def encrypt_text(text):
     if not text: return "‌"
-    # وضع فاصل مخفي بين كل حرف لكسر التعرف الآلي
     return "‌".join(list(text))
 
-app = Client("mo_pro_vFinal", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=20)
+app = Client("mo_pro_final_fixed", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=20)
 
 # ==============================
 # نظام قاعدة البيانات
@@ -57,14 +56,15 @@ def init_db():
         title TEXT, ep_num INTEGER, duration TEXT, step TEXT)""", commit=True)
 
 # ==============================
-# نظام الرفع (للمشرف) - يدعم التشفير
+# نظام الرفع (للمشرف)
 # ==============================
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document))
 async def on_video(client, message):
     if message.document and "video" not in (message.document.mime_type or ""): return
     v_id = str(message.id)
     sec = message.video.duration if message.video else getattr(message.document, "duration", 0)
-    db_query("INSERT INTO temp_upload (chat_id, v_id, duration, step) VALUES (%s, %s, %s, 'awaiting_poster') ON CONFLICT (chat_id) DO UPDATE SET v_id=EXCLUDED.v_id, step='awaiting_poster'", (message.chat.id, v_id, f"{sec//60}:{sec%60:02d}"), commit=True)
+    dur_str = f"{sec // 60}:{sec % 60:02d}"
+    db_query("INSERT INTO temp_upload (chat_id, v_id, duration, step) VALUES (%s, %s, %s, 'awaiting_poster') ON CONFLICT (chat_id) DO UPDATE SET v_id=EXCLUDED.v_id, step='awaiting_poster'", (message.chat.id, v_id, dur_str), commit=True)
     await message.reply_text("✅ استلمت الفيديو.. أرسل البوستر الآن واكتب العنوان في الوصف")
 
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.photo | filters.document))
@@ -74,8 +74,6 @@ async def on_poster(client, message):
     
     f_id = message.photo.file_id if message.photo else message.document.file_id
     f_uid = message.photo.file_unique_id if message.photo else message.document.file_unique_id
-    
-    # تشفير العنوان فوراً عند الاستلام
     secure_title = encrypt_text(message.caption or "مسلسل")
     
     db_query("UPDATE temp_upload SET poster_id=%s, poster_uid=%s, title=%s, step='awaiting_ep' WHERE chat_id=%s", (f_id, f_uid, secure_title, message.chat.id), commit=True)
@@ -101,24 +99,25 @@ async def publish(client, query):
                 (data['v_id'], data['poster_id'], data['poster_uid'], data['title'], data['ep_num'], data['duration'], quality), commit=True)
     db_query("DELETE FROM temp_upload WHERE chat_id=%s", (query.message.chat.id,), commit=True)
     
-    link = f"https://t.me/{(await client.get_me()).username}?start={data['v_id']}"
+    bot_me = await client.get_me()
+    link = f"https://t.me/{bot_me.username}?start={data['v_id']}"
     cap = f"🎬 **{data['title']}**\n🔢 الحلقة: {data['ep_num']}\n⏱ المدة: {data['duration']}"
     for ch in PUBLIC_CHANNELS:
         try: await client.send_photo(ch, photo=data['poster_id'], caption=cap, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الآن", url=link)]]))
         except: pass
     await query.message.edit_text(f"✅ تم النشر بنجاح.")
 
-# --- ميزة تعديل العناوين القديمة وتشفيرها ---
+# --- ميزة التعديل الفوري للعناوين القديمة ---
 @app.on_edited_message(filters.chat(ADMIN_CHANNEL) & (filters.photo | filters.document))
 async def on_edit_poster(client, message):
     f_uid = message.photo.file_unique_id if message.photo else message.document.file_unique_id if message.document else None
     if f_uid:
         new_title = encrypt_text(message.caption or "مسلسل")
         db_query("UPDATE episodes SET title=%s WHERE poster_uid=%s", (new_title, f_uid), commit=True)
-        await message.reply_text(f"✅ تم تشفير وتحديث العنوان لجميع الحلقات المرتبطة بهذه الصورة.")
+        await message.reply_text(f"✅ تم تحديث وتشفير العنوان لجميع الحلقات المرتبطة.")
 
 # ==============================
-# نظام العرض والربط التلقائي (للأعضاء)
+# نظام التشغيل (للأعضاء) - النسخة المعدلة
 # ==============================
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
@@ -128,26 +127,39 @@ async def start(client, message):
 
     try: await client.get_chat_member(SUB_CHANNEL, user_id)
     except:
+        bot_me = await client.get_me()
         btn = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك هنا", url=f"https://t.me/{SUB_CHANNEL.replace('@','')}")], 
-                                    [InlineKeyboardButton("🔄 تحقق", url=f"https://t.me/{(await client.get_me()).username}?start={param}")]])
-        return await message.reply_text("⚠️ اشترك أولاً لمشاهدة الحلقة.", reply_markup=btn)
+                                    [InlineKeyboardButton("🔄 تحقق", url=f"https://t.me/{bot_me.username}?start={param}")]])
+        return await message.reply_text("⚠️ اشترك في القناة أولاً لمشاهدة الحلقة.", reply_markup=btn)
 
     data = db_query("SELECT * FROM episodes WHERE v_id=%s", (param,), fetchone=True)
     if data:
-        # الربط التلقائي بالبصمة (poster_uid)
         related_eps = db_query("SELECT v_id, ep_num FROM episodes WHERE poster_uid=%s ORDER BY ep_num ASC", (data['poster_uid'],), fetchall=True)
+        bot_me = await client.get_me()
         buttons, row = [], []
         for ep in related_eps:
             text = f"🔹 {ep['ep_num']}" if str(ep['v_id']) == param else str(ep['ep_num'])
-            row.append(InlineKeyboardButton(text, url=f"https://t.me/{(await client.get_me()).username}?start={ep['v_id']}"))
+            row.append(InlineKeyboardButton(text, url=f"https://t.me/{bot_me.username}?start={ep['v_id']}"))
             if len(row) == 5: buttons.append(row); row = []
         if row: buttons.append(row)
 
         cap = f"🎬 **{data['title']} - حلقة {data['ep_num']}**\n⚙️ الجودة: {data['quality']}\n\n📌 **باقي الحلقات:**"
         try:
-            await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(param), caption=cap, reply_markup=InlineKeyboardMarkup(buttons), protect_content=True)
+            # تم إصلاح الاستدعاء لضمان النسخ من القناة الصحيحة
+            await client.copy_message(
+                chat_id=message.chat.id,
+                from_chat_id=ADMIN_CHANNEL,
+                message_id=int(data['v_id']),
+                caption=cap,
+                reply_markup=InlineKeyboardMarkup(buttons),
+                protect_content=True
+            )
             db_query("UPDATE episodes SET views = views + 1 WHERE v_id = %s", (param,), commit=True)
-        except: await message.reply_text("❌ خطأ في جلب الحلقة.")
+        except Exception as e:
+            logger.error(f"Send Error: {e}")
+            await message.reply_text("❌ تعذر جلب الفيديو. تأكد أن البوت مسؤول في قناة الأدمن.")
+    else:
+        await message.reply_text("❌ الحلقة غير موجودة.")
 
 if __name__ == "__main__":
     init_db()
