@@ -1,35 +1,36 @@
+import os
 import sqlite3
-from config import DB_PATH
+
+# مسار قاعدة البيانات داخل الحاوية
+DB_DIR = "/app/data"
+DB_PATH = os.path.join(DB_DIR, "videos.db")
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS videos(
-        video_id TEXT PRIMARY KEY,
-        file_id TEXT,
-        poster_id TEXT,
-        title TEXT,
-        episode INTEGER,
-        quality TEXT,
-        duration TEXT
-    )
-    """)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS likes(
-        video_id TEXT,
-        user_id INTEGER,
-        UNIQUE(video_id, user_id)
-    )
-    """)
-    conn.commit()
-    conn.close()
+    # إنشاء المجلد لو لم يكن موجودًا
+    os.makedirs(DB_DIR, exist_ok=True)
 
-def db(query, params=(), fetch=False):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(query, params)
-    conn.commit()
-    data = cur.fetchall() if fetch else None
-    conn.close()
-    return data
+    try:
+        # الاتصال بقاعدة البيانات
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        # إنشاء جدول الفيديوهات لو لم يكن موجودًا
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS videos (
+                video_id TEXT PRIMARY KEY,
+                file_id TEXT,
+                poster_id TEXT,
+                title TEXT,
+                episode INTEGER,
+                quality TEXT,
+                duration TEXT
+            )
+        """)
+
+        conn.commit()
+        conn.close()
+        print(f"[INFO] Database initialized at {DB_PATH}")
+
+    except sqlite3.Error as e:
+        print(f"[ERROR] SQLite error: {e}")
+        raise
