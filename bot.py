@@ -1,24 +1,22 @@
 # bot.py
-
 import os
 from telegram.ext import ApplicationBuilder, CommandHandler
+
 from handlers import admin
 
-# قراءة التوكن من المتغير البيئي
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # ضع هذا المتغير في إعدادات Railway
+# قراءة التوكن من Environment Variable
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-async def start(update, context):
-    await update.message.reply_text("أهلاً! البوت جاهز للعمل.")
+if not BOT_TOKEN:
+    raise Exception("ضع BOT_TOKEN في Environment Variables")
 
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # إضافة الهاندلرز
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("add_episode", admin.add_episode_handler))
+# تسجيل الأوامر
+app.add_handler(CommandHandler("start", admin.start))
+app.add_handler(CommandHandler("add", admin.add))
+app.add_handler(CommandHandler("list", admin.list_all))
 
-    print("البوت يعمل الآن...")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+# تشغيل البوت
+print("البوت بدأ العمل...")
+app.run_polling()
