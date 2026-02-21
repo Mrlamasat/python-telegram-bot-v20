@@ -19,12 +19,12 @@ BOT_TOKEN = "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0"
 DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
 
 ADMIN_CHANNEL = -1003547072209 
-TEST_CHANNEL = "@RamadanSeries26"
-SUB_CHANNEL = "@MoAlmohsen"
+# قائمة القنوات العامة للنشر
+PUBLIC_CHANNELS = ["@RamadanSeries26", "@MoAlmohsen"]
+SUB_CHANNEL = "@MoAlmohsen" # قناة الاشتراك الإجباري
 INVITE_LINK = "https://t.me/+bU0La1OJyXowNDg0"
 
-# إنشاء الكائن بـ اسم جلسة جديد تماماً لفك التعليق
-app = Client("mo_almohsen_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=20)
+app = Client("mo_almohsen_final", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=20)
 
 # ==============================
 # نظام قاعدة البيانات
@@ -54,9 +54,6 @@ def init_db():
     db_query("""CREATE TABLE IF NOT EXISTS temp_upload (
         chat_id BIGINT PRIMARY KEY, v_id TEXT, poster_id TEXT, 
         title TEXT, ep_num INTEGER, duration TEXT, step TEXT)""", commit=True)
-    try:
-        db_query("ALTER TABLE episodes ADD COLUMN IF NOT EXISTS views INTEGER DEFAULT 0", commit=True)
-    except: pass
 
 # ==============================
 # نظام الرفع (للأدمن)
@@ -87,6 +84,7 @@ async def on_num(client, message):
     if not state or state['step'] != "awaiting_ep" or not message.text.isdigit(): return
     data = db_query("SELECT * FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
     
+    # حفظ البيانات في قاعدة البيانات
     db_query("""INSERT INTO episodes (v_id, poster_id, title, ep_num, duration, quality, views) 
                 VALUES (%s, %s, %s, %s, %s, '720p', 0) 
                 ON CONFLICT (v_id) DO UPDATE SET poster_id=EXCLUDED.poster_id, title=EXCLUDED.title, ep_num=EXCLUDED.ep_num""", 
@@ -94,10 +92,24 @@ async def on_num(client, message):
     
     db_query("DELETE FROM temp_upload WHERE chat_id=%s", (message.chat.id,), commit=True)
     
-    link = f"https://t.me/{(await client.get_me()).username}?start={data['v_id']}"
+    # إعداد رسالة النشر
+    bot_username = (await client.get_me()).username
+    link = f"https://t.me/{bot_username}?start={data['v_id']}"
     cap = f"🎬 **{data['title']}**\n\n🔢 الحلقة: {message.text}\n⏱ المدة: {data['duration']}"
-    await client.send_photo(TEST_CHANNEL, photo=data['poster_id'], caption=cap, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ فتح الحلقة", url=link)]]))
-    await message.reply_text("✅ تم النشر بنجاح")
+    
+    # النشر في القناتين
+    for channel in PUBLIC_CHANNELS:
+        try:
+            await client.send_photo(
+                channel, 
+                photo=data['poster_id'], 
+                caption=cap, 
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ فتح الحلقة", url=link)]])
+            )
+        except Exception as e:
+            logger.error(f"Error publishing to {channel}: {e}")
+
+    await message.reply_text(f"✅ تم النشر بنجاح في القنوات: {', '.join(PUBLIC_CHANNELS)}")
 
 # ==============================
 # نظام العرض والاشتراك
@@ -107,6 +119,7 @@ async def start(client, message):
     user_id = message.from_user.id
     param = message.command[1] if len(message.command) > 1 else ""
     
+    # تحقق الاشتراك الإجباري
     try:
         await client.get_chat_member(SUB_CHANNEL, user_id)
     except:
@@ -137,14 +150,11 @@ async def play(client, query):
     except: await client.send_message(query.message.chat.id, "❌ فشل إرسال الفيديو.")
 
 # ==============================
-# التشغيل النهائي (إجبار جلسة جديدة)
+# التشغيل
 # ==============================
 if __name__ == "__main__":
-    # مسح شامل لأي آثار لجلسات قديمة تسبب التعليق
     for f in glob.glob("*.session*"):
         try: os.remove(f)
         except: pass
-    
     init_db()
-    logger.info("🚀 جاري تشغيل الجلسة النقية...")
     app.run()
