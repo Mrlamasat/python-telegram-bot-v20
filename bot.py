@@ -1,162 +1,178 @@
 import os
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# إعدادات البوت القديم (تأكد من وضع التوكن الخاص بـ @Ramadan4kTVbot في متغيرات Railway)
+API_ID = int(os.environ.get("API_ID", 0))
+API_HASH = os.environ.get("API_HASH", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+
+# يوزر بوتك الجديد
+NEW_BOT_USERNAME = "Bottemo_bot" 
+
+app = Client("OldBotRedirector", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+@app.on_message(filters.command("start") & filters.private)
+async def redirect_handler(client, message):
+    # إذا دخل المستخدم عبر رابط حلقة (مثلاً start=123)
+    if len(message.command) > 1:
+        v_id = message.command[1]
+        new_link = f"https://t.me/{NEW_BOT_USERNAME}?start={v_id}"
+        
+        text = (
+            "⚠️ **عذراً، هذا البوت لم يعد يعمل!**\n\n"
+            "لقد انتقلنا إلى بوت جديد أسرع ويدعم جودات أفضل. "
+            "اضغط على الزر أدناه لمشاهدة حلقتك فوراً في البوت الجديد."
+        )
+        
+        reply_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("▶️ اضغط هنا لمشاهدة الحلقة", url=new_link)]
+        ])
+    else:
+        # إذا دخل للبوت بشكل عام
+        text = (
+            "أهلاً بك يا محمد..\n"
+            "هذا البوت (@Ramadan4kTVbot) توقف عن العمل.\n"
+            "يرجى الانتقال ومتابعة مسلسلاتك عبر بوتنا الجديد."
+        )
+        reply_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🚀 الانتقال للبوت الجديد", url=f"https://t.me/{NEW_BOT_USERNAME}")]
+        ])
+
+    await message.reply_text(text, reply_markup=reply_markup)
+
+print("✅ بوت التحويل يعمل الآن...")
+app.run()
+
+
+الجديد
+import os
 import sqlite3
 import logging
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import UserNotParticipant
 
-# إعداد التسجيل لمتابعة أداء البوت في Railway
-logging.basicConfig(level=logging.INFO)
+# ===== إعدادات التسجيل =====
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# الإعدادات - يرجى وضعها في متغيرات البيئة في Railway
+# ===== المتغيرات الأساسية =====
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-PRIVATE_STORAGE = -1003547072209  # قناتك الخاصة
-PUBLIC_CHANNEL = os.environ.get("PUBLIC_CHANNEL", "")  # قناة النشر (@channel)
-REQ_CHANNEL = os.environ.get("REQ_CHANNEL", "")  # قناة الاشتراك الإجباري (@channel)
+CHANNEL_ID = int(os.environ.get("CHANNEL_ID", 0))  # قناة التخزين
+PUBLIC_CHANNEL = os.environ.get("PUBLIC_CHANNEL", "")  # قناة النشر العامة
 
-app = Client("CinemaBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client("BottemoBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- إدارة قاعدة البيانات ---
-def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
+# ===== قاعدة البيانات =====
+def init_db():
+    conn = sqlite3.connect("bot_data.db")
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS videos 
+                      (v_id TEXT PRIMARY KEY, duration TEXT, poster_id TEXT, status TEXT, ep_num INTEGER, quality TEXT)''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def db_execute(query, params=(), fetch=True):
     conn = sqlite3.connect("bot_data.db")
     cursor = conn.cursor()
     cursor.execute(query, params)
-    res = None
-    if fetchone: res = cursor.fetchone()
-    elif fetchall: res = cursor.fetchall()
-    if commit: conn.commit()
+    conn.commit()
+    res = cursor.fetchall() if fetch else None
     conn.close()
     return res
 
-# إنشاء الجداول المطلوبة
-db_query('''CREATE TABLE IF NOT EXISTS videos 
-            (v_id TEXT PRIMARY KEY, duration TEXT, poster_id TEXT, 
-             title TEXT, ep_num INTEGER, quality TEXT)''', commit=True)
-
-db_query('''CREATE TABLE IF NOT EXISTS temp_state 
-            (admin_id INTEGER PRIMARY KEY, v_id TEXT, step TEXT)''', commit=True)
-
-# --- فحص الاشتراك الإجباري ---
-async def check_sub(client, user_id):
-    if not REQ_CHANNEL: return True
-    try:
-        await client.get_chat_member(REQ_CHANNEL, user_id)
-        return True
-    except UserNotParticipant:
-        return False
-    except:
-        return True
-
-# --- 1. استقبال الفيديو ---
-@app.on_message(filters.chat(PRIVATE_STORAGE) & (filters.video | filters.document))
-async def on_video(client, message):
+# ===== استقبال الفيديوهات =====
+@app.on_message(filters.chat(CHANNEL_ID) & (filters.video | filters.document))
+async def receive_video(client, message):
     v_id = str(message.id)
-    dur_sec = message.video.duration if message.video else getattr(message.document, "duration", 0)
-    duration = f"{dur_sec // 60}:{dur_sec % 60:02d}"
-    
-    db_query("INSERT OR REPLACE INTO temp_state (admin_id, v_id, step) VALUES (?, ?, ?)", 
-             (message.from_user.id, v_id, "get_poster"), commit=True)
-    db_query("INSERT OR REPLACE INTO videos (v_id, duration) VALUES (?, ?)", (v_id, duration), commit=True)
-    
-    await message.reply_text(f"✅ تم استلام الفيديو (ID: {v_id})\n🖼 الآن أرسل **البوستر** (صورة) واكتب العنوان في الوصف إن أردت:")
+    duration_sec = message.video.duration if message.video else getattr(message.document, "duration", 0)
+    mins, secs = divmod(duration_sec, 60)
+    duration = f"{mins}:{secs:02d} دقيقة" if duration_sec else "غير محدد"
+    db_execute("INSERT OR REPLACE INTO videos (v_id, duration, status) VALUES (?, ?, ?)", (v_id, duration, "waiting"), fetch=False)
+    await message.reply_text(f"✅ تم استلام الفيديو (ID: {v_id})\nالآن أرسل البوستر (الصورة)")
 
-# --- 2. استقبال البوستر (العنوان اختياري) ---
-@app.on_message(filters.chat(PRIVATE_STORAGE) & filters.photo)
-async def on_poster(client, message):
-    state = db_query("SELECT v_id, step FROM temp_state WHERE admin_id=?", (message.from_user.id,), fetchone=True)
-    if not state or state[1] != "get_poster": return
+# ===== استقبال البوستر =====
+@app.on_message(filters.chat(CHANNEL_ID) & filters.photo)
+async def receive_poster(client, message):
+    res = db_execute("SELECT v_id FROM videos WHERE status='waiting' ORDER BY rowid DESC LIMIT 1")
+    if not res: return
+    v_id = res[0][0]
+    db_execute("UPDATE videos SET poster_id=?, status='awaiting_ep' WHERE v_id=?", (message.photo.file_id, v_id), fetch=False)
+    await message.reply_text(f"🖼 تم حفظ البوستر.\n🔢 أرسل الآن رقم الحلقة:")
 
-    v_id = state[0]
-    title = message.caption if message.caption else "مشاهدة ممتعة"
-    
-    db_query("UPDATE videos SET poster_id=?, title=? WHERE v_id=?", (message.photo.file_id, title, v_id), commit=True)
-    db_query("UPDATE temp_state SET step='get_ep' WHERE admin_id=?", (message.from_user.id,), commit=True)
-    
-    await message.reply_text("🖼 تم حفظ البوستر.\n🔢 أرسل الآن **رقم الحلقة**:")
-
-# --- 3. استقبال رقم الحلقة ---
-@app.on_message(filters.chat(PRIVATE_STORAGE) & filters.text & ~filters.command("start"))
-async def on_ep(client, message):
+# ===== استقبال رقم الحلقة =====
+@app.on_message(filters.chat(CHANNEL_ID) & filters.text & ~filters.command(["start"]))
+async def receive_ep_number(client, message):
     if not message.text.isdigit(): return
-    state = db_query("SELECT v_id, step FROM temp_state WHERE admin_id=?", (message.from_user.id,), fetchone=True)
-    if not state or state[1] != "get_ep": return
+    res = db_execute("SELECT v_id, poster_id, duration FROM videos WHERE status='awaiting_ep' ORDER BY rowid DESC LIMIT 1")
+    if not res: return
+    v_id, poster_id, duration = res[0]
+    ep_num = int(message.text)
+    db_execute("UPDATE videos SET ep_num=?, status='posted' WHERE v_id=?", (ep_num, v_id), fetch=False)
 
-    v_id = state[0]
-    db_query("UPDATE videos SET ep_num=? WHERE v_id=?", (int(message.text), v_id), commit=True)
-    db_query("UPDATE temp_state SET step='get_quality' WHERE admin_id=?", (message.from_user.id,), commit=True)
-    
-    btns = InlineKeyboardMarkup([[
-        InlineKeyboardButton("720p", callback_data=f"q_{v_id}_720p"),
-        InlineKeyboardButton("1080p", callback_data=f"q_{v_id}_1080p")
-    ]])
-    await message.reply_text("✨ اختر الجودة للنشر:", reply_markup=btns)
+    bot_info = await client.get_me()
+    watch_link = f"https://t.me/{bot_info.username}?start={v_id}"
 
-# --- 4. اختيار الجودة والنشر التلقائي ---
-@app.on_callback_query(filters.regex(r"^q_"))
-async def on_publish(client, query):
-    _, v_id, quality = query.data.split("_")
-    db_query("UPDATE videos SET quality=? WHERE v_id=?", (quality, v_id), commit=True)
-    db_query("DELETE FROM temp_state WHERE admin_id=?", (query.from_user.id,), commit=True)
-    
-    v = db_query("SELECT title, ep_num, poster_id, duration FROM videos WHERE v_id=?", (v_id,), fetchone=True)
-    watch_link = f"https://t.me/{(await client.get_me()).username}?start={v_id}"
-    
+    # نشر تلقائي في القناة العامة
     if PUBLIC_CHANNEL:
-        caption = f"🎬 **{v[0]}**\n🔢 الحلقة: {v[1]}\n⏱ المده: {v[3]}\n✨ الجودة: {quality}"
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("❤️ أعجبني", callback_data="like_it"), 
-             InlineKeyboardButton("▶️ مشاهدة الحلقة", url=watch_link)]
-        ])
-        await client.send_photo(PUBLIC_CHANNEL, photo=v[2], caption=caption, reply_markup=markup)
-    
-    await query.message.edit_text(f"🚀 تم النشر بنجاح!\nالرابط: {watch_link}")
+        try:
+            caption = f"🎬 الحلقة {ep_num}\n⏱ المدة: {duration}\n✨ الجودة: غير محددة بعد\n\n📥 اضغط الزر لمشاهدة الحلقة"
+            await client.send_photo(chat_id=PUBLIC_CHANNEL, photo=poster_id, caption=caption,
+                                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ فتح الحلقة الآن", url=watch_link)]]))
+            await message.reply_text(f"🚀 تم النشر بنجاح في @{PUBLIC_CHANNEL}")
+        except Exception as e:
+            await message.reply_text(f"⚠️ تم الحفظ ولكن فشل النشر: {e}")
+    else:
+        await message.reply_text(f"✅ تم الحفظ. الرابط المباشر:\n{watch_link}")
 
-# --- 5. تشغيل الفيديو وقائمة الحلقات ---
+# ===== تشغيل الحلقة وعرض قائمة الحلقات =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
-    if not await check_sub(client, message.from_user.id):
-        btn = InlineKeyboardMarkup([[InlineKeyboardButton("إضغط هنا للاشتراك", url=f"https://t.me/{REQ_CHANNEL.replace('@','')}")]])
-        return await message.reply_text(f"⚠️ يجب الاشتراك في القناة أولاً لتتمكن من المشاهدة!\n{REQ_CHANNEL}", reply_markup=btn)
-
-    if len(message.command) < 2:
-        return await message.reply_text("أهلاً بك يا محمد! استخدم روابط المشاهدة من القناة.")
+    if len(message.command) <= 1:
+        await message.reply_text("أهلاً بك! أرسل رابط الحلقة للمشاهدة.")
+        return
 
     v_id = message.command[1]
-    await send_content(client, message.chat.id, v_id)
+    await send_video_with_list(client, message.chat.id, v_id)
 
-async def send_content(client, chat_id, v_id):
-    v = db_query("SELECT poster_id, title, ep_num, duration, quality FROM videos WHERE v_id=?", (v_id,), fetchone=True)
-    if not v: return await client.send_message(chat_id, "❌ عذراً، الحلقة غير متوفرة.")
+async def send_video_with_list(client, chat_id, v_id):
+    try:
+        # إرسال الفيديو الحالي
+        await client.copy_message(chat_id, CHANNEL_ID, int(v_id), protect_content=True)
 
-    # إرسال الفيديو من القناة الخاصة
-    await client.copy_message(chat_id, PRIVATE_STORAGE, int(v_id), protect_content=True)
+        # جلب poster_id للحلقة
+        video_info = db_execute("SELECT poster_id, duration, quality, ep_num FROM videos WHERE v_id=?", (v_id,))
+        if not video_info: return
+        poster_id, duration, quality, ep_num = video_info[0]
 
-    # جلب قائمة الحلقات بناءً على نفس البوستر
-    all_eps = db_query("SELECT v_id, ep_num FROM videos WHERE poster_id=? ORDER BY ep_num ASC", (v[0],), fetchall=True)
-    
-    btns = []
-    row = []
-    for vid, num in all_eps:
-        label = f"▶️ {num}" if vid == v_id else f"{num}"
-        row.append(InlineKeyboardButton(label, callback_data=f"go_{vid}"))
-        if len(row) == 4: btns.append(row); row = []
-    if row: btns.append(row)
+        # جلب كل الحلقات لنفس البوستر
+        all_ep = db_execute("SELECT v_id, ep_num FROM videos WHERE poster_id=? AND status='posted' ORDER BY ep_num ASC", (poster_id,))
+        if all_ep and len(all_ep) > 1:
+            btns = []
+            row = []
+            bot_user = (await client.get_me()).username
+            for vid, num in all_ep:
+                label = f"▶️ {num}" if vid == v_id else f"{num}"
+                row.append(InlineKeyboardButton(label, callback_data=f"watch_{vid}"))
+                if len(row) == 4:
+                    btns.append(row)
+                    row = []
+            if row: btns.append(row)
+            caption = f"🎬 الحلقة {ep_num}\n⏱ المدة: {duration}\n✨ الجودة: {quality}\n\n📥 شاهد باقي الحلقات أسفل الفيديو"
+            await client.send_message(chat_id, caption, reply_markup=InlineKeyboardMarkup(btns))
+    except:
+        await client.send_message(chat_id, "❌ عذراً، الحلقة غير متوفرة حالياً.")
 
-    caption = f"🎬 **{v[1]}**\n📦 حلقة: {v[2]}\n⏱ مده: {v[3]}\n✨ جودة: {v[4]}\n\n**شاهد المزيد من الحلقات:**"
-    await client.send_message(chat_id, caption, reply_markup=InlineKeyboardMarkup(btns))
-
-@app.on_callback_query(filters.regex(r"^go_"))
-async def on_navigate(client, query):
-    if not await check_sub(client, query.from_user.id):
-        return await query.answer("اشترك في القناة أولاً!", show_alert=True)
+# ===== التعامل مع الضغط على أي حلقة =====
+@app.on_callback_query(filters.regex(r"^watch_"))
+async def watch_episode(client, query):
     v_id = query.data.split("_")[1]
-    await query.message.delete()
-    await send_content(client, query.from_user.id, v_id)
-
-@app.on_callback_query(filters.regex("like_it"))
-async def on_like(client, query):
-    await query.answer("شكراً لك! ❤️")
+    try:
+        await query.message.delete()
+    except: pass
+    await send_video_with_list(client, query.from_user.id, v_id)
 
 app.run()
