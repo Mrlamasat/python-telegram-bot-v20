@@ -1,4 +1,4 @@
 pyrogram
 tgcrypto
-Pillow
 psycopg2-binary
+Pillow
