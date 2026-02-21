@@ -1,6 +1,13 @@
-# config.py
-BOT_TOKEN = "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0"
-ADMIN_CHANNEL = -7720165591  # قناة المشرفين
-PUBLIC_CHANNEL = -RamadanSeries26 # القناة العامة
-DATABASE_PATH = "data/videos.db"
-MIN_VIDEO_DURATION = 10  # ثواني
+import os
+
+# ===== إعدادات البوت =====
+API_ID = int(os.environ.get("API_ID", 0))
+API_HASH = os.environ.get("API_HASH", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+
+# القناة الخاصة بالرفع والقناة العامة للنشر
+CHANNEL_ID = int(os.environ.get("CHANNEL_ID", 0))
+PUBLIC_CHANNEL = os.environ.get("PUBLIC_CHANNEL", "")
+
+# بوت جديد (سيظهر في روابط start)
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "")
