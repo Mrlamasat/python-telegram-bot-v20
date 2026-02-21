@@ -1,29 +1,13 @@
-import sqlite3
+# database.py
+# نسخة وهمية للتجربة، لاحقًا يمكن ربط قاعدة بيانات حقيقية
 
-DB_PATH = "bot_data.db"
+episodes = []
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS videos (
-            v_id TEXT PRIMARY KEY,
-            poster_id TEXT,
-            title TEXT,
-            ep_num INTEGER,
-            duration TEXT,
-            quality TEXT,
-            status TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
+def add_episode(title: str, link: str):
+    """تضيف حلقة جديدة"""
+    episodes.append({"title": title, "link": link})
+    return True
 
-def db_execute(query, params=(), fetch=True):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(query, params)
-    conn.commit()
-    res = cursor.fetchall() if fetch else None
-    conn.close()
-    return res
+def list_episodes():
+    """ترجع كل الحلقات المخزنة"""
+    return episodes
