@@ -8,7 +8,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
 
 # ==============================
-# الإعدادات (تم تحديث قناة النشر)
+# الإعدادات
 # ==============================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,9 +18,9 @@ API_HASH = "dacba460d875d963bbd4462c5eb554d6"
 BOT_TOKEN = "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0"
 DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
 
-OWNER_ID = 123456789  # ضع آيدي حسابك هنا (هام للتحكم)
-ADMIN_CHANNEL = -1003547072209  # آيدي قناة التخزين (المصدر)
-TEST_CHANNEL = "@RamadanSeries26" # يوزر قناة النشر الجديدة
+OWNER_ID = 123456789  # ضع آيدي حسابك هنا
+ADMIN_CHANNEL = -1003547072209  # آيدي قناة التخزين
+TEST_CHANNEL = "@RamadanSeries26" # قناة النشر الجديدة
 
 # ==============================
 # قاعدة البيانات
@@ -47,7 +47,6 @@ def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
         if conn: conn.close()
 
 def init_db():
-    # جدول الحلقات الدائم
     db_query("""
         CREATE TABLE IF NOT EXISTS episodes (
             v_id TEXT PRIMARY KEY,
@@ -59,7 +58,6 @@ def init_db():
             views INTEGER DEFAULT 0
         )
     """, commit=True)
-    # جدول الرفع المؤقت
     db_query("""
         CREATE TABLE IF NOT EXISTS temp_upload (
             chat_id BIGINT PRIMARY KEY,
@@ -71,7 +69,7 @@ def init_db():
             step TEXT
         )
     """, commit=True)
-    logger.info("Database initialized successfully.")
+    logger.info("Database initialized.")
 
 # ==============================
 # إنشاء البوت
@@ -85,7 +83,7 @@ app = Client(
 )
 
 # ==============================
-# مرحلة الرفع (للمطور فقط)
+# مرحلة الرفع (للمطور)
 # ==============================
 
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document))
@@ -145,7 +143,7 @@ async def on_quality(client, query):
     await query.message.edit_text("✅ تم النشر بنجاح")
 
 # ==============================
-# مرحلة العرض والمشاهدة
+# العرض والمشاهدة (مع الجلب التلقائي)
 # ==============================
 
 @app.on_message(filters.command("start") & filters.private)
@@ -153,50 +151,64 @@ async def start(client, message):
     if len(message.command) <= 1: return await message.reply_text("أهلاً بك في بوت السينما 🎬")
     v_id = message.command[1]
     data = db_query("SELECT * FROM episodes WHERE v_id=%s", (v_id,), fetchone=True)
-    if not data: return await message.reply_text("❌ الحلقة غير موجودة.")
-
-    caption = f"🎬 **{data['title'] if data['title'] else 'حلقة جديدة'}**\n\n🔢 **الحلقة:** {data['ep_num']}\n⏱ **المدة:** {data['duration']}\n✨ **الجودة:** {data['quality']}\n\nاضغط أدناه للمشاهدة 👇"
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الآن", callback_data=f"watch_{v_id}")]])
-    try:
-        await client.send_photo(message.chat.id, photo=data['poster_id'], caption=caption, reply_markup=markup)
-    except:
-        await client.send_document(message.chat.id, document=data['poster_id'], caption=caption, reply_markup=markup)
+    
+    if data:
+        caption = f"🎬 **{data['title'] if data['title'] else 'حلقة جديدة'}**\n\n🔢 **الحلقة:** {data['ep_num']}\n⏱ **المدة:** {data['duration']}\n✨ **الجودة:** {data['quality']}\n\nاضغط أدناه للمشاهدة 👇"
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الآن", callback_data=f"watch_{v_id}")]])
+        try:
+            await client.send_photo(message.chat.id, photo=data['poster_id'], caption=caption, reply_markup=markup)
+        except:
+            await client.send_document(message.chat.id, document=data['poster_id'], caption=caption, reply_markup=markup)
+    else:
+        # جلب تلقائي في حال عدم وجودها في القاعدة الجديدة
+        try:
+            origin_msg = await client.get_messages(ADMIN_CHANNEL, int(v_id))
+            if origin_msg.empty: return await message.reply_text("❌ الحلقة غير موجودة في الأرشيف.")
+            
+            # إرسال الفيديو مباشرة
+            await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(v_id), protect_content=True)
+            
+            # تسجيلها تلقائياً
+            title = origin_msg.caption or "حلقة مستعادة"
+            duration_sec = origin_msg.video.duration if origin_msg.video else 0
+            duration = f"{duration_sec // 60}:{duration_sec % 60:02d}"
+            
+            db_query("""
+                INSERT INTO episodes (v_id, title, ep_num, duration, quality) 
+                VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
+            """, (v_id, title, 0, duration, "HD"), commit=True)
+        except:
+            await message.reply_text("❌ خطأ في جلب الحلقة.")
 
 @app.on_callback_query(filters.regex(r"^watch_"))
 async def play_video(client, query):
     v_id = query.data.split("_")[1]
     try:
         await query.message.delete()
-        await client.copy_message(chat_id=query.message.chat.id, from_chat_id=ADMIN_CHANNEL, message_id=int(v_id), protect_content=True)
+        await client.copy_message(query.message.chat.id, ADMIN_CHANNEL, int(v_id), protect_content=True)
         db_query("UPDATE episodes SET views = views + 1 WHERE v_id=%s", (v_id,), commit=True)
     except:
         await query.answer("❌ الفيديو غير متوفر.", show_alert=True)
 
 # ==============================
-# لوحة التحكم (Admin Panel)
+# لوحة التحكم
 # ==============================
 
 @app.on_message(filters.command("panel") & filters.private)
 async def admin_panel(client, message):
     if message.from_user.id != OWNER_ID: return
-    total_eps = db_query("SELECT COUNT(*) FROM episodes", fetchone=True)['count']
-    total_views = db_query("SELECT COALESCE(SUM(views),0) as total FROM episodes", fetchone=True)['total']
-    text = f"📊 **إحصائيات البوت**\n\n🎬 الحلقات: {total_eps}\n👁 المشاهدات: {total_views}"
+    res = db_query("SELECT COUNT(*) as c, COALESCE(SUM(views),0) as v FROM episodes", fetchone=True)
+    text = f"📊 **إحصائيات البوت**\n\n🎬 الحلقات: {res['c']}\n👁 المشاهدات: {res['v']}"
     await message.reply_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 تحديث", callback_data="refresh_panel")]]))
 
 @app.on_callback_query(filters.regex("^refresh_panel$"))
 async def refresh_p(client, query):
     if query.from_user.id == OWNER_ID:
-        total_eps = db_query("SELECT COUNT(*) FROM episodes", fetchone=True)['count']
-        total_views = db_query("SELECT COALESCE(SUM(views),0) as total FROM episodes", fetchone=True)['total']
-        await query.message.edit_text(f"📊 **إحصائيات البوت**\n\n🎬 الحلقات: {total_eps}\n👁 المشاهدات: {total_views}", 
+        res = db_query("SELECT COUNT(*) as c, COALESCE(SUM(views),0) as v FROM episodes", fetchone=True)
+        await query.message.edit_text(f"📊 **إحصائيات البوت**\n\n🎬 الحلقات: {res['c']}\n👁 المشاهدات: {res['v']}", 
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 تحديث", callback_data="refresh_panel")]]))
     await query.answer("تم التحديث")
 
-# ==============================
-# التشغيل
-# ==============================
 if __name__ == "__main__":
     init_db()
-    logger.info("Bot is Live!")
     app.run()
