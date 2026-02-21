@@ -21,6 +21,7 @@ DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.pr
 ADMIN_CHANNEL = -1003547072209 
 TEST_CHANNEL = "@RamadanSeries26"
 SUB_CHANNEL = "@MoAlmohsen"
+INVITE_LINK = "https://t.me/+bU0La1OJyXowNDg0"
 
 app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=50)
 
@@ -46,7 +47,6 @@ def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
         if conn: conn.close()
 
 def init_db():
-    # إنشاء الجداول
     db_query("""CREATE TABLE IF NOT EXISTS episodes (
         v_id TEXT PRIMARY KEY, poster_id TEXT, title TEXT, 
         ep_num INTEGER, duration TEXT, quality TEXT, views INTEGER DEFAULT 0)""", commit=True)
@@ -55,26 +55,21 @@ def init_db():
         chat_id BIGINT PRIMARY KEY, v_id TEXT, poster_id TEXT, 
         title TEXT, ep_num INTEGER, duration TEXT, step TEXT)""", commit=True)
     
-    # التأكد من وجود عمود المشاهدات (حل مشكلة Column Not Found)
     try:
         db_query("ALTER TABLE episodes ADD COLUMN IF NOT EXISTS views INTEGER DEFAULT 0", commit=True)
-        logger.info("✅ تم التحقق من هيكلة قاعدة البيانات")
     except: pass
 
 # ==============================
-# وظائف الإرسال والأرشفة
+# وظائف الإرسال
 # ==============================
 async def send_video_file(client, chat_id, v_id_str):
     try:
-        # نسخ الفيديو من قناة التخزين
         await client.copy_message(chat_id, ADMIN_CHANNEL, int(v_id_str), protect_content=True)
-        
-        # تحديث أو إضافة السجل لضمان عدم حدوث خطأ في المشاهدات
         db_query("""INSERT INTO episodes (v_id, title, views) VALUES (%s, 'حلقة مؤرشفة', 1) 
                     ON CONFLICT (v_id) DO UPDATE SET views = episodes.views + 1""", (v_id_str,), commit=True)
     except Exception as e:
         logger.error(f"Error sending video: {e}")
-        await client.send_message(chat_id, "❌ عذراً، الحلقة غير متوفرة حالياً.")
+        await client.send_message(chat_id, "❌ عذراً، الحلقة غير متوفرة حالياً في قناة التخزين.")
 
 # ==============================
 # نظام الرفع (للأدمن)
@@ -122,7 +117,6 @@ async def start(client, message):
     user_id = message.from_user.id
     param = message.command[1] if len(message.command) > 1 else ""
     
-    # التحقق من الاشتراك الإجباري
     try:
         await client.get_chat_member(SUB_CHANNEL, user_id)
     except:
@@ -142,8 +136,6 @@ async def start(client, message):
                f"👁 المشاهدات: {data.get('views', 0)}")
         
         keyboard = [[InlineKeyboardButton("▶️ مشاهدة الآن", callback_data=f"watch_{param}")]]
-        
-        # جلب الحلقات الأخرى لنفس المسلسل (بناءً على البوستر)
         related = db_query("SELECT v_id, ep_num FROM episodes WHERE poster_id=%s ORDER BY ep_num ASC", (data['poster_id'],), fetchall=True)
         if related and len(related) > 1:
             keyboard.append([InlineKeyboardButton("🎞 حلقات أخرى 🎞", callback_data="none")])
@@ -155,7 +147,6 @@ async def start(client, message):
             
         await message.reply_photo(photo=data['poster_id'], caption=cap, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        # إذا لم تكن الحلقة في القاعدة (من الأرشيف)
         await send_video_file(client, message.chat.id, param)
 
 @app.on_callback_query(filters.regex(r"^watch_"))
@@ -165,14 +156,31 @@ async def play(client, query):
     await send_video_file(client, query.message.chat.id, v_id)
 
 # ==============================
-# التشغيل النهائي (الآمن)
+# التشغيل النهائي وحل مشكلة القناة الخاصة
 # ==============================
-if __name__ == "__main__":
-    # تنظيف الجلسة القديمة لضمان عدم حدوث Disconnected
+async def run_bot():
     if os.path.exists("my_bot.session"):
         try: os.remove("my_bot.session")
         except: pass
         
     init_db()
-    logger.info("🚀 البوت بدأ العمل بنجاح...")
-    app.run()
+    await app.start()
+    logger.info("🤖 جاري محاولة التعرف على القناة الخاصة...")
+    try:
+        await app.join_chat(INVITE_LINK) 
+        logger.info("✅ تم التعرف على القناة الخاصة بنجاح!")
+    except:
+        try:
+            await app.get_chat(ADMIN_CHANNEL)
+            logger.info("✅ البوت لديه صلاحية الوصول للقناة")
+        except Exception as err:
+            logger.error(f"❌ فشل الوصول للقناة: {err}")
+            
+    logger.info("🚀 البوت الآن يعمل...")
+    from pyrogram.methods.utilities.idle import idle
+    await idle()
+    await app.stop()
+
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(run_bot())
