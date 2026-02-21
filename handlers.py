@@ -1,93 +1,58 @@
 from pyrogram import filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram import Client
 from db import db_execute
 from config import CHANNEL_ID, PUBLIC_CHANNEL
+import asyncio
 
-pending_video = {}
+async def handle_video(client: Client, message):
+    # حفظ الفيديو في قاعدة البيانات
+    v_id = str(message.id)
+    duration_sec = message.video.duration if message.video else getattr(message.document, "duration", 0)
+    mins, secs = divmod(duration_sec, 60)
+    duration = f"{mins}:{secs:02d} دقيقة" if duration_sec else "غير محدد"
 
-def register_handlers(app):
-    # استقبال الفيديو
-    @app.on_message(filters.chat(CHANNEL_ID) & (filters.video | filters.document))
-    async def receive_video(client, message):
-        v_id = str(message.id)
-        pending_video[message.from_user.id] = {"v_id": v_id, "status": "video"}
-        await message.reply_text(f"✅ تم استلام الفيديو (ID: {v_id})\nالخطوة التالية: أرسل البوستر (الصورة)")
+    db_execute("INSERT OR REPLACE INTO videos (v_id, duration, status) VALUES (?, ?, ?)",
+               (v_id, duration, "waiting"), fetch=False)
+    
+    await message.reply_text("✅ تم استلام الفيديو.\nالآن أرسل صورة البوستر (إجباري)")
 
-    # استقبال البوستر + وصف اختياري
-    @app.on_message(filters.chat(CHANNEL_ID) & filters.photo)
-    async def receive_poster(client, message):
-        user_id = message.from_user.id
-        if user_id not in pending_video or pending_video[user_id]["status"] != "video":
-            return
-        pending_video[user_id]["poster_id"] = message.photo.file_id
-        pending_video[user_id]["status"] = "poster"
-        await message.reply_text("🖼 تم حفظ البوستر.\nيمكنك إضافة وصف للصورة (اختياري) أو أرسل /skip للمتابعة.")
+async def handle_poster(client: Client, message):
+    res = db_execute("SELECT v_id FROM videos WHERE status='waiting' ORDER BY rowid DESC LIMIT 1")
+    if not res: return
+    v_id = res[0][0]
 
-    # استقبال وصف البوستر (اختياري)
-    @app.on_message(filters.chat(CHANNEL_ID) & filters.text)
-    async def receive_title(client, message):
-        user_id = message.from_user.id
-        if user_id not in pending_video or pending_video[user_id]["status"] != "poster":
-            return
-        text = message.text
-        if text.lower() == "/skip":
-            text = None
-        pending_video[user_id]["title"] = text
-        pending_video[user_id]["status"] = "title_done"
-        await message.reply_text("🔢 الآن أرسل رقم الحلقة (رقم صحيح)")
+    caption = message.caption if message.caption else None
+    db_execute("UPDATE videos SET poster_id=?, poster_caption=?, status='awaiting_ep' WHERE v_id=?",
+               (message.photo.file_id, caption, v_id), fetch=False)
 
-    # استقبال رقم الحلقة
-    @app.on_message(filters.chat(CHANNEL_ID) & filters.text)
-    async def receive_ep_number(client, message):
-        user_id = message.from_user.id
-        if user_id not in pending_video or pending_video[user_id]["status"] != "title_done":
-            return
-        if not message.text.isdigit():
-            await message.reply_text("⚠️ يجب أن يكون رقم الحلقة رقماً صحيحاً.")
-            return
-        pending_video[user_id]["ep_num"] = int(message.text)
-        pending_video[user_id]["status"] = "ep_done"
-        await message.reply_text("🎚 الآن أرسل الجودة (مثال: 720p)")
+    await message.reply_text("🖼 تم حفظ البوستر.\n🔢 الآن أرسل رقم الحلقة:")
 
-    # استقبال الجودة
-    @app.on_message(filters.chat(CHANNEL_ID) & filters.text)
-    async def receive_quality(client, message):
-        user_id = message.from_user.id
-        if user_id not in pending_video or pending_video[user_id]["status"] != "ep_done":
-            return
-        quality = message.text.strip()
-        if not quality:
-            await message.reply_text("⚠️ الجودة مطلوبة، يرجى إدخالها.")
-            return
-        data = pending_video[user_id]
-        data["quality"] = quality
-        data["status"] = "done"
+async def handle_ep_number(client: Client, message):
+    if not message.text.isdigit(): return
+    res = db_execute("SELECT v_id, poster_id, poster_caption, duration FROM videos WHERE status='awaiting_ep' ORDER BY rowid DESC LIMIT 1")
+    if not res: return
+    v_id, poster_id, poster_caption, duration = res[0]
+    ep_num = int(message.text)
+    db_execute("UPDATE videos SET ep_num=?, status='awaiting_quality' WHERE v_id=?", (ep_num, v_id), fetch=False)
+    
+    await message.reply_text(f"✅ رقم الحلقة {ep_num} تم حفظه.\n🎥 أرسل الآن جودة الحلقة (مثال: 720p, 1080p)")
 
-        # حفظ في قاعدة البيانات
-        db_execute(
-            "INSERT OR REPLACE INTO videos (v_id, poster_id, title, ep_num, quality, status) VALUES (?, ?, ?, ?, ?, ?)",
-            (data["v_id"], data["poster_id"], data.get("title"), data["ep_num"], data["quality"], "posted"),
-            fetch=False
-        )
+async def handle_quality(client: Client, message):
+    quality = message.text.strip()
+    if not quality: return
+    res = db_execute("SELECT v_id, poster_id, poster_caption, ep_num, duration FROM videos WHERE status='awaiting_quality' ORDER BY rowid DESC LIMIT 1")
+    if not res: return
+    v_id, poster_id, poster_caption, ep_num, duration = res[0]
 
-        # نشر في القناة العامة
-        watch_link = f"https://t.me/{(await client.get_me()).username}?start={data['v_id']}"
-        caption = f"🎬 الحلقة {data['ep_num']}\n✨ الجودة: {data['quality']}"
-        if data.get("title"):
-            caption = f"{data['title']}\n" + caption
+    db_execute("UPDATE videos SET quality=?, status='posted' WHERE v_id=?", (quality, v_id), fetch=False)
 
-        try:
-            if PUBLIC_CHANNEL:
-                await client.send_photo(
-                    chat_id=PUBLIC_CHANNEL,
-                    photo=data["poster_id"],
-                    caption=caption,
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("▶️ اضغط هنا لمشاهدة الحلقة", url=watch_link)]
-                    ])
-                )
-            await message.reply_text(f"🚀 تم النشر بنجاح. الرابط المباشر:\n{watch_link}")
-        except Exception as e:
-            await message.reply_text(f"⚠️ تم الحفظ ولكن فشل النشر: {e}")
+    # نشر تلقائي في القناة العامة
+    watch_link = f"https://t.me/{await client.get_me().username}?start={v_id}"
+    caption = f"{poster_caption if poster_caption else ''}\n🎬 الحلقة {ep_num}\n⏱ المدة: {duration}\n✨ الجودة: {quality}\n\n📥 اضغط الزر لمشاهدة الحلقة"
 
-        del pending_video[user_id]
+    if PUBLIC_CHANNEL:
+        await client.send_photo(chat_id=PUBLIC_CHANNEL, photo=poster_id,
+                                caption=caption,
+                                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ فتح الحلقة الآن", url=watch_link)]]))
+        await message.reply_text(f"🚀 تم النشر بنجاح في @{PUBLIC_CHANNEL}")
