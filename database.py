@@ -1,9 +1,9 @@
 import sqlite3
+from config import DB_PATH
 
 def init_db():
-    conn = sqlite3.connect("bot.db")
+    conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-
     cur.execute("""
     CREATE TABLE IF NOT EXISTS videos(
         video_id TEXT PRIMARY KEY,
@@ -15,7 +15,6 @@ def init_db():
         duration TEXT
     )
     """)
-
     cur.execute("""
     CREATE TABLE IF NOT EXISTS likes(
         video_id TEXT,
@@ -23,12 +22,11 @@ def init_db():
         UNIQUE(video_id, user_id)
     )
     """)
-
     conn.commit()
     conn.close()
 
 def db(query, params=(), fetch=False):
-    conn = sqlite3.connect("bot.db")
+    conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(query, params)
     conn.commit()
