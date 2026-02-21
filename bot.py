@@ -8,7 +8,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait, UserNotParticipant
 
 # ==============================
-# الإعدادات
+# الإعدادات (تأكد من صحة الآيديات)
 # ==============================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ API_HASH = "dacba460d875d963bbd4462c5eb554d6"
 BOT_TOKEN = "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0"
 DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
 
-OWNER_ID = 123456789  # ضع آيدي حسابك هنا
+OWNER_ID = 123456789  # ضع آيديك الحقيقي هنا
 ADMIN_CHANNEL = -1003547072209 
 TEST_CHANNEL = "@RamadanSeries26" 
 SUB_CHANNEL = "@MoAlmohsen"      
@@ -130,7 +130,6 @@ async def on_num(client, message):
 
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
-    # 1. التحقق من الاشتراك
     if not await check_sub(client, message.from_user.id):
         param = message.command[1] if len(message.command) > 1 else ""
         btn = InlineKeyboardMarkup([
@@ -141,14 +140,16 @@ async def start(client, message):
 
     if len(message.command) <= 1: return await message.reply_text("أهلاً بك في بوت السينما 🎬")
     
-    v_id = message.command[1]
-    # البحث في القاعدة
-    data = db_query("SELECT * FROM episodes WHERE v_id=%s", (v_id,), fetchone=True)
+    v_id_str = message.command[1]
+    if not v_id_str.isdigit(): return await message.reply_text("❌ رابط غير صالح.")
     
-    if data:
-        # إذا كانت الحلقة مسجلة (عرض البوستر والأزرار)
-        others = db_query("SELECT v_id, ep_num FROM episodes WHERE title=%s AND v_id!=%s ORDER BY ep_num ASC", (data['title'], v_id), fetchall=True)
-        keyboard = [[InlineKeyboardButton("▶️ مشاهدة الآن", callback_data=f"watch_{v_id}")]]
+    # البحث في القاعدة
+    data = db_query("SELECT * FROM episodes WHERE v_id=%s", (v_id_str,), fetchone=True)
+    
+    if data and data['poster_id']:
+        # إذا كانت الحلقة مسجلة ببوستر
+        others = db_query("SELECT v_id, ep_num FROM episodes WHERE title=%s AND v_id!=%s ORDER BY ep_num ASC", (data['title'], v_id_str), fetchall=True)
+        keyboard = [[InlineKeyboardButton("▶️ مشاهدة الآن", callback_data=f"watch_{v_id_str}")]]
         
         if others:
             keyboard.append([InlineKeyboardButton("🎞 حلقات أخرى للمسلسل 🎞", callback_data="none")])
@@ -160,16 +161,23 @@ async def start(client, message):
             if row: keyboard.append(row)
 
         caption = f"🎬 **{data['title']}**\n\n🔢 **الحلقة:** {data['ep_num']}\n⏱ **المدة:** {data['duration']}\n👁 المشاهدات: {data['views']}"
-        await client.send_photo(message.chat.id, photo=data['poster_id'] if data['poster_id'] else "FILE_ID_OR_URL", caption=caption, reply_markup=InlineKeyboardMarkup(keyboard))
+        await client.send_photo(message.chat.id, photo=data['poster_id'], caption=caption, reply_markup=InlineKeyboardMarkup(keyboard))
     
     else:
-        # 2. إذا كانت حلقة قديمة غير مسجلة (الجلب من الأرشيف)
+        # الحل للمشكلة: الجلب المباشر للحلقات القديمة من قناة الأدمن
         try:
-            await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(v_id), protect_content=True)
-            # حفظها تلقائياً لكي لا يحتاج البوت لجلبها من الأرشيف مرة أخرى
-            db_query("INSERT INTO episodes (v_id, title, ep_num, duration, quality) VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING", (v_id, "حلقة من الأرشيف", 0, "00:00", "HD"), commit=True)
-        except:
-            await message.reply_text("❌ عذراً، هذه الحلقة غير متوفرة حالياً.")
+            # نحاول إرسال الفيديو مباشرة
+            await client.copy_message(
+                chat_id=message.chat.id,
+                from_chat_id=ADMIN_CHANNEL,
+                message_id=int(v_id_str),
+                protect_content=True
+            )
+            # تسجيلها تلقائياً لضمان عدم ظهور الخطأ مستقبلاً
+            db_query("INSERT INTO episodes (v_id, title, ep_num, duration, quality) VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING", (v_id_str, "حلقة من الأرشيف", 0, "00:00", "HD"), commit=True)
+        except Exception as e:
+            logger.error(f"Old episode error: {e}")
+            await message.reply_text("❌ عذراً، هذه الحلقة غير متوفرة في قناة التخزين.")
 
 @app.on_callback_query(filters.regex(r"^watch_"))
 async def play(client, query):
