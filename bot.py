@@ -1,33 +1,16 @@
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ConversationHandler,
-    filters,
-)
-from config import BOT_TOKEN
+from telegram.ext import ApplicationBuilder
+from handlers import admin
 from database import init_db
-from handlers import admin, user
 
+# إنشاء قاعدة البيانات قبل تشغيل البوت
 init_db()
 
-app = Application.builder().token(BOT_TOKEN).build()
+BOT_TOKEN = "YOUR_BOT_TOKEN"  # غيره بالتوكن الحقيقي
 
-conv_handler = ConversationHandler(
-    entry_points=[MessageHandler(filters.VIDEO | filters.Document.VIDEO, admin.start_upload)],
-    states={
-        admin.POSTER: [MessageHandler(filters.PHOTO, admin.receive_poster)],
-        admin.TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin.receive_title)],
-        admin.EPISODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin.receive_episode)],
-        admin.QUALITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin.receive_quality)],
-    },
-    fallbacks=[]
-)
+app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-app.add_handler(conv_handler)
-app.add_handler(CommandHandler("start", user.start))
-app.add_handler(CallbackQueryHandler(user.watch_callback, pattern="^watch_"))
-app.add_handler(CallbackQueryHandler(user.like_callback, pattern="^like_"))
+# إضافة ConversationHandler
+app.add_handler(admin.admin_conversation_handler)
 
+# تشغيل البوت
 app.run_polling()
