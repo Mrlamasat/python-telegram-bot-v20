@@ -2,6 +2,7 @@ import logging
 import psycopg2
 import os
 import asyncio
+import glob
 from psycopg2.extras import RealDictCursor
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -22,7 +23,8 @@ TEST_CHANNEL = "@RamadanSeries26"
 SUB_CHANNEL = "@MoAlmohsen"
 INVITE_LINK = "https://t.me/+bU0La1OJyXowNDg0"
 
-app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=50)
+# إنشاء الكائن بـ اسم جلسة جديد تماماً لفك التعليق
+app = Client("mo_almohsen_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=20)
 
 # ==============================
 # نظام قاعدة البيانات
@@ -73,13 +75,8 @@ async def on_poster(client, message):
     state = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
     if not state or state['step'] != 'awaiting_poster': return
 
-    file_id = None
-    if message.photo:
-        file_id = message.photo.file_id
-    elif message.document and (message.document.mime_type or "").startswith("image/"):
-        file_id = message.document.file_id
-    else:
-        return await message.reply_text("❌ يرجى إرسال صورة صالحة (JPEG, PNG, WebP)")
+    file_id = message.photo.file_id if message.photo else (message.document.file_id if (message.document and "image" in (message.document.mime_type or "")) else None)
+    if not file_id: return await message.reply_text("❌ يرجى إرسال صورة صالحة")
 
     db_query("UPDATE temp_upload SET poster_id=%s, title=%s, step='awaiting_ep' WHERE chat_id=%s", (file_id, (message.caption or "حلقة جديدة"), message.chat.id), commit=True)
     await message.reply_text("🔢 أرسل رقم الحلقة")
@@ -98,7 +95,7 @@ async def on_num(client, message):
     db_query("DELETE FROM temp_upload WHERE chat_id=%s", (message.chat.id,), commit=True)
     
     link = f"https://t.me/{(await client.get_me()).username}?start={data['v_id']}"
-    cap = f"🎬 **{data['title']}**\n\n🔢 الحلقة: {message.text}\n⏱ المدة: {data['duration']}\n✨ الجودة: 720p"
+    cap = f"🎬 **{data['title']}**\n\n🔢 الحلقة: {message.text}\n⏱ المدة: {data['duration']}"
     await client.send_photo(TEST_CHANNEL, photo=data['poster_id'], caption=cap, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ فتح الحلقة", url=link)]]))
     await message.reply_text("✅ تم النشر بنجاح")
 
@@ -117,28 +114,18 @@ async def start(client, message):
                                     [InlineKeyboardButton("🔄 تحقق", url=f"https://t.me/{(await client.get_me()).username}?start={param}")]])
         return await message.reply_text("⚠️ اشترك أولاً لمشاهدة الحلقة.", reply_markup=btn)
     
-    if not param: return await message.reply_text("أهلاً بك يا محمد في بوت السينما 🎬")
+    if not param: return await message.reply_text(f"أهلاً بك يا {message.from_user.first_name} في بوت السينما 🎬")
     
     data = db_query("SELECT * FROM episodes WHERE v_id=%s", (param,), fetchone=True)
     
     if data:
-        cap = (f"🎬 **{data.get('title','حلقة جديدة')}**\n\n"
-               f"🔢 الحلقة: {data.get('ep_num', 0)}\n"
-               f"⏱ المدة: {data.get('duration', '00:00')}\n"
-               f"✨ الجودة: 720p\n"
-               f"👁 المشاهدات: {data.get('views', 0)}")
-        
+        cap = f"🎬 **{data['title']}**\n\n🔢 الحلقة: {data['ep_num']}\n⏱ المدة: {data['duration']}\n👁 المشاهدات: {data['views']}"
         keyboard = [[InlineKeyboardButton("▶️ مشاهدة الآن", callback_data=f"watch_{param}")]]
-        
-        try:
-            await message.reply_photo(photo=data['poster_id'], caption=cap, reply_markup=InlineKeyboardMarkup(keyboard))
-        except:
-            await message.reply_text(cap, reply_markup=InlineKeyboardMarkup(keyboard))
+        try: await message.reply_photo(photo=data['poster_id'], caption=cap, reply_markup=InlineKeyboardMarkup(keyboard))
+        except: await message.reply_text(cap, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        try:
-            await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(param), protect_content=True)
-        except:
-            await message.reply_text("❌ عذراً، لم أجد هذه الحلقة في الأرشيف.")
+        try: await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(param), protect_content=True)
+        except: await message.reply_text("❌ عذراً، لم أجد هذه الحلقة.")
 
 @app.on_callback_query(filters.regex(r"^watch_"))
 async def play(client, query):
@@ -147,24 +134,17 @@ async def play(client, query):
     try:
         await client.copy_message(query.message.chat.id, ADMIN_CHANNEL, int(v_id), protect_content=True)
         db_query("UPDATE episodes SET views = views + 1 WHERE v_id = %s", (v_id,), commit=True)
-    except:
-        await client.send_message(query.message.chat.id, "❌ فشل إرسال الفيديو.")
+    except: await client.send_message(query.message.chat.id, "❌ فشل إرسال الفيديو.")
 
 # ==============================
-# التشغيل المستقر
+# التشغيل النهائي (إجبار جلسة جديدة)
 # ==============================
 if __name__ == "__main__":
-    if os.path.exists("my_bot.session"):
-        try: os.remove("my_bot.session")
+    # مسح شامل لأي آثار لجلسات قديمة تسبب التعليق
+    for f in glob.glob("*.session*"):
+        try: os.remove(f)
         except: pass
-    init_db()
     
-    async def run_bot():
-        await app.start()
-        try: await app.join_chat(INVITE_LINK)
-        except: pass
-        logger.info("🚀 البوت يعمل الآن بكامل طاقته!")
-        from pyrogram.methods.utilities.idle import idle
-        await idle()
-
-    asyncio.run(run_bot())
+    init_db()
+    logger.info("🚀 جاري تشغيل الجلسة النقية...")
+    app.run()
