@@ -1,13 +1,13 @@
 import os
 
-# ===== إعدادات البوت =====
-API_ID = int(os.environ.get("API_ID", 0))
-API_HASH = os.environ.get("API_HASH", "")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+# إعدادات API و البوت
+API_ID = int(os.environ.get("API_ID",35405228))
+API_HASH = os.environ.get("API_HASH", "dacba460d875d963bbd4462c5eb554d6")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0")
 
-# القناة الخاصة بالرفع والقناة العامة للنشر
-CHANNEL_ID = int(os.environ.get("CHANNEL_ID", 0))
-PUBLIC_CHANNEL = os.environ.get("PUBLIC_CHANNEL", "")
+# القنوات
+CHANNEL_ID = int(os.environ.get("CHANNEL_ID", -1003547072209))          # القناة الخاصة بإضافة الحلقات
+PUBLIC_CHANNEL = os.environ.get("PUBLIC_CHANNEL", "RamadanSeries26")      # القناة العامة للنشر
 
-# بوت جديد (سيظهر في روابط start)
-BOT_USERNAME = os.environ.get("BOT_USERNAME", "")
+# يوزر البوت الجديد (لتحويل الحلقات القديمة)
+NEW_BOT_USERNAME = os.environ.get("NEW_BOT_USERNAME", "@Bottemo_bot")
