@@ -1,4 +1,6 @@
-"""Compatibility entrypoint for deployments that run `python /app/bot.py`."""
+"""Entrypoint used by Railway or any deployment that runs `python bot.py`."""
+
+from main import run_bot
 
 if __name__ == "__main__":
-    import main  # noqa: F401  (imports and runs the bot via main.py)
+    run_bot()
