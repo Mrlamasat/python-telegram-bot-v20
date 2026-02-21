@@ -20,9 +20,6 @@ ADMIN_CHANNEL = -1003547072209
 TEST_CHANNEL = "@RamadanSeries26"
 SUB_CHANNEL = "@MoAlmohsen"
 
-# ==============================
-# إنشاء كائن البوت (مرة واحدة فقط هنا)
-# ==============================
 app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=50)
 
 # ==============================
@@ -74,7 +71,7 @@ def init_db():
     """, commit=True)
 
 # ==============================
-# دالة إرسال الفيديو (المباشر)
+# دالة إرسال الفيديو
 # ==============================
 async def send_video_file(client, chat_id, v_id_str):
     try:
@@ -86,7 +83,7 @@ async def send_video_file(client, chat_id, v_id_str):
             db_query("INSERT INTO episodes (v_id, title, ep_num, duration, quality, views) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING", (v_id_str, "حلقة من الأرشيف", 0, "00:00", "HD", 1), commit=True)
     except Exception as e:
         logger.error(f"Error sending video {v_id_str}: {e}")
-        await client.send_message(chat_id, "❌ عذراً، هذه الحلقة غير متوفرة حالياً.")
+        await client.send_message(chat_id, "❌ عذراً، الحلقة غير متوفرة في التخزين.")
 
 # ==============================
 # نظام الرفع (للأدمن)
@@ -105,10 +102,10 @@ async def on_poster(client, message):
     state = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
     if not state or state['step'] != "awaiting_poster": return
     p_id = message.photo.file_id if message.photo else message.document.file_id
-    db_query("UPDATE temp_upload SET poster_id=%s, title=%s, step='awaiting_ep' WHERE chat_id=%s", (p_id, message.caption or "", message.chat.id), commit=True)
+    db_query("UPDATE temp_upload SET poster_id=%s, title=%s, step='awaiting_ep' WHERE chat_id=%s", (p_id, (message.caption or "بدون عنوان"), message.chat.id), commit=True)
     await message.reply_text("🔢 أرسل رقم الحلقة")
 
-@app.on_message(filters.chat(ADMIN_CHANNEL) & filters.text & ~filters.command(["start", "panel"]))
+@app.on_message(filters.chat(ADMIN_CHANNEL) & filters.text & ~filters.command(["start"]))
 async def on_num(client, message):
     state = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
     if not state or state['step'] != "awaiting_ep" or not message.text.isdigit(): return
@@ -126,32 +123,41 @@ async def check_sub(client, user_id):
     try:
         await client.get_chat_member(SUB_CHANNEL, user_id)
         return True
-    except UserNotParticipant:
-        return False
-    except:
-        return True
+    except UserNotParticipant: return False
+    except: return True
 
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
     user_id = message.from_user.id
-    if len(message.command) <= 1: return await message.reply_text("أهلاً بك في بوت السينما 🎬")
-    param = message.command[1]
+    param = message.command[1] if len(message.command) > 1 else ""
+    
     if not await check_sub(client, user_id):
         btn = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك هنا", url=f"https://t.me/{SUB_CHANNEL.replace('@','')}")], [InlineKeyboardButton("🔄 تحقق", url=f"https://t.me/{(await client.get_me()).username}?start={param}")]])
         return await message.reply_text("⚠️ اشترك أولاً لمشاهدة الحلقة.", reply_markup=btn)
+    
+    if not param: return await message.reply_text("أهلاً بك في بوت السينما 🎬")
     if not param.isdigit(): return await message.reply_text("❌ رابط غير صالح.")
+
     data = db_query("SELECT * FROM episodes WHERE v_id=%s", (param,), fetchone=True)
-    if data and data['poster_id']:
-        related = db_query("SELECT v_id, ep_num FROM episodes WHERE poster_id=%s ORDER BY ep_num ASC", (data['poster_id'],), fetchall=True)
-        keyboard = [[InlineKeyboardButton("▶️ مشاهدة الآن", callback_data=f"watch_{param}")]]
-        if related and len(related) > 1:
-            keyboard.append([InlineKeyboardButton("🎞 حلقات أخرى للمسلسل 🎞", callback_data="none")])
-            row = []
-            for ep in related:
-                row.append(InlineKeyboardButton(f"ح {ep['ep_num']}", url=f"https://t.me/{(await client.get_me()).username}?start={ep['v_id']}"))
-                if len(row) == 4: keyboard.append(row); row = []
-            if row: keyboard.append(row)
-        await message.reply_photo(photo=data['poster_id'], caption=f"🎬 **{data['title']}**\n🔢 الحلقة: {data['ep_num']}\n⏱ المدة: {data['duration']}\n👁 المشاهدات: {data['views']}", reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    # تحسين: إذا فشل إرسال البوستر لأي سبب، نرسل الفيديو مباشرة
+    if data and data.get('poster_id'):
+        try:
+            related = db_query("SELECT v_id, ep_num FROM episodes WHERE poster_id=%s ORDER BY ep_num ASC", (data['poster_id'],), fetchall=True)
+            keyboard = [[InlineKeyboardButton("▶️ مشاهدة الآن", callback_data=f"watch_{param}")]]
+            if related and len(related) > 1:
+                keyboard.append([InlineKeyboardButton("🎞 حلقات أخرى 🎞", callback_data="none")])
+                row = []
+                for ep in related:
+                    row.append(InlineKeyboardButton(f"ح {ep['ep_num']}", url=f"https://t.me/{(await client.get_me()).username}?start={ep['v_id']}"))
+                    if len(row) == 4: keyboard.append(row); row = []
+                if row: keyboard.append(row)
+            
+            cap = f"🎬 **{data.get('title', 'بدون عنوان')}**\n🔢 الحلقة: {data.get('ep_num', 0)}\n👁 المشاهدات: {data.get('views', 0)}"
+            await message.reply_photo(photo=data['poster_id'], caption=cap, reply_markup=InlineKeyboardMarkup(keyboard))
+        except Exception as e:
+            logger.error(f"Poster failed: {e}")
+            await send_video_file(client, message.chat.id, param)
     else:
         await send_video_file(client, message.chat.id, param)
 
@@ -161,9 +167,6 @@ async def play(client, query):
     await query.message.delete()
     await send_video_file(client, query.message.chat.id, v_id)
 
-# ==============================
-# التشغيل الرئيسي
-# ==============================
 if __name__ == "__main__":
     init_db()
     app.run()
