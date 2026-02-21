@@ -1,4 +1,5 @@
 import os
+import asyncio
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
@@ -11,12 +12,18 @@ TOKEN = os.getenv("BOT_TOKEN")
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("مرحباً! البوت يعمل 🎉")
 
-# إنشاء التطبيق
-app = ApplicationBuilder().token(TOKEN).build()
+# دالة لتشغيل البوت مع إعادة التشغيل التلقائي عند الخطأ
+async def main():
+    while True:
+        try:
+            app = ApplicationBuilder().token(TOKEN).build()
+            app.add_handler(CommandHandler("start", start))
+            print("🔹 البوت شغال الآن...")
+            await app.run_polling()
+        except Exception as e:
+            print(f"❌ خطأ: {e}")
+            print("⏳ إعادة التشغيل بعد 5 ثواني...")
+            await asyncio.sleep(5)
 
-# إضافة المعالجات
-app.add_handler(CommandHandler("start", start))
-
-# تشغيل البوت
 if __name__ == "__main__":
-    app.run_polling()
+    asyncio.run(main())
