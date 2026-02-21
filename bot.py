@@ -8,7 +8,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
 
 # ==============================
-# الإعدادات (استبدل القيم ببياناتك)
+# الإعدادات (تم تحديث قناة النشر)
 # ==============================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,9 +18,9 @@ API_HASH = "dacba460d875d963bbd4462c5eb554d6"
 BOT_TOKEN = "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0"
 DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
 
-OWNER_ID = 123456789  # ضع آيدي حسابك هنا
+OWNER_ID = 123456789  # ضع آيدي حسابك هنا (هام للتحكم)
 ADMIN_CHANNEL = -1003547072209  # آيدي قناة التخزين (المصدر)
-TEST_CHANNEL = "@RamadanSeries26" # يوزر قناة النشر العامة
+TEST_CHANNEL = "@RamadanSeries26" # يوزر قناة النشر الجديدة
 
 # ==============================
 # قاعدة البيانات
