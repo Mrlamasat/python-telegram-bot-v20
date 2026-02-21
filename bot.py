@@ -1,4 +1,4 @@
-"""Entrypoint used by Railway or any deployment that runs `python bot.py`."""
+"""Entrypoint used by deployments that run `python /app/bot.py`."""
 
 from main import run_bot
 
