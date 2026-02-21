@@ -1,2 +1,5 @@
-python-dotenv
-python-telegram-bot==20.3
+# requirements.txt لبوت تيليجرام على Railway
+
+python-telegram-bot==20.3       # مكتبة بوت تيليجرام الرسمية
+aiohttp==3.8.4                  # للتعامل مع الشبكات بشكل غير متزامن (ضروري للبوتات الحديثة)
+python-dotenv==1.0.0            # لتحميل متغيرات البيئة من ملف .env (مثل التوكن)
