@@ -8,7 +8,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # هنا تبني التطبيق باستخدام توكن البوت
 if __name__ == "__main__":
-    app = ApplicationBuilder().token("YOUR_BOT_TOKEN").build()
+    app = ApplicationBuilder().token("8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0").build()
 
     # إضافة الهاندلر لأمر /start
     app.add_handler(CommandHandler("start", start))
