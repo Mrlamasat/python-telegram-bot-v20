@@ -3,48 +3,49 @@ import psycopg2
 import logging
 import io
 from PIL import Image
-from pyrogram import Client, filters, enums
+from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# الإعدادات
+# إعدادات التسجيل
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-# الرابط الذي ربطته في Railway سيتم قراءته هنا
 DATABASE_URL = os.environ.get("DATABASE_URL")
-
-ADMIN_CHANNEL = -1003547072209 
-TEST_CHANNEL = "@khofkrjrnrqnrnta" 
 
 app = Client("CinemaBot_Postgres", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- إدارة قاعدة البيانات (PostgreSQL) ---
+# --- إدارة قاعدة البيانات (المحسنة لـ PostgreSQL) ---
 def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
-    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-    cursor = conn.cursor()
-    cursor.execute(query, params)
+    conn = None
     res = None
-    if fetchone: res = cursor.fetchone()
-    if fetchall: res = cursor.fetchall()
-    if commit: conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        if fetchone:
+            res = cursor.fetchone()
+        elif fetchall:
+            res = cursor.fetchall()
+        if commit:
+            conn.commit()
+        cursor.close()
+    except Exception as e:
+        logger.error(f"❌ Database Error: {e}")
+    finally:
+        if conn:
+            conn.close()
     return res
 
 def init_db():
-    # إنشاء الجداول تلقائياً (ستختفي رسالة No Tables بعدها)
-    db_query('''CREATE TABLE IF NOT EXISTS episodes 
-                (v_id TEXT PRIMARY KEY, poster_id TEXT, title TEXT, 
-                 ep_num INTEGER, duration TEXT, quality TEXT)''', commit=True)
-    db_query('''CREATE TABLE IF NOT EXISTS temp_upload 
-                (chat_id BIGINT PRIMARY KEY, v_id TEXT, poster_id TEXT, 
-                 title TEXT, ep_num INTEGER, duration TEXT, step TEXT)''', commit=True)
+    # إنشاء الجداول باستخدام نصوص واضحة
+    db_query('CREATE TABLE IF NOT EXISTS episodes (v_id TEXT PRIMARY KEY, poster_id TEXT, title TEXT, ep_num INTEGER, duration TEXT, quality TEXT)', commit=True)
+    db_query('CREATE TABLE IF NOT EXISTS temp_upload (chat_id BIGINT PRIMARY KEY, v_id TEXT, poster_id TEXT, title TEXT, ep_num INTEGER, duration TEXT, step TEXT)', commit=True)
     logger.info("✅ Database tables are ready!")
 
-# --- دالة عرض الحلقة مع نظام الأزرار المتسلسل ---
+# --- دالة عرض الحلقة مع نظام الأزرار ---
 async def send_episode_details(client, chat_id, v_id):
     ep = db_query("SELECT poster_id, title, ep_num, duration, quality FROM episodes WHERE v_id=%s", (v_id,), fetchone=True)
     if not ep:
@@ -53,7 +54,6 @@ async def send_episode_details(client, chat_id, v_id):
     poster_id, title, ep_num, duration, quality = ep
     try:
         await client.copy_message(chat_id, ADMIN_CHANNEL, int(v_id), protect_content=True)
-        # جلب الحلقات المتصلة بنفس البوستر
         all_eps = db_query("SELECT v_id, ep_num FROM episodes WHERE poster_id=%s ORDER BY ep_num ASC", (poster_id,), fetchall=True)
         
         buttons = []
@@ -70,7 +70,7 @@ async def send_episode_details(client, chat_id, v_id):
     except Exception as e:
         logger.error(f"Error: {e}")
 
-# --- معالجة الحركات والرفع ---
+# --- معالجة الحركات والبداية ---
 @app.on_callback_query(filters.regex(r"^go_"))
 async def on_navigate(client, query):
     v_id = query.data.split("_")[1]
@@ -82,9 +82,12 @@ async def on_start(client, message):
     if len(message.command) > 1:
         await send_episode_details(client, message.chat.id, message.command[1])
     else:
-        await message.reply_text("البوت يعمل بنجاح مع PostgreSQL!")
+        await message.reply_text(f"أهلاً بك يا محمد! البوت يعمل الآن بنظام PostgreSQL.")
 
-# --- خطوات الرفع الذكية ---
+# --- خطوات الرفع (Admin) ---
+ADMIN_CHANNEL = -1003547072209 
+TEST_CHANNEL = "@khofkrjrnrqnrnta" 
+
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document) & ~filters.photo & ~filters.sticker)
 async def on_video(client, message):
     v_id = str(message.id)
