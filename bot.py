@@ -1,25 +1,16 @@
-import os
 from telegram.ext import ApplicationBuilder, CommandHandler
+from handlers.admin import start, add, list_cmd
+import os
 
-from handlers import admin  # استيراد دوال الأوامر
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# ============================
-# Environment Variables
-# ============================
-BOT_TOKEN = os.environ.get("BOT_TOKEN")           # توكن البوت
-CHANNEL_ID = os.environ.get("CHANNEL_ID")         # معرف القناة @اسم_القناة أو رقم معرف القناة
-DATABASE_FILE = os.environ.get("DATABASE_FILE", "episodes.db")  # اسم قاعدة البيانات
-
-if not BOT_TOKEN:
-    raise Exception("ضع BOT_TOKEN في Environment Variables")
-
-# إنشاء التطبيق
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 
 # تسجيل الأوامر
-app.add_handler(CommandHandler("start", admin.start))
-app.add_handler(CommandHandler("add", admin.add))
-app.add_handler(CommandHandler("list", admin.list_all))
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("add", add))
+app.add_handler(CommandHandler("list", list_cmd))
 
-print("البوت بدأ العمل...")
+print("البوت يعمل الآن...")
+
 app.run_polling()
