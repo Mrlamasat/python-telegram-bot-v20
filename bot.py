@@ -1,15 +1,17 @@
-from telegram.ext import ApplicationBuilder
-from handlers import admin
+from handlers import admin, user
 from database import init_db
 
-# إنشاء قاعدة البيانات قبل تشغيل البوت
+# تهيئة قاعدة البيانات قبل تشغيل البوت
 init_db()
 
-BOT_TOKEN = "YOUR_BOT_TOKEN"  # غيره بالتوكن الحقيقي
+from telegram.ext import ApplicationBuilder
+
+# إعدادات البوت
+BOT_TOKEN = "YOUR_BOT_TOKEN"
 
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-# إضافة ConversationHandler
+# إضافة Handlers
 app.add_handler(admin.admin_conversation_handler)
 
 # تشغيل البوت
