@@ -1,8 +1,1 @@
-diff --git a/requirements.txt b/requirements.txt
-index 7a0aacefb7cb6bce8417918d98839e48f80a20a6..b24da83934932a846b37eba845975c3e8f74c624 100644
---- a/requirements.txt
-+++ b/requirements.txt
-@@ -1 +1,2 @@
--python-telegram-bot==20.5
-+pyrogram==2.0.106
-+tgcrypto==1.2.5
+python-telegram-bot==20.5
