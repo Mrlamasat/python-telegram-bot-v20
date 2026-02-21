@@ -1,6 +1,5 @@
-import os
-import psycopg2
 import logging
+import psycopg2
 from psycopg2.extras import RealDictCursor
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -18,7 +17,7 @@ BOT_TOKEN = "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0"
 DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
 
 OWNER_ID = 123456789
-ADMIN_CHANNEL = -1003547072209
+ADMIN_CHANNEL = -1003547072209  # القناة الخاصة لجميع الحلقات
 TEST_CHANNEL = "@RamadanSeries26"
 SUB_CHANNEL = "@MoAlmohsen"
 
@@ -92,7 +91,7 @@ async def check_sub(client, user_id):
 app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=50)
 
 # ==============================
-# نظام رفع الحلقات (الأدمن)
+# نظام رفع الحلقات للأدمن
 # ==============================
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document))
 async def on_video(client, message):
@@ -143,50 +142,25 @@ async def on_num(client, message):
     await message.reply_text("✅ تم النشر بنجاح")
 
 # ==============================
-# دالة مساعدة لإرسال الحلقة (جديدة وقديمة)
+# دالة مساعدة لإرسال أي حلقة (قديمة أو جديدة)
 # ==============================
 async def send_episode(client, chat_id, v_id_str):
-    data = db_query("SELECT * FROM episodes WHERE v_id=%s", (v_id_str,), fetchone=True)
+    try:
+        # نجرب دائمًا نسخ الحلقة من القناة الخاصة
+        await client.copy_message(chat_id, ADMIN_CHANNEL, int(v_id_str), protect_content=True)
 
-    if data:
-        if data['poster_id']:
-            others = db_query(
-                "SELECT v_id, ep_num FROM episodes WHERE title=%s AND v_id!=%s ORDER BY ep_num ASC",
-                (data['title'], v_id_str), fetchall=True
-            )
-
-            keyboard = [[InlineKeyboardButton("▶️ مشاهدة الآن", callback_data=f"watch_{v_id_str}")]]
-            if others:
-                keyboard.append([InlineKeyboardButton("🎞 حلقات أخرى للمسلسل 🎞", callback_data="none")])
-                row = []
-                for ep in others:
-                    row.append(InlineKeyboardButton(f"ح {ep['ep_num']}", url=f"https://t.me/{(await client.get_me()).username}?start={ep['v_id']}"))
-                    if len(row) == 4:
-                        keyboard.append(row)
-                        row = []
-                if row:
-                    keyboard.append(row)
-
-            caption = f"🎬 **{data['title']}**\n\n🔢 **الحلقة:** {data['ep_num']}\n⏱ **المدة:** {data['duration']}\n👁 المشاهدات: {data['views']}"
-            await client.send_photo(chat_id, photo=data['poster_id'], caption=caption, reply_markup=InlineKeyboardMarkup(keyboard))
-        else:
-            try:
-                await client.copy_message(chat_id, ADMIN_CHANNEL, int(v_id_str), protect_content=True)
-                db_query("UPDATE episodes SET views = views + 1 WHERE v_id=%s", (v_id_str,), commit=True)
-            except Exception as e:
-                logger.error(f"Error copying episode from admin: {e}")
-                await client.send_message(chat_id, "❌ عذراً، هذه الحلقة غير متوفرة.")
-    else:
-        try:
-            await client.copy_message(chat_id, ADMIN_CHANNEL, int(v_id_str), protect_content=True)
+        # تسجيل الحلقة تلقائيًا إذا لم تكن موجودة
+        existing = db_query("SELECT v_id FROM episodes WHERE v_id=%s", (v_id_str,), fetchone=True)
+        if not existing:
             db_query(
                 "INSERT INTO episodes (v_id, title, ep_num, duration, quality) "
-                "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (v_id) DO NOTHING",
+                "VALUES (%s, %s, %s, %s, %s)",
                 (v_id_str, "حلقة من الأرشيف", 0, "00:00", "HD"), commit=True
             )
-        except Exception as e:
-            logger.error(f"Old episode error: {e}")
-            await client.send_message(chat_id, "❌ عذراً، هذه الحلقة غير متوفرة.")
+
+    except Exception as e:
+        logger.error(f"Error sending episode {v_id_str}: {e}")
+        await client.send_message(chat_id, "❌ عذراً، هذه الحلقة غير متوفرة.")
 
 # ==============================
 # أمر /start
@@ -223,7 +197,7 @@ async def play(client, query):
         await client.copy_message(query.message.chat.id, ADMIN_CHANNEL, int(v_id), protect_content=True)
         db_query("UPDATE episodes SET views = views + 1 WHERE v_id=%s", (v_id,), commit=True)
     except Exception as e:
-        logger.error(f"Error playing video: {e}")
+        logger.error(f"Error playing video {v_id}: {e}")
         await query.answer("❌ فشل تشغيل الفيديو.", show_alert=True)
 
 # ==============================
