@@ -20,7 +20,7 @@ DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.pr
 
 OWNER_ID = 123456789  # ضع آيدي حسابك هنا
 ADMIN_CHANNEL = -1003547072209  # آيدي قناة التخزين (المصدر)
-TEST_CHANNEL = "@khofkrjrnrqnrnta" # يوزر قناة النشر العامة
+TEST_CHANNEL = "@RamadanSeries26" # يوزر قناة النشر العامة
 
 # ==============================
 # قاعدة البيانات
