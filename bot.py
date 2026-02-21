@@ -25,13 +25,10 @@ app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, wo
 # ==============================
 # قاعدة البيانات
 # ==============================
-def get_conn():
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor, sslmode="require")
-
 def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
     conn = None
     try:
-        conn = get_conn()
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor, sslmode="require")
         cur = conn.cursor()
         cur.execute(query, params)
         result = None
@@ -47,43 +44,24 @@ def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
         if conn: conn.close()
 
 def init_db():
-    db_query("""
-        CREATE TABLE IF NOT EXISTS episodes (
-            v_id TEXT PRIMARY KEY,
-            poster_id TEXT,
-            title TEXT,
-            ep_num INTEGER,
-            duration TEXT,
-            quality TEXT,
-            views INTEGER DEFAULT 0
-        )
-    """, commit=True)
-    db_query("""
-        CREATE TABLE IF NOT EXISTS temp_upload (
-            chat_id BIGINT PRIMARY KEY,
-            v_id TEXT,
-            poster_id TEXT,
-            title TEXT,
-            ep_num INTEGER,
-            duration TEXT,
-            step TEXT
-        )
-    """, commit=True)
+    db_query("""CREATE TABLE IF NOT EXISTS episodes (
+        v_id TEXT PRIMARY KEY, poster_id TEXT, title TEXT, 
+        ep_num INTEGER, duration TEXT, quality TEXT, views INTEGER DEFAULT 0)""", commit=True)
+    db_query("""CREATE TABLE IF NOT EXISTS temp_upload (
+        chat_id BIGINT PRIMARY KEY, v_id TEXT, poster_id TEXT, 
+        title TEXT, ep_num INTEGER, duration TEXT, step TEXT)""", commit=True)
 
 # ==============================
-# دالة إرسال الفيديو
+# إرسال الفيديو (المباشر)
 # ==============================
 async def send_video_file(client, chat_id, v_id_str):
     try:
         await client.copy_message(chat_id, ADMIN_CHANNEL, int(v_id_str), protect_content=True)
-        check = db_query("SELECT v_id FROM episodes WHERE v_id=%s", (v_id_str,), fetchone=True)
-        if check:
-            db_query("UPDATE episodes SET views = views + 1 WHERE v_id=%s", (v_id_str,), commit=True)
-        else:
-            db_query("INSERT INTO episodes (v_id, title, ep_num, duration, quality, views) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING", (v_id_str, "حلقة من الأرشيف", 0, "00:00", "HD", 1), commit=True)
+        db_query("""INSERT INTO episodes (v_id, title, views) VALUES (%s, 'حلقة أرشيفية', 1) 
+                    ON CONFLICT (v_id) DO UPDATE SET views = episodes.views + 1""", (v_id_str,), commit=True)
     except Exception as e:
-        logger.error(f"Error sending video {v_id_str}: {e}")
-        await client.send_message(chat_id, "❌ عذراً، الحلقة غير متوفرة في التخزين.")
+        logger.error(f"Error: {e}")
+        await client.send_message(chat_id, "❌ عذراً، الحلقة غير متوفرة.")
 
 # ==============================
 # نظام الرفع (للأدمن)
@@ -92,72 +70,84 @@ async def send_video_file(client, chat_id, v_id_str):
 async def on_video(client, message):
     if message.document and "video" not in (message.document.mime_type or ""): return
     v_id = str(message.id)
-    duration_sec = message.video.duration if message.video else getattr(message.document, "duration", 0)
-    duration = f"{duration_sec // 60}:{duration_sec % 60:02d}"
-    db_query("INSERT INTO temp_upload (chat_id, v_id, duration, step) VALUES (%s, %s, %s, %s) ON CONFLICT (chat_id) DO UPDATE SET v_id=EXCLUDED.v_id, step='awaiting_poster'", (message.chat.id, v_id, duration, "awaiting_poster"), commit=True)
-    await message.reply_text("✅ استلمت الفيديو.. أرسل البوستر")
+    sec = message.video.duration if message.video else getattr(message.document, "duration", 0)
+    duration = f"{sec // 60}:{sec % 60:02d}"
+    db_query("INSERT INTO temp_upload (chat_id, v_id, duration, step) VALUES (%s, %s, %s, 'awaiting_poster') ON CONFLICT (chat_id) DO UPDATE SET v_id=EXCLUDED.v_id, step='awaiting_poster'", (message.chat.id, v_id, duration), commit=True)
+    await message.reply_text("✅ استلمت الفيديو.. أرسل البوستر الآن")
 
-@app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.photo | filters.document | filters.sticker))
+@app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.photo | filters.document))
 async def on_poster(client, message):
     state = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
     if not state or state['step'] != "awaiting_poster": return
     p_id = message.photo.file_id if message.photo else message.document.file_id
-    db_query("UPDATE temp_upload SET poster_id=%s, title=%s, step='awaiting_ep' WHERE chat_id=%s", (p_id, (message.caption or "بدون عنوان"), message.chat.id), commit=True)
-    await message.reply_text("🔢 أرسل رقم الحلقة")
+    db_query("UPDATE temp_upload SET poster_id=%s, title=%s, step='awaiting_ep' WHERE chat_id=%s", (p_id, (message.caption or "حلقة جديدة"), message.chat.id), commit=True)
+    await message.reply_text("🔢 أرسل رقم الحلقة الآن")
 
-@app.on_message(filters.chat(ADMIN_CHANNEL) & filters.text & ~filters.command(["start"]))
+@app.on_message(filters.chat(ADMIN_CHANNEL) & filters.text & ~filters.command("start"))
 async def on_num(client, message):
     state = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
     if not state or state['step'] != "awaiting_ep" or not message.text.isdigit(): return
     data = db_query("SELECT * FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
-    db_query("INSERT INTO episodes (v_id, poster_id, title, ep_num, duration, quality) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (v_id) DO UPDATE SET poster_id=EXCLUDED.poster_id, title=EXCLUDED.title, ep_num=EXCLUDED.ep_num", (data['v_id'], data['poster_id'], data['title'], int(message.text), data['duration'], "HD"), commit=True)
+    
+    # حفظ البيانات كاملة
+    db_query("""INSERT INTO episodes (v_id, poster_id, title, ep_num, duration, quality, views) 
+                VALUES (%s, %s, %s, %s, %s, '720p', 0) 
+                ON CONFLICT (v_id) DO UPDATE SET poster_id=EXCLUDED.poster_id, title=EXCLUDED.title, ep_num=EXCLUDED.ep_num""", 
+                (data['v_id'], data['poster_id'], data['title'], int(message.text), data['duration']), commit=True)
+    
     db_query("DELETE FROM temp_upload WHERE chat_id=%s", (message.chat.id,), commit=True)
+    
+    # رسالة النشر في القناة بالتنسيق الجديد
     link = f"https://t.me/{(await client.get_me()).username}?start={data['v_id']}"
-    await client.send_photo(TEST_CHANNEL, photo=data['poster_id'], caption=f"🎬 **{data['title']}**\n🔢 الحلقة: {message.text}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ فتح الحلقة", url=link)]]))
-    await message.reply_text("✅ تم النشر")
+    caption = (f"🎬 **{data['title']}**\n\n"
+               f"🔢 الحلقة: {message.text}\n"
+               f"⏱ المدة: {data['duration']}\n"
+               f"✨ الجودة: 720p")
+    
+    await client.send_photo(TEST_CHANNEL, photo=data['poster_id'], caption=caption, 
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ فتح الحلقة", url=link)]]))
+    await message.reply_text("✅ تم النشر بنجاح")
 
 # ==============================
 # نظام العرض والاشتراك
 # ==============================
-async def check_sub(client, user_id):
-    try:
-        await client.get_chat_member(SUB_CHANNEL, user_id)
-        return True
-    except UserNotParticipant: return False
-    except: return True
-
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
     user_id = message.from_user.id
     param = message.command[1] if len(message.command) > 1 else ""
     
-    if not await check_sub(client, user_id):
-        btn = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك هنا", url=f"https://t.me/{SUB_CHANNEL.replace('@','')}")], [InlineKeyboardButton("🔄 تحقق", url=f"https://t.me/{(await client.get_me()).username}?start={param}")]])
+    # التحقق من الاشتراك
+    try:
+        await client.get_chat_member(SUB_CHANNEL, user_id)
+    except:
+        btn = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك هنا", url=f"https://t.me/{SUB_CHANNEL.replace('@','')}")], 
+                                    [InlineKeyboardButton("🔄 تحقق", url=f"https://t.me/{(await client.get_me()).username}?start={param}")]])
         return await message.reply_text("⚠️ اشترك أولاً لمشاهدة الحلقة.", reply_markup=btn)
     
     if not param: return await message.reply_text("أهلاً بك في بوت السينما 🎬")
-    if not param.isdigit(): return await message.reply_text("❌ رابط غير صالح.")
-
+    
     data = db_query("SELECT * FROM episodes WHERE v_id=%s", (param,), fetchone=True)
     
-    # تحسين: إذا فشل إرسال البوستر لأي سبب، نرسل الفيديو مباشرة
     if data and data.get('poster_id'):
-        try:
-            related = db_query("SELECT v_id, ep_num FROM episodes WHERE poster_id=%s ORDER BY ep_num ASC", (data['poster_id'],), fetchall=True)
-            keyboard = [[InlineKeyboardButton("▶️ مشاهدة الآن", callback_data=f"watch_{param}")]]
-            if related and len(related) > 1:
-                keyboard.append([InlineKeyboardButton("🎞 حلقات أخرى 🎞", callback_data="none")])
-                row = []
-                for ep in related:
-                    row.append(InlineKeyboardButton(f"ح {ep['ep_num']}", url=f"https://t.me/{(await client.get_me()).username}?start={ep['v_id']}"))
-                    if len(row) == 4: keyboard.append(row); row = []
-                if row: keyboard.append(row)
-            
-            cap = f"🎬 **{data.get('title', 'بدون عنوان')}**\n🔢 الحلقة: {data.get('ep_num', 0)}\n👁 المشاهدات: {data.get('views', 0)}"
-            await message.reply_photo(photo=data['poster_id'], caption=cap, reply_markup=InlineKeyboardMarkup(keyboard))
-        except Exception as e:
-            logger.error(f"Poster failed: {e}")
-            await send_video_file(client, message.chat.id, param)
+        # التنسيق الكامل لرسالة العرض للمستخدم
+        cap = (f"🎬 **{data.get('title','حلقة جديدة')}**\n\n"
+               f"🔢 الحلقة: {data.get('ep_num', 0)}\n"
+               f"⏱ المدة: {data.get('duration', 'غير محدد')}\n"
+               f"✨ الجودة: {data.get('quality', '720p')}\n"
+               f"👁 المشاهدات: {data.get('views', 0)}")
+        
+        keyboard = [[InlineKeyboardButton("▶️ مشاهدة الآن", callback_data=f"watch_{param}")]]
+        # إضافة أزرار الحلقات الأخرى إن وجدت
+        related = db_query("SELECT v_id, ep_num FROM episodes WHERE poster_id=%s ORDER BY ep_num ASC", (data['poster_id'],), fetchall=True)
+        if related and len(related) > 1:
+            keyboard.append([InlineKeyboardButton("🎞 حلقات أخرى 🎞", callback_data="none")])
+            row = []
+            for ep in related:
+                row.append(InlineKeyboardButton(f"ح {ep['ep_num']}", url=f"https://t.me/{(await client.get_me()).username}?start={ep['v_id']}"))
+                if len(row) == 4: keyboard.append(row); row = []
+            if row: keyboard.append(row)
+
+        await message.reply_photo(photo=data['poster_id'], caption=cap, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         await send_video_file(client, message.chat.id, param)
 
