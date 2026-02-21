@@ -16,7 +16,7 @@ API_HASH = "dacba460d875d963bbd4462c5eb554d6"
 BOT_TOKEN = "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0"
 DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
 
-OWNER_ID = 123456789 # ضع آيدي حسابك هنا
+OWNER_ID = 123456789  # آيدي حسابك
 ADMIN_CHANNEL = -1003547072209 
 TEST_CHANNEL = "@RamadanSeries26"
 SUB_CHANNEL = "@MoAlmohsen"
@@ -70,35 +70,32 @@ def init_db():
     """, commit=True)
 
 # ==============================
-# الاشتراك الإجباري
-# ==============================
-async def check_sub(client, user_id):
-    try:
-        await client.get_chat_member(SUB_CHANNEL, user_id)
-        return True
-    except UserNotParticipant:
-        return False
-    except:
-        return True
-
-# ==============================
-# إنشاء البوت
-# ==============================
-app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=50)
-
-# ==============================
-# دالة إرسال الفيديو (المباشر)
+# دالة إرسال الفيديو (المباشر) - مع تصحيح خطأ الـ UPDATE
 # ==============================
 async def send_video_file(client, chat_id, v_id_str):
     try:
+        # إرسال الفيديو من القناة الخاصة
         await client.copy_message(chat_id, ADMIN_CHANNEL, int(v_id_str), protect_content=True)
-        db_query("UPDATE episodes SET views = views + 1 WHERE v_id=%s", (v_id_str,), commit=True)
+        
+        # التحقق من وجود السجل في قاعدة البيانات
+        check = db_query("SELECT v_id FROM episodes WHERE v_id=%s", (v_id_str,), fetchone=True)
+        
+        if check:
+            # تحديث المشاهدات إذا كان السجل موجوداً
+            db_query("UPDATE episodes SET views = views + 1 WHERE v_id=%s", (v_id_str,), commit=True)
+        else:
+            # إنشاء سجل جديد للحلقات القديمة لضمان عدم تكرار الخطأ
+            db_query(
+                "INSERT INTO episodes (v_id, title, ep_num, duration, quality, views) "
+                "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                (v_id_str, "حلقة من الأرشيف", 0, "00:00", "HD", 1), commit=True
+            )
     except Exception as e:
-        logger.error(f"Error sending video: {e}")
-        await client.send_message(chat_id, "❌ عذراً، الفيديو غير متوفر في قناة التخزين.")
+        logger.error(f"Error sending video {v_id_str}: {e}")
+        await client.send_message(chat_id, "❌ عذراً، هذه الحلقة غير متوفرة حالياً في قناة التخزين.")
 
 # ==============================
-# نظام الرفع (للأدمن فقط في القناة الخاصة)
+# نظام الرفع (للأدمن)
 # ==============================
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document))
 async def on_video(client, message):
@@ -131,8 +128,17 @@ async def on_num(client, message):
     await message.reply_text("✅ تم النشر")
 
 # ==============================
-# نظام العرض (للمستخدمين)
+# نظام العرض والاشتراك
 # ==============================
+async def check_sub(client, user_id):
+    try:
+        await client.get_chat_member(SUB_CHANNEL, user_id)
+        return True
+    except UserNotParticipant:
+        return False
+    except:
+        return True
+
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
     user_id = message.from_user.id
@@ -143,27 +149,25 @@ async def start(client, message):
         btn = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك هنا", url=f"https://t.me/{SUB_CHANNEL.replace('@','')}")], [InlineKeyboardButton("🔄 تحقق", url=f"https://t.me/{(await client.get_me()).username}?start={param}")]])
         return await message.reply_text("⚠️ اشترك أولاً لمشاهدة الحلقة.", reply_markup=btn)
 
-    if not param.isdigit(): return await message.reply_text("❌ رابط خطأ.")
+    if not param.isdigit(): return await message.reply_text("❌ رابط غير صالح.")
 
     data = db_query("SELECT * FROM episodes WHERE v_id=%s", (param,), fetchone=True)
     
     if data and data['poster_id']:
-        # ربط الحلقات عبر نفس البوستر
         related = db_query("SELECT v_id, ep_num FROM episodes WHERE poster_id=%s ORDER BY ep_num ASC", (data['poster_id'],), fetchall=True)
         keyboard = [[InlineKeyboardButton("▶️ مشاهدة الآن", callback_data=f"watch_{param}")]]
         
         if related and len(related) > 1:
-            keyboard.append([InlineKeyboardButton("🎞 حلقات أخرى 🎞", callback_data="none")])
+            keyboard.append([InlineKeyboardButton("🎞 حلقات أخرى للمسلسل 🎞", callback_data="none")])
             row = []
             for ep in related:
                 row.append(InlineKeyboardButton(f"ح {ep['ep_num']}", url=f"https://t.me/{(await client.get_me()).username}?start={ep['v_id']}"))
                 if len(row) == 4: keyboard.append(row); row = []
             if row: keyboard.append(row)
 
-        caption = f"🎬 **{data['title']}**\n\n🔢 الحلقة: {data['ep_num']}\n⏱ المدة: {data['duration']}\n👁 المشاهدات: {data['views']}"
-        await message.reply_photo(photo=data['poster_id'], caption=caption, reply_markup=InlineKeyboardMarkup(keyboard))
+        await message.reply_photo(photo=data['poster_id'], caption=f"🎬 **{data['title']}**\n🔢 الحلقة: {data['ep_num']}\n⏱ المدة: {data['duration']}\n👁 المشاهدات: {data['views']}", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        # جلب الحلقات القديمة مباشرة
+        # جلب مباشر للحلقات التي لا تملك بيانات كاملة
         await send_video_file(client, message.chat.id, param)
 
 @app.on_callback_query(filters.regex(r"^watch_"))
@@ -171,6 +175,8 @@ async def play(client, query):
     v_id = query.data.split("_")[1]
     await query.message.delete()
     await send_video_file(client, query.message.chat.id, v_id)
+
+app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=50)
 
 if __name__ == "__main__":
     init_db()
