@@ -31,57 +31,71 @@ def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
     conn.close()
     return res
 
-# دالة لإنشاء الجداول إذا لم تكن موجودة
-def init_db():
-    db_query('''CREATE TABLE IF NOT EXISTS episodes 
-                (v_id TEXT PRIMARY KEY, poster_id TEXT, title TEXT, 
-                 ep_num INTEGER, duration TEXT, quality TEXT)''', commit=True)
-    db_query('''CREATE TABLE IF NOT EXISTS temp_upload 
-                (chat_id INTEGER PRIMARY KEY, v_id TEXT, poster_id TEXT, 
-                 title TEXT, ep_num INTEGER, duration TEXT, step TEXT)''', commit=True)
-
 # --- دالة عرض الحلقة مع أزرار الحلقات الأخرى ---
 async def send_episode_details(client, chat_id, v_id):
+    # 1. جلب بيانات الحلقة الحالية
     ep = db_query("SELECT poster_id, title, ep_num, duration, quality FROM episodes WHERE v_id=?", (v_id,), fetchone=True)
+    
     if not ep:
         return await client.send_message(chat_id, "❌ عذراً، هذه الحلقة غير موجودة حالياً.")
 
     poster_id, title, ep_num, duration, quality = ep
+
     try:
+        # 2. إرسال الفيديو أولاً (بوضع الحماية لمنع التوجيه)
         await client.copy_message(chat_id, ADMIN_CHANNEL, int(v_id), protect_content=True)
+
+        # 3. جلب كافة الحلقات التي لها نفس البوستر للترتيب
         all_eps = db_query("SELECT v_id, ep_num FROM episodes WHERE poster_id=? ORDER BY ep_num ASC", (poster_id,), fetchall=True)
-        
+
+        # 4. بناء لوحة الأزرار
         buttons = []
         row = []
         for vid, num in all_eps:
+            # تمييز الحلقة الحالية بنجمة
             label = f"⭐ {num}" if str(vid) == str(v_id) else f"{num}"
             row.append(InlineKeyboardButton(label, callback_data=f"go_{vid}"))
+            
+            # كل 4 أزرار في سطر واحد
             if len(row) == 4:
                 buttons.append(row)
                 row = []
         if row: buttons.append(row)
 
+        # 5. تنسيق الرسالة النصية أسفل الفيديو
         header = f"🎬 **{title}**\n" if title and title.strip() else ""
-        caption = f"{header}📦 **حلقة رقم:** {ep_num}\n⏱ **المده:** {duration}\n✨ **الجودة:** {quality}\n\n📖 **شاهد باقي الحلقات:**"
+        caption = (
+            f"{header}"
+            f"📦 **حلقة رقم:** {ep_num}\n"
+            f"⏱ **المده:** {duration}\n"
+            f"✨ **الجودة:** {quality}\n\n"
+            f"📖 **شاهد باقي الحلقات:**"
+        )
+
         await client.send_message(chat_id, caption, reply_markup=InlineKeyboardMarkup(buttons))
+
     except Exception as e:
         logger.error(f"Error sending episode: {e}")
+        await client.send_message(chat_id, "⚠️ حدث خطأ أثناء عرض الحلقة.")
 
-# --- معالجة التنقل والبداية ---
+# --- معالجة التنقل بين الحلقات (Callback Query) ---
 @app.on_callback_query(filters.regex(r"^go_"))
 async def on_navigate(client, query):
     v_id = query.data.split("_")[1]
+    # حذف الرسالة القديمة لعرض الجديدة (يعطي شعور بالتنقل)
     await query.message.delete()
     await send_episode_details(client, query.from_user.id, v_id)
 
+# --- معالجة أمر البداية /start ---
 @app.on_message(filters.command("start") & filters.private)
 async def on_start(client, message):
     if len(message.command) > 1:
-        await send_episode_details(client, message.chat.id, message.command[1])
+        v_id = message.command[1]
+        await send_episode_details(client, message.chat.id, v_id)
     else:
-        await message.reply_text(f"أهلاً بك يا {message.from_user.first_name}")
+        await message.reply_text(f"أهلاً بك يا {message.from_user.first_name} في بوت المسلسلات.")
 
-# --- خطوات الرفع ---
+# --- خطوات الرفع (كما هي في الكود السابق) ---
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document) & ~filters.photo & ~filters.sticker)
 async def on_video(client, message):
     v_id = str(message.id)
@@ -139,7 +153,4 @@ async def on_quality(client, query):
 
     await query.message.edit_text(f"🚀 تم النشر بنجاح!")
 
-# تشغيل البوت مع ضمان إنشاء الجداول
-if __name__ == "__main__":
-    init_db()
-    app.run()
+app.run()
