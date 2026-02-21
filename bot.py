@@ -21,7 +21,7 @@ ADMIN_CHANNEL = -1003547072209
 PUBLIC_CHANNELS = ["@RamadanSeries26", "@MoAlmohsen"]
 SUB_CHANNEL = "@MoAlmohsen" 
 
-app = Client("mo_pro_v3", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=20)
+app = Client("mo_pro_v4", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=20)
 
 # ==============================
 # نظام قاعدة البيانات
@@ -76,35 +76,23 @@ async def on_poster(client, message):
 async def on_num(client, message):
     state = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
     if not state or state['step'] != "awaiting_ep" or not message.text.isdigit(): return
-    
     db_query("UPDATE temp_upload SET ep_num=%s, step='awaiting_quality' WHERE chat_id=%s", (int(message.text), message.chat.id), commit=True)
-    
-    # أزرار اختيار الجودة
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("1080p", callback_data="q_1080p"), InlineKeyboardButton("720p", callback_data="q_720p")],
-        [InlineKeyboardButton("480p", callback_data="q_480p"), InlineKeyboardButton("بجودة عالية", callback_data="q_High Quality")]
-    ])
-    await message.reply_text("🎬 اختر جودة الفيديو للنشر:", reply_markup=kb)
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("1080p", callback_data="q_1080p"), InlineKeyboardButton("720p", callback_data="q_720p")],[InlineKeyboardButton("480p", callback_data="q_480p"), InlineKeyboardButton("بجودة عالية", callback_data="q_HQ")]])
+    await message.reply_text("🎬 اختر الجودة:", reply_markup=kb)
 
 @app.on_callback_query(filters.regex(r"^q_"))
 async def set_quality_and_publish(client, query):
     quality = query.data.split("_")[1]
     data = db_query("SELECT * FROM temp_upload WHERE chat_id=%s", (query.message.chat.id,), fetchone=True)
     if not data: return
-    
-    # حفظ في قاعدة البيانات النهائية
     db_query("INSERT INTO episodes (v_id, poster_id, title, ep_num, duration, quality) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (v_id) DO UPDATE SET poster_id=EXCLUDED.poster_id, title=EXCLUDED.title, ep_num=EXCLUDED.ep_num, quality=EXCLUDED.quality", (data['v_id'], data['poster_id'], data['title'], data['ep_num'], data['duration'], quality), commit=True)
     db_query("DELETE FROM temp_upload WHERE chat_id=%s", (query.message.chat.id,), commit=True)
-    
     bot_user = (await client.get_me()).username
     link = f"https://t.me/{bot_user}?start={data['v_id']}"
-    # شكل المنشور في القناة مع زر الجودة
     cap = f"🎬 **{data['title']}**\n\n🔢 الحلقة: {data['ep_num']}\n⏱ المدة: {data['duration']}\n⚙️ الجودة: {quality}"
-    
-    for channel in PUBLIC_CHANNELS:
-        try: await client.send_photo(channel, photo=data['poster_id'], caption=cap, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الآن", url=link)]]))
+    for ch in PUBLIC_CHANNELS:
+        try: await client.send_photo(ch, photo=data['poster_id'], caption=cap, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الآن", url=link)]]))
         except: pass
-    
     await query.message.edit_text(f"✅ تم النشر بنجاح بجودة {quality}")
 
 # ==============================
@@ -114,38 +102,34 @@ async def set_quality_and_publish(client, query):
 async def start(client, message):
     user_id = message.from_user.id
     param = message.command[1] if len(message.command) > 1 else ""
-    
-    try: await client.get_chat_member(SUB_CHANNEL, user_id)
-    except:
-        btn = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك هنا", url=f"https://t.me/{SUB_CHANNEL.replace('@','')}")], 
-                                    [InlineKeyboardButton("🔄 تحقق", url=f"https://t.me/{(await client.get_me()).username}?start={param}")]])
-        return await message.reply_text("⚠️ اشترك أولاً لمشاهدة الحلقة.", reply_markup=btn)
-    
-    if not param: return await message.reply_text(f"أهلاً بك يا {message.from_user.first_name} في بوت السينما 🎬")
-    
-    data = db_query("SELECT * FROM episodes WHERE v_id=%s", (param,), fetchone=True)
-    
-    if data:
-        related_eps = db_query("SELECT v_id, ep_num FROM episodes WHERE poster_id=%s ORDER BY ep_num ASC", (data['poster_id'],), fetchall=True)
-        buttons = []
-        row = []
-        for ep in related_eps:
-            text = f"🔹 {ep['ep_num']}" if str(ep['v_id']) == param else str(ep['ep_num'])
-            row.append(InlineKeyboardButton(text, url=f"https://t.me/{(await client.get_me()).username}?start={ep['v_id']}"))
-            if len(row) == 5:
-                buttons.append(row)
-                row = []
-        if row: buttons.append(row)
+    if not param: return await message.reply_text(f"أهلاً بك يا {message.from_user.first_name} 🎬")
 
-        caption = f"🎬 **{data['title']} - حلقة {data['ep_num']}**\n⚙️ الجودة: {data['quality']}\n\n📌 **شاهد المزيد من الحلقات:**"
-        
-        try:
-            await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(param), caption=caption, reply_markup=InlineKeyboardMarkup(buttons), protect_content=True)
-            db_query("UPDATE episodes SET views = views + 1 WHERE v_id = %s", (param,), commit=True)
-        except:
-            await message.reply_text("❌ عذراً، تعذر جلب الفيديو.")
-    else:
-        await message.reply_text("❌ الحلقة غير موجودة.")
+    # جلب الحلقة الحالية
+    data = db_query("SELECT * FROM episodes WHERE v_id=%s", (param,), fetchone=True)
+    if not data: return await message.reply_text("❌ لم يتم العثور على الحلقة.")
+
+    # 1. جلب كافة الحلقات التي تملك نفس "poster_id" (نفس المسلسل)
+    related_eps = db_query("SELECT v_id, ep_num FROM episodes WHERE poster_id=%s ORDER BY ep_num ASC", (data['poster_id'],), fetchall=True)
+
+    # 2. بناء لوحة أزرار أرقام الحلقات (1 2 3 4...)
+    buttons = []
+    row = []
+    for ep in related_eps:
+        # تمييز الحلقة التي يشاهدها المستخدم حالياً برمز 🔹
+        btn_text = f"🔹 {ep['ep_num']}" if str(ep['v_id']) == param else str(ep['ep_num'])
+        row.append(InlineKeyboardButton(btn_text, url=f"https://t.me/{(await client.get_me()).username}?start={ep['v_id']}"))
+        if len(row) == 5: # تنظيم: 5 أزرار في كل سطر
+            buttons.append(row)
+            row = []
+    if row: buttons.append(row)
+
+    # 3. إرسال الفيديو مباشرة مع الأزرار المرتبطة
+    try:
+        cap = f"🎬 **{data['title']} - حلقة {data['ep_num']}**\n⚙️ الجودة: {data['quality']}\n\n📌 **شاهد باقي الحلقات:**"
+        await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(param), caption=cap, reply_markup=InlineKeyboardMarkup(buttons), protect_content=True)
+        db_query("UPDATE episodes SET views = views + 1 WHERE v_id = %s", (param,), commit=True)
+    except:
+        await message.reply_text("❌ حدث خطأ في جلب الفيديو.")
 
 if __name__ == "__main__":
     for f in glob.glob("*.session*"):
