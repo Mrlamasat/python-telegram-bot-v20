@@ -7,24 +7,31 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
 
-# 1. الإعدادات
+# ==============================
+# 1. الإعدادات الأساسية
+# ==============================
 API_ID = 35405228
 API_HASH = "dacba460d875d963bbd4462c5eb554d6"
 BOT_TOKEN = "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0"
 DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
 
-ADMIN_CHANNEL = -1003547072209 
+# قناة التخزين (تأكد أن البوت أدمن فيها)
+ADMIN_CHANNEL = -1002360567087 
 PUBLIC_CHANNELS = ["@RamadanSeries26", "@MoAlmohsen"]
 
-# 2. تعريف البوت أولاً (هذا ما أصلح الخطأ)
-app = Client("mo_ultimate_vFinal", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=20)
+# ==============================
+# 2. تعريف البوت وتجهيزه
+# ==============================
+app = Client("mo_pro_final", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=20)
 
-# 3. دالات المساعدة
+# --- دالات المساعدة ---
 def hide_text(text):
+    """تشفير النص بوضع فواصل مخفية لمنع البحث العالمي"""
     if not text: return "‌"
     return "‌".join(list(text))
 
 def center_style(text):
+    """إضافة مسافات شفافة لتوسيط النص"""
     spacer = "ㅤ" * 8
     return f"{spacer}{text}{spacer}"
 
@@ -44,7 +51,10 @@ def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
     finally:
         if conn: conn.close()
 
-# 4. الآن نضع الأوامر بعد تعريف app
+# ==============================
+# 3. أوامر الإدارة (الأدمن)
+# ==============================
+
 @app.on_message(filters.chat(ADMIN_CHANNEL) & filters.command("fix"))
 async def fix_old_entry(client, message):
     if len(message.command) < 3:
@@ -74,7 +84,7 @@ async def on_poster(client, message):
              (f_id, message.caption, message.chat.id), commit=True)
     await message.reply_text(f"✅ تم الربط باسم: **{message.caption}**\n🔢 الآن أرسل رقم الحلقة فقط:")
 
-@app.on_message(filters.chat(ADMIN_CHANNEL) & filters.text & ~filters.command(["start", "fix", "rename"]))
+@app.on_message(filters.chat(ADMIN_CHANNEL) & filters.text & ~filters.command(["start", "fix"]))
 async def on_num(client, message):
     state = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
     if not state or state['step'] != "awaiting_ep": return
@@ -107,33 +117,67 @@ async def publish(client, query):
             await client.send_photo(ch, photo=data['poster_id'], caption=hidden_cap, 
                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مـشـاهـدة الآن", url=link)]]))
         except: pass
-    await query.message.edit_text("✅ تم النشر.")
+    await query.message.edit_text("✅ تم النشر بنجاح.")
+
+# ==============================
+# 4. نظام التشغيل (واجهة العضو)
+# ==============================
 
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
-    param = message.command[1] if len(message.command) > 1 else ""
-    if not param: return await message.reply_text("أهلاً بك.")
+    if len(message.command) < 2:
+        return await message.reply_text("🎬 أهلاً بك يا محمد في البوت.\nتفضل بزيارة قناتنا: @MoAlmohsen")
 
-    data = db_query("SELECT * FROM episodes WHERE v_id=%s", (param,), fetchone=True)
+    param = message.command[1]
+    data = db_query("SELECT * FROM episodes WHERE v_id=%s", (str(param),), fetchone=True)
+    
     if data:
-        related = db_query("SELECT v_id, ep_num FROM episodes WHERE title=%s ORDER BY ep_num ASC", (data['title'],), fetchall=True)
+        # البحث عن الحلقات المرتبطة بنفس الاسم (مع تنظيف الاسم)
+        clean_name = data['title'].replace('‌', '').strip()
+        related = db_query(
+            "SELECT v_id, ep_num FROM episodes WHERE title LIKE %s ORDER BY ep_num ASC", 
+            (f"%{clean_name}%",), 
+            fetchall=True
+        )
+        
         bot_info = await client.get_me()
         buttons, row = [], []
-        for ep in related:
-            label = f"🔹 {ep['ep_num']}" if str(ep['v_id']) == param else f"{ep['ep_num']}"
-            row.append(InlineKeyboardButton(label, url=f"https://t.me/{bot_info.username}?start={ep['v_id']}"))
-            if len(row) == 5: buttons.append(row); row = []
-        if row: buttons.append(row)
-        buttons.append([InlineKeyboardButton("🍿 شـاهـد الـمـزيد مـن الـحـلـقـات", url=f"https://t.me/{PUBLIC_CHANNELS[0].replace('@','')} ")])
+        
+        if related:
+            for ep in related:
+                label = f"🔹 {ep['ep_num']}" if str(ep['v_id']) == str(param) else f"{ep['ep_num']}"
+                # بناء الرابط بشكل آمن لضمان عدم وجود أخطاء BUTTON_URL_INVALID
+                ep_link = f"https://t.me/{bot_info.username}?start={ep['v_id']}".replace(" ", "")
+                row.append(InlineKeyboardButton(label, url=ep_link))
+                if len(row) == 5:
+                    buttons.append(row)
+                    row = []
+            if row: buttons.append(row)
+        
+        # زر "شاهد المزيد" الثابت والموثوق
+        main_url = "https://t.me/MoAlmohsen"
+        buttons.append([InlineKeyboardButton("🍿 شـاهـد الـمـزيد مـن الـحـلـقـات", url=main_url)])
 
-        h_title = hide_text(data['title'])
-        final_cap = f"**{center_style('🎬 ' + h_title)}**\n**{center_style('🔢 حلقة رقم: ' + str(data['ep_num']))}**"
+        h_title = hide_text(clean_name)
+        final_cap = (
+            f"**{center_style('🎬 ' + h_title)}**\n"
+            f"**{center_style('🔢 حلقة رقم: ' + str(data['ep_num']))}**"
+        )
         
         try:
-            peer = int(ADMIN_CHANNEL) if str(ADMIN_CHANNEL).replace("-", "").isdigit() else ADMIN_CHANNEL
-            await client.copy_message(message.chat.id, peer, int(data['v_id']), caption=final_cap, reply_markup=InlineKeyboardMarkup(buttons))
+            admin_id = int(str(ADMIN_CHANNEL))
+            await client.copy_message(
+                chat_id=message.chat.id, 
+                from_chat_id=admin_id, 
+                message_id=int(data['v_id']), 
+                caption=final_cap, 
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
         except Exception as e:
             print(f"Error copying: {e}")
+            await message.reply_text("⚠️ عذراً، لا يمكنني جلب الفيديو حالياً. تأكد أن البوت مسؤول في قناة التخزين.")
+    else:
+        await message.reply_text("❌ الحلقة غير موجودة.")
 
 if __name__ == "__main__":
     app.run()
