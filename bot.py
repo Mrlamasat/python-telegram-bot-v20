@@ -1,18 +1,19 @@
-import asyncio
 import os
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import asyncpg
+from dotenv import load_dotenv
 
-# ==============================
-# إعدادات البوت وPostgreSQL
-# ==============================
+# تحميل المتغيرات من .env
+load_dotenv()
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
-DATABASE_URL = os.getenv("DATABASE_URL")  # مثال: postgresql://user:pass@host:port/dbname
-SOURCE_CHANNEL = os.getenv("SOURCE_CHANNEL")  # قناة المصدر
-ADMIN_ID = int(os.getenv("ADMIN_ID"))  # حساب المسؤول
+DATABASE_URL = os.getenv("DATABASE_URL")
+SOURCE_CHANNEL = os.getenv("SOURCE_CHANNEL")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 app = Client("my_bot", bot_token=BOT_TOKEN, api_id=API_ID, api_hash=API_HASH)
 
