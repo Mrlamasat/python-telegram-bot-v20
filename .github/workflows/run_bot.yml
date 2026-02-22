@@ -1,41 +1,43 @@
+# .github/workflows/run-bot.yml
 name: Run Telegram Bot
 
 on:
-  workflow_dispatch:  # يظهر زر التشغيل اليدوي
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
 jobs:
   run-bot:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+    - name: Checkout Repository
+      uses: actions/checkout@v3
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.12"
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.12
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pyrogram asyncpg TgCrypto psycopg2-binary
+    - name: Upgrade pip and install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyrogram asyncpg TgCrypto psycopg2-binary
 
-      - name: Run bot
-        env:
-          SESSION_STRING: ${{ secrets.SESSION_STRING }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          ADMIN_CHANNEL: ${{ secrets.ADMIN_CHANNEL }}
-          PUBLIC_CHANNELS: ${{ secrets.PUBLIC_CHANNELS }}
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          API_ID: ${{ secrets.API_ID }}
-          API_HASH: ${{ secrets.API_HASH }}
-          SOURCE_CHANNEL: "@Ramadan4kTV"  # يمكن تغييره إذا أردت
-        run: |
-          # حلقة لإعادة تشغيل البوت تلقائيًا عند أي خطأ
-          while true; do
-            echo "🚀 تشغيل البوت..."
-            python bot.py
-            echo "⚠️ البوت توقف. سيتم إعادة التشغيل خلال 5 ثوانٍ..."
-            sleep 5
-          done
+    - name: Run Bot with auto-restart
+      env:
+        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        API_ID: ${{ secrets.API_ID }}
+        API_HASH: ${{ secrets.API_HASH }}
+        SESSION_STRING: ${{ secrets.SESSION_STRING }}
+        SOURCE_CHANNEL: ${{ secrets.SOURCE_CHANNEL }}
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      run: |
+        echo "🚀 بدء تشغيل البوت..."
+        # حلقة لإعادة التشغيل التلقائي عند أي خطأ
+        while true; do
+          python bot.py
+          echo "⚠️ البوت توقف. سيتم إعادة التشغيل خلال 5 ثوانٍ..."
+          sleep 5
+        done
