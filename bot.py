@@ -1,4 +1,3 @@
-cat << 'EOF' > bot.py
 import asyncio
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -9,7 +8,13 @@ SESSION_STRING = "BAIcPawApJ69F_MuL6ZdUOl46dOA4NXG4MgQJDS3axRjkssKYSV9ltkhPRTQEl
 DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
 CHANNEL_USERNAME = "@Ramadan4kTV"
 
-app = Client("main_bot", session_string=SESSION_STRING, api_id=35405228, api_hash="dacba460d875d963bbd4462c5eb554d6", sleep_threshold=60)
+app = Client(
+    "main_bot", 
+    session_string=SESSION_STRING, 
+    api_id=35405228, 
+    api_hash="dacba460d875d963bbd4462c5eb554d6",
+    sleep_threshold=60
+)
 
 def encrypt_text(text):
     return "•".join(list(text))
@@ -24,25 +29,23 @@ def db_query(query, params=(), fetchone=False, commit=False):
         if commit: conn.commit()
         cur.close()
         return res
-    except: return None
+    except:
+        return None
     finally:
         if conn: conn.close()
 
-# مراقبة التعديلات
 @app.on_edited_message(filters.chat(CHANNEL_USERNAME) & filters.video)
 async def handle_edit(client, message):
     v_id = str(message.id)
-    safe_title = encrypt_text(message.caption or f"فيديو {v_id}")
+    safe_title = encrypt_text(message.caption or f"video_{v_id}")
     db_query("UPDATE episodes SET title=%s WHERE v_id=%s", (safe_title, v_id), commit=True)
 
-# إضافة الفيديوهات الجديدة
 @app.on_message(filters.chat(CHANNEL_USERNAME) & filters.video)
 async def handle_new_video(client, message):
     v_id = str(message.id)
-    safe_title = encrypt_text(message.caption or f"فيديو {v_id}")
+    safe_title = encrypt_text(message.caption or f"video_{v_id}")
     db_query("INSERT INTO episodes (v_id, title) VALUES (%s, %s) ON CONFLICT (v_id) DO UPDATE SET title=EXCLUDED.title", (v_id, safe_title), commit=True)
 
-# البحث (تم حذف الرد عند عدم الوجود ومنع الرد على النفس)
 @app.on_message(filters.private & filters.text & ~filters.me & ~filters.outgoing)
 async def search_bot(client, message):
     txt = message.text.strip()
@@ -58,6 +61,6 @@ async def search_bot(client, message):
                 await asyncio.sleep(1)
             except: pass
 
-print("🚀 البوت يعمل الآن بصمت مطبق... لن يرسل إلا الحلقات فقط!")
-app.run()
-EOF
+if __name__ == "__main__":
+    print("🚀 البوت يعمل الآن على السيرفر بنجاح...")
+    app.run()
