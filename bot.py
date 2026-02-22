@@ -7,9 +7,7 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
 
-# ==============================
-# الإعدادات الأساسية
-# ==============================
+# 1. الإعدادات
 API_ID = 35405228
 API_HASH = "dacba460d875d963bbd4462c5eb554d6"
 BOT_TOKEN = "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0"
@@ -17,13 +15,11 @@ DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.pr
 
 ADMIN_CHANNEL = -1003547072209 
 PUBLIC_CHANNELS = ["@RamadanSeries26", "@MoAlmohsen"]
-SUB_CHANNEL = "@MoAlmohsen" 
 
+# 2. تعريف البوت أولاً (هذا ما أصلح الخطأ)
 app = Client("mo_ultimate_vFinal", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=20)
 
-# ==============================
-# دالات المساعدة (تنسيق وتشفير)
-# ==============================
+# 3. دالات المساعدة
 def hide_text(text):
     if not text: return "‌"
     return "‌".join(list(text))
@@ -48,11 +44,7 @@ def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
     finally:
         if conn: conn.close()
 
-# ==============================
-# نظام الإدارة والتصحيح (الأدمن)
-# ==============================
-
-# أمر التصحيح للحلقات القديمة
+# 4. الآن نضع الأوامر بعد تعريف app
 @app.on_message(filters.chat(ADMIN_CHANNEL) & filters.command("fix"))
 async def fix_old_entry(client, message):
     if len(message.command) < 3:
@@ -62,7 +54,6 @@ async def fix_old_entry(client, message):
     db_query("UPDATE episodes SET title=%s WHERE v_id=%s", (new_name, v_id), commit=True)
     await message.reply_text(f"✅ تم تصحيح الحلقة {v_id} إلى: **{new_name}**")
 
-# الرفع - الخطوة 1: الفيديو
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document))
 async def on_video(client, message):
     v_id = str(message.id)
@@ -71,31 +62,28 @@ async def on_video(client, message):
              (message.chat.id, v_id, f"{sec//60}:{sec%60:02d}"), commit=True)
     await message.reply_text("✅ استلمت الفيديو.. أرسل البوستر الآن واكتب اسم المسلسل في الوصف.")
 
-# الرفع - الخطوة 2: البوستر والاسم
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.photo | filters.document))
 async def on_poster(client, message):
     state = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
     if not state or state['step'] != 'awaiting_poster': return
     if not message.caption:
-        return await message.reply_text("⚠️ اكتب اسم المسلسل في وصف الصورة.")
+        return await message.reply_text("⚠️ لازم تكتب اسم المسلسل في الوصف.")
     
     f_id = message.photo.file_id if message.photo else message.document.file_id
     db_query("UPDATE temp_upload SET poster_id=%s, title=%s, step='awaiting_ep' WHERE chat_id=%s", 
              (f_id, message.caption, message.chat.id), commit=True)
     await message.reply_text(f"✅ تم الربط باسم: **{message.caption}**\n🔢 الآن أرسل رقم الحلقة فقط:")
 
-# الرفع - الخطوة 3: رقم الحلقة
-@app.on_message(filters.chat(ADMIN_CHANNEL) & filters.text & ~filters.command(["start", "fix"]))
+@app.on_message(filters.chat(ADMIN_CHANNEL) & filters.text & ~filters.command(["start", "fix", "rename"]))
 async def on_num(client, message):
     state = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
     if not state or state['step'] != "awaiting_ep": return
-    if not message.text.isdigit(): return await message.reply_text("⚠️ أرسل رقماً فقط.")
+    if not message.text.isdigit(): return
     
     db_query("UPDATE temp_upload SET ep_num=%s, step='awaiting_quality' WHERE chat_id=%s", (int(message.text), message.chat.id), commit=True)
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("1080p", callback_data="q_1080p"), InlineKeyboardButton("720p", callback_data="q_720p")]])
     await message.reply_text(f"🎬 حلقة {message.text}.. اختر الجودة:", reply_markup=kb)
 
-# النشر النهائي
 @app.on_callback_query(filters.regex(r"^q_"))
 async def publish(client, query):
     quality = query.data.split("_")[1]
@@ -118,17 +106,13 @@ async def publish(client, query):
         try:
             await client.send_photo(ch, photo=data['poster_id'], caption=hidden_cap, 
                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مـشـاهـدة الآن", url=link)]]))
-        except FloodWait as e: await asyncio.sleep(e.value)
         except: pass
-    await query.message.edit_text("✅ تم النشر بتنسيق متوسط.")
+    await query.message.edit_text("✅ تم النشر.")
 
-# ==============================
-# نظام العرض (شاهد المزيد والربط)
-# ==============================
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
     param = message.command[1] if len(message.command) > 1 else ""
-    if not param: return await message.reply_text("🎬 أهلاً بك.")
+    if not param: return await message.reply_text("أهلاً بك.")
 
     data = db_query("SELECT * FROM episodes WHERE v_id=%s", (param,), fetchone=True)
     if data:
@@ -148,7 +132,8 @@ async def start(client, message):
         try:
             peer = int(ADMIN_CHANNEL) if str(ADMIN_CHANNEL).replace("-", "").isdigit() else ADMIN_CHANNEL
             await client.copy_message(message.chat.id, peer, int(data['v_id']), caption=final_cap, reply_markup=InlineKeyboardMarkup(buttons))
-        except: pass
+        except Exception as e:
+            print(f"Error copying: {e}")
 
 if __name__ == "__main__":
     app.run()
