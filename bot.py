@@ -14,8 +14,8 @@ from pyrogram.errors import FloodWait
 BOT_TOKEN = "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0"
 SESSION_STRING = "BAIcPawAqsz8F_p2JJmXjf2wJeeg2frJbPyA1FfK3gb4urW94P9VCR5N5apDGsEmeJxtehLGkZs7of6guY6fUqlhG3AnvjVKlxCAHA_xja75TxKgIRqUi-GcjFb_JSguFGioFPTIeX5donwup7_TXxfxCqNURpL_4EPenFnqc6EEbOhRa5Wz7rqE7kv-0KznphGohGYovuftOxoZhUAv0ASyD_pYjcyFBn6798_tmUa-LZyluuxY_msjiigO35H0V8gukbedFVezTLBsuoY6iK61mwXHFeFEkczFfOlEXNp-_ZmU4uBSuFqRdaZOLaRAeaXKoX2eWruWCmCY9bq-VErWbe6GTQAAAAHMKGDXAA"
 DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
-ADMIN_CHANNEL = -1003547072209       # استخدم معرف القناة الخاص بالأدمن
-PUBLIC_CHANNELS = ["@Ramadan4kTV"]  # القنوات التي سينشر فيها البوت
+ADMIN_CHANNEL = -1003547072209       # معرف القناة الرقمي للأدمن
+PUBLIC_CHANNELS = ["@Ramadan4kTV"]  # القنوات العامة للنشر
 
 # ==============================
 # 2. إعداد العميل
@@ -33,8 +33,7 @@ app = Client(
 # 3. دالات المساعدة
 # ==============================
 def hide_text(text):
-    if not text: return "‌"
-    return "‌".join(list(text))
+    return "‌".join(list(text)) if text else "‌"
 
 def center_style(text):
     spacer = "ㅤ" * 5
@@ -57,14 +56,14 @@ def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
         if conn: conn.close()
 
 # ==============================
-# 4. استيراد الفيديوهات القديمة
+# 4. سحب الفيديوهات القديمة
 # ==============================
 @app.on_message(filters.command("import_updated") & filters.private)
 async def import_updated_series(client, message):
     status = await message.reply_text("🔄 بدء سحب الفيديوهات القديمة...")
     count = 0
     try:
-        target_chat = await client.get_chat("@Ramadan4kTV")
+        target_chat = await client.get_chat(ADMIN_CHANNEL)
         async for msg in client.get_chat_history(target_chat.id):
             if not (msg.video or (msg.document and msg.document.mime_type and "video" in msg.document.mime_type)):
                 continue
@@ -100,7 +99,7 @@ async def import_updated_series(client, message):
         await status.edit_text(f"❌ حدث خطأ أثناء السحب: {e}")
 
 # ==============================
-# 5. أوامر رفع الفيديوهات (أدمن)
+# 5. رفع الحلقات الجديدة (أدمن)
 # ==============================
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document))
 async def on_video(client, message):
@@ -164,7 +163,7 @@ async def publish(client, query):
     await query.message.edit_text("✅ تم النشر بنجاح.")
 
 # ==============================
-# 6. نظام المشاهدة للأعضاء
+# 6. زر start للأعضاء
 # ==============================
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
