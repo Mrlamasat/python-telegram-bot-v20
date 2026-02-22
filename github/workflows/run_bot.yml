@@ -1,16 +1,19 @@
 name: Run Telegram Bot
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # لتشغيله يدويًا من GitHub
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
+      # 1️⃣ استنساخ المستودع
+      - name: Checkout Repository
         uses: actions/checkout@v3
 
-      - name: Setup Python
+      # 2️⃣ تثبيت Python و dependencies
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.12"
@@ -20,13 +23,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyrogram psycopg2-binary
 
-      - name: Run bot
+      # 3️⃣ تشغيل البوت
+      - name: Run Bot
         env:
-          API_ID: ${{ secrets.API_ID }}
-          API_HASH: ${{ secrets.API_HASH }}
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          SESSION_STRING: ${{ secrets.SESSION_STRING }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ADMIN_CHANNEL: ${{ secrets.ADMIN_CHANNEL }}
           PUBLIC_CHANNELS: ${{ secrets.PUBLIC_CHANNELS }}
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
         run: |
           python bot.py
