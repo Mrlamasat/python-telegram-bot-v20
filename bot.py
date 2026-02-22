@@ -1,151 +1,45 @@
-import logging
-import psycopg2
-import asyncio
 import os
-from psycopg2.extras import RealDictCursor
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import FloodWait
 
-# ==============================
-# 1. الإعدادات الصحيحة (Ramadan4kTV)
-# ==============================
-API_ID = 35405228
-API_HASH = "dacba460d875d963bbd4462c5eb554d6"
-BOT_TOKEN = "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0"
-DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
+# إعدادات البوت القديم (تأكد من وضع التوكن الخاص بـ @Ramadan4kTVbot في متغيرات Railway)
+API_ID = int(os.environ.get("API_ID", 0))
+API_HASH = os.environ.get("API_HASH", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
-# المعرف الصحيح الذي أرسلته الآن
-ADMIN_CHANNEL = -1003547072209 
-PUBLIC_CHANNELS = ["@RamadanSeries26", "@MoAlmohsen"]
+# يوزر بوتك الجديد
+NEW_BOT_USERNAME = "Bottemo_bot" 
 
-app = Client("mo_final_fix", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=20)
-
-# --- دالات المساعدة ---
-def hide_text(text):
-    if not text: return "‌"
-    return "‌".join(list(text))
-
-def center_style(text):
-    spacer = "ㅤ" * 8
-    return f"{spacer}{text}{spacer}"
-
-def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
-    conn = None
-    try:
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor, sslmode="require")
-        cur = conn.cursor()
-        cur.execute(query, params)
-        result = cur.fetchone() if fetchone else (cur.fetchall() if fetchall else None)
-        if commit: conn.commit()
-        cur.close()
-        return result
-    except Exception as e:
-        print(f"DB Error: {e}")
-        return None
-    finally:
-        if conn: conn.close()
-
-# ==============================
-# 2. أوامر الإدارة والرفع
-# ==============================
-
-@app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document))
-async def on_video(client, message):
-    v_id = str(message.id)
-    sec = message.video.duration if message.video else getattr(message.document, "duration", 0)
-    db_query("INSERT INTO temp_upload (chat_id, v_id, duration, step) VALUES (%s, %s, %s, 'awaiting_poster') ON CONFLICT (chat_id) DO UPDATE SET v_id=EXCLUDED.v_id, step='awaiting_poster'", 
-             (message.chat.id, v_id, f"{sec//60}:{sec%60:02d}"), commit=True)
-    await message.reply_text("✅ استلمت الفيديو.. أرسل البوستر الآن واكتب اسم المسلسل في الوصف.")
-
-@app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.photo | filters.document))
-async def on_poster(client, message):
-    state = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
-    if not state or state['step'] != 'awaiting_poster': return
-    if not message.caption:
-        return await message.reply_text("⚠️ يا محمد، اكتب اسم المسلسل في وصف الصورة.")
-    
-    f_id = message.photo.file_id if message.photo else message.document.file_id
-    db_query("UPDATE temp_upload SET poster_id=%s, title=%s, step='awaiting_ep' WHERE chat_id=%s", 
-             (f_id, message.caption, message.chat.id), commit=True)
-    await message.reply_text(f"✅ تم الربط بمسلسل: **{message.caption}**\n🔢 أرسل رقم الحلقة فقط:")
-
-@app.on_message(filters.chat(ADMIN_CHANNEL) & filters.text & ~filters.command(["start", "fix"]))
-async def on_num(client, message):
-    state = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
-    if not state or state['step'] != "awaiting_ep": return
-    if not message.text.isdigit(): return
-    
-    db_query("UPDATE temp_upload SET ep_num=%s, step='awaiting_quality' WHERE chat_id=%s", (int(message.text), message.chat.id), commit=True)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("1080p", callback_data="q_1080p"), InlineKeyboardButton("720p", callback_data="q_720p")]])
-    await message.reply_text(f"🎬 حلقة {message.text} جاهزة.. اختر الجودة للنشر:", reply_markup=kb)
-
-@app.on_callback_query(filters.regex(r"^q_"))
-async def publish(client, query):
-    quality = query.data.split("_")[1]
-    data = db_query("SELECT * FROM temp_upload WHERE chat_id=%s", (query.message.chat.id,), fetchone=True)
-    if not data: return
-    
-    db_query("""INSERT INTO episodes (v_id, poster_id, title, ep_num, duration, quality) 
-                VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (v_id) DO UPDATE 
-                SET title=EXCLUDED.title, ep_num=EXCLUDED.ep_num, quality=EXCLUDED.quality""", 
-                (data['v_id'], data['poster_id'], data['title'], data['ep_num'], data['duration'], quality), commit=True)
-    
-    db_query("DELETE FROM temp_upload WHERE chat_id=%s", (query.message.chat.id,), commit=True)
-    bot_info = await client.get_me()
-    link = f"https://t.me/{bot_info.username}?start={data['v_id']}".replace(" ", "")
-    
-    h_title = hide_text(data['title'])
-    hidden_cap = f"**{center_style('🎬 ' + h_title)}**\n**{center_style('🔢 حلقة رقم: ' + str(data['ep_num']))}**\n**{center_style('⚙️ الجودة: ' + quality)}**"
-    
-    for ch in PUBLIC_CHANNELS:
-        try:
-            await client.send_photo(ch, photo=data['poster_id'], caption=hidden_cap, 
-                                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مـشـاهـدة الآن", url=link)]]))
-        except: pass
-    await query.message.edit_text("✅ تم النشر في القنوات.")
-
-# ==============================
-# 3. نظام المشاهدة (العضو)
-# ==============================
+app = Client("OldBotRedirector", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 @app.on_message(filters.command("start") & filters.private)
-async def start(client, message):
-    if len(message.command) < 2:
-        return await message.reply_text("🎬 أهلاً بك يا محمد.\nتفضل بزيارة قناتنا: @MoAlmohsen")
-
-    param = message.command[1]
-    data = db_query("SELECT * FROM episodes WHERE v_id=%s", (str(param),), fetchone=True)
-    
-    if data:
-        clean_name = data['title'].replace('‌', '').strip()
-        related = db_query(
-            "SELECT v_id, ep_num FROM episodes WHERE title LIKE %s ORDER BY ep_num ASC", 
-            (f"%{clean_name}%",), fetchall=True
+async def redirect_handler(client, message):
+    # إذا دخل المستخدم عبر رابط حلقة (مثلاً start=123)
+    if len(message.command) > 1:
+        v_id = message.command[1]
+        new_link = f"https://t.me/{NEW_BOT_USERNAME}?start={v_id}"
+        
+        text = (
+            "⚠️ **عذراً، هذا البوت لم يعد يعمل!**\n\n"
+            "لقد انتقلنا إلى بوت جديد أسرع ويدعم جودات أفضل. "
+            "اضغط على الزر أدناه لمشاهدة حلقتك فوراً في البوت الجديد."
         )
         
-        bot_info = await client.get_me()
-        buttons, row = [], []
-        if related:
-            for ep in related:
-                label = f"🔹 {ep['ep_num']}" if str(ep['v_id']) == str(param) else f"{ep['ep_num']}"
-                ep_link = f"https://t.me/{bot_info.username}?start={ep['v_id']}".replace(" ", "")
-                row.append(InlineKeyboardButton(label, url=ep_link))
-                if len(row) == 5: buttons.append(row); row = []
-            if row: buttons.append(row)
-        
-        buttons.append([InlineKeyboardButton("🍿 شـاهـد الـمـزيد مـن الـحـلـقـات", url="https://t.me/MoAlmohsen")])
-        h_title = hide_text(clean_name)
-        final_cap = f"**{center_style('🎬 ' + h_title)}**\n**{center_style('🔢 حلقة رقم: ' + str(data['ep_num']))}**"
-        
-        try:
-            # النسخ من القناة بالـ ID الجديد الصحيح
-            await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(data['v_id']), caption=final_cap, reply_markup=InlineKeyboardMarkup(buttons))
-        except Exception as e:
-            print(f"Error: {e}")
-            await message.reply_text("⚠️ تأكد من إضافة البوت كأدمن في قناة Ramadan4kTV.")
+        reply_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("▶️ اضغط هنا لمشاهدة الحلقة", url=new_link)]
+        ])
     else:
-        await message.reply_text("❌ الحلقة غير موجودة.")
+        # إذا دخل للبوت بشكل عام
+        text = (
+            "أهلاً بك يا محمد..\n"
+            "هذا البوت (@Ramadan4kTVbot) توقف عن العمل.\n"
+            "يرجى الانتقال ومتابعة مسلسلاتك عبر بوتنا الجديد."
+        )
+        reply_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🚀 الانتقال للبوت الجديد", url=f"https://t.me/{NEW_BOT_USERNAME}")]
+        ])
 
-if __name__ == "__main__":
-    app.run()
+    await message.reply_text(text, reply_markup=reply_markup)
+
+print("✅ بوت التحويل يعمل الآن...")
+app.run()
