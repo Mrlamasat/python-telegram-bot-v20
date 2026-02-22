@@ -3,119 +3,146 @@ import asyncio
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ==============================
-# 🔐 إعدادات البوت من البيئة
+# 🔐 إعدادات البيئة
 # ==============================
-SESSION_STRING = os.getenv("SESSION_STRING")
-DATABASE_URL = os.getenv("DATABASE_URL")
-ADMIN_CHANNEL = int(os.getenv("ADMIN_CHANNEL", "-1003547072209"))
-PUBLIC_CHANNELS = os.getenv("PUBLIC_CHANNELS", "@MoAlmohsen,@RamadanSeries26").split(",")
+API_ID = int(os.environ.get("API_ID", 35405228))
+API_HASH = os.environ.get("API_HASH", "dacba460d875d963bbd4462c5eb554d6")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway")
+ADMIN_CHANNEL = int(os.environ.get("ADMIN_CHANNEL", -1003547072209))
+PUBLIC_CHANNELS = os.environ.get("PUBLIC_CHANNELS", "@MoAlmohsen,@RamadanSeries26").split(",")
 
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-
-app = Client(
-    "user_bot",
-    session_string=SESSION_STRING,
-    api_id=API_ID,
-    api_hash=API_HASH,
-    sleep_threshold=60
-)
+app = Client("bot_client", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # ==============================
-# 🔒 دالات مساعدة
+# 📦 قاعدة البيانات
 # ==============================
-def encrypt_text(text):
-    return "•".join(list(text)) if text else ""
-
-def db_query(query, params=(), fetchone=False, commit=False):
+def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
     conn = None
     try:
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor, sslmode="require")
         cur = conn.cursor()
         cur.execute(query, params)
-        res = cur.fetchone() if fetchone else None
+        result = cur.fetchone() if fetchone else (cur.fetchall() if fetchall else None)
         if commit: conn.commit()
         cur.close()
-        return res
+        return result
     except Exception as e:
-        print(f"❌ DB Error: {e}")
+        print(f"DB Error: {e}")
         return None
     finally:
         if conn: conn.close()
 
+def hide_text(text):
+    if not text: return "‌"
+    return "‌".join(list(text))
+
+def center_style(text):
+    spacer = "ㅤ" * 8
+    return f"{spacer}{text}{spacer}"
+
 # ==============================
-# 1️⃣ سحب الفيديوهات الجديدة تلقائيًا
+# 1️⃣ استقبال الفيديوهات من المسؤول
 # ==============================
-@app.on_message(filters.chat(ADMIN_CHANNEL) & filters.video)
-async def handle_new_video(client, message):
+@app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document))
+async def handle_video(client, message):
     v_id = str(message.id)
-    safe_title = encrypt_text(message.caption or f"فيديو {v_id}")
+    duration = message.video.duration if message.video else getattr(message.document, "duration", 0)
     db_query(
-        "INSERT INTO episodes (v_id, title) VALUES (%s, %s) "
-        "ON CONFLICT (v_id) DO UPDATE SET title=EXCLUDED.title",
-        (v_id, safe_title),
-        commit=True
+        "INSERT INTO temp_upload (chat_id, v_id, duration, step) VALUES (%s,%s,%s,'awaiting_poster') "
+        "ON CONFLICT (chat_id) DO UPDATE SET v_id=EXCLUDED.v_id, step='awaiting_poster'",
+        (message.chat.id, v_id, f"{duration//60}:{duration%60:02d}"), commit=True
     )
-    # النشر التلقائي في القنوات العامة
+    await message.reply_text("✅ استلمت الفيديو، أرسل البوستر الآن مع اسم المسلسل في الوصف.")
+
+@app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.photo | filters.document))
+async def handle_poster(client, message):
+    state = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
+    if not state or state['step'] != 'awaiting_poster': return
+    if not message.caption:
+        return await message.reply_text("⚠️ اكتب اسم المسلسل في وصف الصورة.")
+    f_id = message.photo.file_id if message.photo else message.document.file_id
+    db_query(
+        "UPDATE temp_upload SET poster_id=%s, title=%s, step='awaiting_ep' WHERE chat_id=%s",
+        (f_id, message.caption, message.chat.id), commit=True
+    )
+    await message.reply_text(f"✅ تم الربط بمسلسل: **{message.caption}**\n🔢 أرسل رقم الحلقة:")
+
+@app.on_message(filters.chat(ADMIN_CHANNEL) & filters.text & ~filters.command(["start", "fix"]))
+async def handle_ep_num(client, message):
+    state = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
+    if not state or state['step'] != 'awaiting_ep': return
+    if not message.text.isdigit(): return
+    db_query(
+        "UPDATE temp_upload SET ep_num=%s, step='awaiting_quality' WHERE chat_id=%s",
+        (int(message.text), message.chat.id), commit=True
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("1080p", callback_data="q_1080p"),
+         InlineKeyboardButton("720p", callback_data="q_720p")]
+    ])
+    await message.reply_text(f"🎬 حلقة {message.text} جاهزة.. اختر الجودة للنشر:", reply_markup=kb)
+
+@app.on_callback_query(filters.regex(r"^q_"))
+async def publish_episode(client, query):
+    quality = query.data.split("_")[1]
+    data = db_query("SELECT * FROM temp_upload WHERE chat_id=%s", (query.message.chat.id,), fetchone=True)
+    if not data: return
+    db_query(
+        "INSERT INTO episodes (v_id, poster_id, title, ep_num, duration, quality) "
+        "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (v_id) DO UPDATE SET title=EXCLUDED.title, ep_num=EXCLUDED.ep_num, quality=EXCLUDED.quality",
+        (data['v_id'], data['poster_id'], data['title'], data['ep_num'], data['duration'], quality), commit=True
+    )
+    db_query("DELETE FROM temp_upload WHERE chat_id=%s", (query.message.chat.id,), commit=True)
+    bot_info = await client.get_me()
+    link = f"https://t.me/{bot_info.username}?start={data['v_id']}".replace(" ", "")
+    h_title = hide_text(data['title'])
+    hidden_cap = f"**{center_style('🎬 ' + h_title)}**\n**{center_style('🔢 حلقة رقم: ' + str(data['ep_num']))}**\n**{center_style('⚙️ الجودة: ' + quality)}**"
     for ch in PUBLIC_CHANNELS:
         try:
-            await client.copy_message(chat_id=ch, from_chat_id=ADMIN_CHANNEL, message_id=int(v_id))
-            await asyncio.sleep(1)
+            await client.send_photo(ch, photo=data['poster_id'], caption=hidden_cap,
+                                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مـشـاهـدة الآن", url=link)]]))
+        except: pass
+    await query.message.edit_text("✅ تم النشر في القنوات.")
+
+# ==============================
+# 2️⃣ نظام المشاهدة للأعضاء
+# ==============================
+@app.on_message(filters.command("start") & filters.private)
+async def start(client, message):
+    if len(message.command) < 2:
+        return await message.reply_text("🎬 أهلاً بك! تفضل بزيارة قناتنا: @MoAlmohsen")
+    param = message.command[1]
+    data = db_query("SELECT * FROM episodes WHERE v_id=%s", (str(param),), fetchone=True)
+    if data:
+        clean_name = data['title'].replace('‌', '').strip()
+        related = db_query("SELECT v_id, ep_num FROM episodes WHERE title LIKE %s ORDER BY ep_num ASC", (f"%{clean_name}%",), fetchall=True)
+        bot_info = await client.get_me()
+        buttons, row = [], []
+        if related:
+            for ep in related:
+                label = f"🔹 {ep['ep_num']}" if str(ep['v_id']) == str(param) else f"{ep['ep_num']}"
+                ep_link = f"https://t.me/{bot_info.username}?start={ep['v_id']}".replace(" ", "")
+                row.append(InlineKeyboardButton(label, url=ep_link))
+                if len(row) == 5: buttons.append(row); row = []
+            if row: buttons.append(row)
+        buttons.append([InlineKeyboardButton("🍿 شـاهـد الـمـزيد", url="https://t.me/MoAlmohsen")])
+        h_title = hide_text(clean_name)
+        final_cap = f"**{center_style('🎬 ' + h_title)}**\n**{center_style('🔢 حلقة رقم: ' + str(data['ep_num']))}**"
+        try:
+            await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(data['v_id']), caption=final_cap, reply_markup=InlineKeyboardMarkup(buttons))
         except Exception as e:
-            print(f"❌ خطأ أثناء النشر للقناة {ch}: {e}")
-    print(f"📥 تم سحب ونشر الحلقة الجديدة: {v_id}")
+            print(f"Error: {e}")
+            await message.reply_text("⚠️ تأكد من إضافة البوت كأدمن في القناة.")
+    else:
+        await message.reply_text("❌ الحلقة غير موجودة.")
 
 # ==============================
-# 2️⃣ تحديث الفيديوهات المعدلة
-# ==============================
-@app.on_edited_message(filters.chat(ADMIN_CHANNEL) & filters.video)
-async def handle_edit(client, message):
-    v_id = str(message.id)
-    safe_title = encrypt_text(message.caption or f"فيديو {v_id}")
-    db_query("UPDATE episodes SET title=%s WHERE v_id=%s", (safe_title, v_id), commit=True)
-    print(f"🔐 تم تحديث اسم الحلقة: {v_id}")
-
-# ==============================
-# 3️⃣ نظام البحث الصامت
-# ==============================
-@app.on_message(filters.private & filters.text & ~filters.me & ~filters.outgoing)
-async def search_bot(client, message):
-    txt = message.text.strip()
-    if len(txt) < 2:
-        return
-    
-    search_query = f"%{encrypt_text(txt)}%"
-    try:
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-        cur = conn.cursor()
-        cur.execute("SELECT v_id FROM episodes WHERE title ILIKE %s LIMIT 5", (search_query,))
-        results = cur.fetchall()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        print(f"❌ خطأ أثناء البحث: {e}")
-        return
-
-    if results:
-        for res in results:
-            try:
-                await app.copy_message(
-                    chat_id=message.chat.id,
-                    from_chat_id=ADMIN_CHANNEL,
-                    message_id=int(res['v_id'])
-                )
-                await asyncio.sleep(1)
-            except Exception as e:
-                print(f"❌ خطأ أثناء إرسال النتائج للمستخدم: {e}")
-
-# ==============================
-# ▶️ تشغيل البوت مع طباعة الأخطاء
+# ▶️ تشغيل البوت
 # ==============================
 if __name__ == "__main__":
-    try:
-        print("🚀 البوت يعمل الآن على الاستضافة...")
-        app.run()
-    except Exception as e:
-        print("❌ حدث خطأ أثناء تشغيل البوت:", e)
+    print("🚀 البوت الرسمي يعمل الآن على الاستضافة...")
+    app.run()
