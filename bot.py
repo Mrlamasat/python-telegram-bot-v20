@@ -8,14 +8,14 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
 
 # ==============================
-# 1. الإعدادات الصحيحة (Ramadan4kTV)
+# 1. الإعدادات الصحيحة
 # ==============================
 API_ID = 35405228
 API_HASH = "dacba460d875d963bbd4462c5eb554d6"
 BOT_TOKEN = "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0"
 DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
 
-ADMIN_CHANNEL = -1003547072209 
+ADMIN_CHANNEL = -1003547072209  # يمكنك تغييره إلى "@Ramadan4kTV" إذا ظهرت مشاكل
 PUBLIC_CHANNELS = ["@RamadanSeries26", "@MoAlmohsen"]
 
 app = Client("mo_final_fix", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=20)
@@ -144,11 +144,18 @@ async def start(client, message):
         await message.reply_text("❌ الحلقة غير موجودة.")
 
 # ==============================
-# 4. أمر استيراد الحلقات القديمة مع الاسم الجديد
+# 4. أمر استيراد الحلقات القديمة
 # ==============================
 @app.on_message(filters.command("import_updated") & filters.private)
 async def import_updated_series(client, message):
-    await message.reply_text("بدأ الاستيراد من وصف الصور الحالي... ⏳")
+    await message.reply_text("🔄 بدء الاستيراد من القناة...")
+
+    try:
+        chat = await client.get_chat(ADMIN_CHANNEL)
+        await message.reply_text(f"✅ الوصول للقناة تم: {chat.title} ({chat.id})")
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ الوصول للقناة: {e}")
+        return
 
     count = 0
     async for msg in client.get_chat_history(ADMIN_CHANNEL):
