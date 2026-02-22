@@ -1,33 +1,33 @@
 name: Run Telegram Bot
 
 on:
-  workflow_dispatch:   # لتشغيله يدويًا من GitHub
+  workflow_dispatch:   # يسمح لك بتشغيل البوت يدوياً من GitHub
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v3
+      - name: Checkout Repository
+        uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.12'
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
 
-    - name: Install Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pyrogram TgCrypto psycopg2-binary
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyrogram TgCrypto psycopg2-binary
 
-    - name: Run Bot
-      env:
-        SESSION_STRING: ${{ secrets.SESSION_STRING }}
-        DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        ADMIN_CHANNEL: ${{ secrets.ADMIN_CHANNEL }}
-        API_ID: ${{ secrets.API_ID }}
-        API_HASH: ${{ secrets.API_HASH }}
-        PUBLIC_CHANNELS: ${{ secrets.PUBLIC_CHANNELS }}
-      run: |
-        python bot.py
+      - name: Run Bot
+        env:
+          SESSION_STRING: ${{ secrets.SESSION_STRING }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          ADMIN_CHANNEL: ${{ secrets.ADMIN_CHANNEL }}
+          PUBLIC_CHANNELS: ${{ secrets.PUBLIC_CHANNELS }}
+        run: |
+          python bot.py
