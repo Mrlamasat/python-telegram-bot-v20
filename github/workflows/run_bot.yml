@@ -1,0 +1,35 @@
+name: Run Telegram Bot
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '*/10 * * * *' # يشغل البوت كل 10 دقائق (للتأكد من إعادة التشغيل إذا توقف)
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.12"
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run bot
+      env:
+        SESSION_STRING: ${{ secrets.SESSION_STRING }}
+        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        CHANNEL_USERNAME: ${{ secrets.CHANNEL_USERNAME }}
+      run: |
+        python bot.py
