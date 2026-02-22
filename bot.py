@@ -11,7 +11,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 DATABASE_URL = os.getenv("DATABASE_URL")  # مثال: postgresql://user:pass@host:port/dbname
-SOURCE_CHANNEL = os.getenv("SOURCE_CHANNEL")  # قناة المصدر للتحميل
+SOURCE_CHANNEL = os.getenv("SOURCE_CHANNEL")  # قناة المصدر
+ADMIN_ID = int(os.getenv("ADMIN_ID"))  # حساب المسؤول
 
 app = Client("my_bot", bot_token=BOT_TOKEN, api_id=API_ID, api_hash=API_HASH)
 
@@ -34,63 +35,65 @@ async def init_db():
 # ==============================
 # رفع الحلقات (Admin only)
 # ==============================
-@app.on_message(filters.private & filters.user(int(os.getenv("ADMIN_ID"))) & filters.command("upload"))
+@app.on_message(filters.private & filters.user(ADMIN_ID) & filters.command("upload"))
 async def upload_episode(client, message):
-    # خطوات رفع الحلقة
-    await message.reply_text("📥 ارسل الرابط أو الوتستر للحلقة:")
-    
-    # انتظار الرد على الوتستر
+    await message.reply_text("📥 أرسل رابط أو الوستر للحلقة:")
     wester_msg = await client.listen(message.chat.id)
     wester = wester_msg.text
-    
+
     await message.reply_text("🔢 ارسل رقم الحلقة:")
     ep_msg = await client.listen(message.chat.id)
     episode_number = int(ep_msg.text)
-    
+
     await message.reply_text("🎞 اختر الجودة (مثال: 720p, 1080p):")
     quality_msg = await client.listen(message.chat.id)
     quality = quality_msg.text
 
-    # تحميل الحلقة من قناة المصدر
-    # يفترض أن القناة SOURCE_CHANNEL متاحة
+    # البحث في قناة المصدر عن الحلقة
+    file_id = None
     async for msg in client.search_messages(SOURCE_CHANNEL, limit=100):
-        if str(episode_number) in msg.text:
+        if str(episode_number) in (msg.text or ""):
             file_id = msg.video.file_id if msg.video else None
-            if file_id:
-                conn = await asyncpg.connect(DATABASE_URL)
-                await conn.execute("""
-                    INSERT INTO episodes (episode_number, file_id, quality)
-                    VALUES ($1, $2, $3)
-                    ON CONFLICT (episode_number) DO UPDATE
-                    SET file_id = EXCLUDED.file_id,
-                        quality = EXCLUDED.quality;
-                """, episode_number, file_id, quality)
-                await conn.close()
-                
-                await message.reply_text(f"✅ تم أرشفة الحلقة {episode_number} بالجودة {quality}")
-                break
+            break
+
+    if not file_id:
+        await message.reply_text("⚠️ لم يتم العثور على الفيديو في قناة المصدر.")
+        return
+
+    conn = await asyncpg.connect(DATABASE_URL)
+    await conn.execute("""
+        INSERT INTO episodes (episode_number, file_id, quality)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (episode_number) DO UPDATE
+        SET file_id = EXCLUDED.file_id,
+            quality = EXCLUDED.quality;
+    """, episode_number, file_id, quality)
+    await conn.close()
+
+    await message.reply_text(f"✅ تم أرشفة الحلقة {episode_number} بالجودة {quality}")
 
 # ==============================
 # مشاهدة الحلقة
 # ==============================
 @app.on_message(filters.private & filters.command("watch"))
 async def watch_episode(client, message):
-    # جلب آخر حلقة
     conn = await asyncpg.connect(DATABASE_URL)
-    episode = await conn.fetchrow("""
+    episodes = await conn.fetch("""
         SELECT * FROM episodes
-        ORDER BY episode_number DESC
-        LIMIT 1;
+        ORDER BY episode_number DESC;
     """)
     await conn.close()
-    
-    if episode:
-        buttons = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("مشاهدة الآن", callback_data=f"watch_{episode['episode_number']}")]]
-        )
-        await message.reply_video(episode["file_id"], caption=f"الحلقة {episode['episode_number']} - جودة {episode['quality']}", reply_markup=buttons)
-    else:
+
+    if not episodes:
         await message.reply_text("⚠️ لا توجد حلقات متاحة حاليا.")
+        return
+
+    buttons = [
+        [InlineKeyboardButton(f"الحلقة {ep['episode_number']}", callback_data=f"watch_{ep['episode_number']}")]
+        for ep in episodes[-5:]  # آخر 5 حلقات
+    ]
+
+    await message.reply_text("🎬 اختر الحلقة للمشاهدة:", reply_markup=InlineKeyboardMarkup(buttons))
 
 # ==============================
 # التعامل مع أزرار المشاهدة
@@ -98,13 +101,16 @@ async def watch_episode(client, message):
 @app.on_callback_query(filters.regex(r"watch_(\d+)"))
 async def callback_watch(client, callback_query):
     episode_number = int(callback_query.data.split("_")[1])
-    
     conn = await asyncpg.connect(DATABASE_URL)
     episode = await conn.fetchrow("SELECT * FROM episodes WHERE episode_number=$1;", episode_number)
     await conn.close()
-    
+
     if episode:
-        await callback_query.message.edit_video(episode["file_id"], caption=f"الحلقة {episode_number} - جودة {episode['quality']}")
+        await callback_query.message.edit_media(
+            media=episode["file_id"],
+            reply_markup=None,
+            caption=f"الحلقة {episode_number} - جودة {episode['quality']}"
+        )
     else:
         await callback_query.answer("⚠️ الحلقة غير موجودة في الأرشيف.", show_alert=True)
 
@@ -115,8 +121,7 @@ async def main():
     await init_db()
     await app.start()
     print("🚀 البوت جاهز للعمل!")
-    await idle()
+    await asyncio.Event().wait()  # للحفاظ على تشغيل البوت
 
 if __name__ == "__main__":
-    from pyrogram import idle
     asyncio.run(main())
