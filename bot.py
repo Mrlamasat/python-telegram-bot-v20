@@ -6,7 +6,6 @@ from psycopg2.extras import RealDictCursor
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
-from pyrogram.types import StringSession
 
 # ==============================
 # 1. الإعدادات
@@ -25,8 +24,9 @@ SESSION_STRING = os.environ.get("USER_SESSION")
 if not SESSION_STRING:
     raise ValueError("❌ USER_SESSION فارغ! ضع Session String كامل في Environment Variables")
 
+# ملاحظة: نستخدم SESSION_STRING مباشرة في Client
 app = Client(
-    session_string=SESSION_STRING,
+    SESSION_STRING,
     api_id=API_ID,
     api_hash=API_HASH,
     workers=20
@@ -76,7 +76,7 @@ async def on_poster(client, message):
     state = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
     if not state or state['step'] != 'awaiting_poster': return
     if not message.caption:
-        return await message.reply_text("⚠️ يا محمد، اكتب اسم المسلسل في وصف الصورة.")
+        return await message.reply_text("⚠️ اكتب اسم المسلسل في وصف الصورة.")
     
     f_id = message.photo.file_id if message.photo else message.document.file_id
     db_query(
@@ -125,7 +125,7 @@ async def publish(client, query):
     for ch in PUBLIC_CHANNELS:
         try:
             await client.send_photo(ch, photo=data['poster_id'], caption=hidden_cap, 
-                                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مـشـاهـدة الآن", url=link)]]))
+                                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الآن", url=link)]]))
         except: pass
     await query.message.edit_text("✅ تم النشر في القنوات.")
 
@@ -135,7 +135,7 @@ async def publish(client, query):
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
     if len(message.command) < 2:
-        return await message.reply_text("🎬 أهلاً بك يا محمد.\nتفضل بزيارة قناتنا: @MoAlmohsen")
+        return await message.reply_text("🎬 أهلاً بك.\nتفضل بزيارة قناتنا: @MoAlmohsen")
 
     param = message.command[1]
     data = db_query("SELECT * FROM episodes WHERE v_id=%s", (str(param),), fetchone=True)
@@ -157,7 +157,7 @@ async def start(client, message):
                 if len(row) == 5: buttons.append(row); row = []
             if row: buttons.append(row)
         
-        buttons.append([InlineKeyboardButton("🍿 شـاهـد الـمـزيد مـن الـحـلـقـات", url="https://t.me/MoAlmohsen")])
+        buttons.append([InlineKeyboardButton("🍿 شاهد المزيد", url="https://t.me/MoAlmohsen")])
         h_title = hide_text(clean_name)
         final_cap = f"**{center_style('🎬 ' + h_title)}**\n**{center_style('🔢 حلقة رقم: ' + str(data['ep_num']))}**"
         
@@ -165,19 +165,18 @@ async def start(client, message):
             await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(data['v_id']), caption=final_cap, reply_markup=InlineKeyboardMarkup(buttons))
         except Exception as e:
             print(f"Error: {e}")
-            await message.reply_text("⚠️ تأكد من إضافة البوت كأدمن في قناة Ramadan4kTV.")
+            await message.reply_text("⚠️ تأكد من إضافة البوت كأدمن في قناة ADMIN_CHANNEL.")
     else:
         await message.reply_text("❌ الحلقة غير موجودة.")
 
 # ==============================
-# 5. استيراد الحلقات القديمة من القناة
+# 5. استيراد الحلقات القديمة
 # ==============================
 @app.on_message(filters.command("import_updated") & filters.private)
 async def import_updated_series(client, message):
     await message.reply_text("🔄 بدء الاستيراد من القناة...")
 
     count = 0
-
     async for msg in client.get_chat_history(ADMIN_CHANNEL):
         if not (msg.video or (msg.document and msg.document.mime_type.startswith("video"))):
             continue
@@ -199,7 +198,6 @@ async def import_updated_series(client, message):
         if not ep_num:
             ep_num = "1"
 
-        # إنشاء أو جلب المسلسل
         existing = db_query("SELECT id FROM series WHERE title=%s", (title,), fetchone=True)
         if existing:
             series_id = existing['id']
@@ -208,7 +206,6 @@ async def import_updated_series(client, message):
                      (title, msg.photo.file_id if msg.photo else None), commit=True)
             series_id = db_query("SELECT id FROM series WHERE title=%s", (title,), fetchone=True)['id']
 
-        # إدخال الحلقة
         db_query("""
             INSERT INTO episodes (v_id, series_id, ep_num, duration, quality)
             VALUES (%s, %s, %s, %s, %s)
