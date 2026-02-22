@@ -1,33 +1,43 @@
-import os
 import asyncio
+import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from pyrogram import Client, filters
 
 # ==============================
-# 🔐 قراءة البيانات من المتغيرات
+# 🔐 إعدادات (ضع بياناتك هنا)
 # ==============================
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-SESSION_STRING = os.getenv("SESSION_STRING")
-DATABASE_URL = os.getenv("DATABASE_URL")
-CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME")
+
+API_ID = 35405228
+API_HASH = "dacba460d875d963bbd4462c5eb554d6"
+BOT_TOKEN = "ضع_توكن_البوت_هنا"
+
+DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
+CHANNEL_USERNAME = "@Ramadan4kTV"
+
+# ==============================
+# 🚀 تشغيل البوت
+# ==============================
 
 app = Client(
-    "main_bot",
-    session_string=SESSION_STRING,
+    "railway_bot",
     api_id=API_ID,
     api_hash=API_HASH,
-    sleep_threshold=60
+    bot_token=BOT_TOKEN
 )
 
 # ==============================
-# 📦 قاعدة البيانات
+# 📦 دالة قاعدة البيانات
 # ==============================
+
 def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
     conn = None
     try:
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor, sslmode="require")
+        conn = psycopg2.connect(
+            DATABASE_URL,
+            cursor_factory=RealDictCursor,
+            sslmode="require"
+        )
         cur = conn.cursor()
         cur.execute(query, params)
 
@@ -43,45 +53,44 @@ def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
 
         cur.close()
         return result
+
     except Exception as e:
-        print("DB Error:", e)
+        print("DB ERROR:", e)
         return None
+
     finally:
         if conn:
             conn.close()
 
 # ==============================
-# 🔒 تشفير العنوان
+# 🔒 تشفير الاسم
 # ==============================
+
 def encrypt_text(text):
-    if not text:
-        return ""
     return "•".join(list(text))
 
 # ==============================
-# 🎬 عند رفع فيديو
+# 🎬 عند نشر فيديو جديد
 # ==============================
+
 @app.on_message(filters.chat(CHANNEL_USERNAME) & filters.video)
 async def handle_new_video(client, message):
     v_id = str(message.id)
     safe_title = encrypt_text(message.caption or f"video_{v_id}")
 
     db_query(
-        """
-        INSERT INTO episodes (v_id, title)
-        VALUES (%s, %s)
-        ON CONFLICT (v_id)
-        DO UPDATE SET title=EXCLUDED.title
-        """,
+        "INSERT INTO episodes (v_id, title) VALUES (%s, %s) "
+        "ON CONFLICT (v_id) DO UPDATE SET title=EXCLUDED.title",
         (v_id, safe_title),
         commit=True
     )
 
-    print(f"✅ تم حفظ الفيديو {v_id}")
+    print("✅ تم حفظ فيديو جديد:", v_id)
 
 # ==============================
-# 🔄 عند تعديل الوصف
+# 🔄 عند تعديل وصف الفيديو
 # ==============================
+
 @app.on_edited_message(filters.chat(CHANNEL_USERNAME) & filters.video)
 async def handle_edit(client, message):
     v_id = str(message.id)
@@ -93,11 +102,12 @@ async def handle_edit(client, message):
         commit=True
     )
 
-    print(f"🔄 تم تحديث الفيديو {v_id}")
+    print("🔄 تم تحديث عنوان الفيديو:", v_id)
 
 # ==============================
-# 🔎 البحث الخاص
+# 🔍 البحث في الخاص
 # ==============================
+
 @app.on_message(filters.private & filters.text & ~filters.me & ~filters.outgoing)
 async def search_bot(client, message):
     txt = message.text.strip()
@@ -121,8 +131,13 @@ async def search_bot(client, message):
                     message_id=int(res["v_id"])
                 )
                 await asyncio.sleep(1)
-            except:
-                pass
+            except Exception as e:
+                print("Copy error:", e)
 
-print("🚀 البوت يعمل الآن على السيرفر...")
-app.run()
+# ==============================
+# ▶️ تشغيل
+# ==============================
+
+if __name__ == "__main__":
+    print("🚀 البوت يعمل الآن على Railway بنجاح...")
+    app.run()
