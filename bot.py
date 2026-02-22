@@ -14,19 +14,21 @@ ADMIN_CHANNEL = int(os.environ.get("ADMIN_CHANNEL", "0"))
 API_ID = int(os.environ.get("API_ID", "0"))
 API_HASH = os.environ.get("API_HASH")
 PUBLIC_CHANNELS = os.environ.get("PUBLIC_CHANNELS", "").split(",")
+SOURCE_CHANNEL = os.environ.get("SOURCE_CHANNEL", "@Ramadan4kTV") # القناة المصدر للنقل التلقائي
 
 if not all([SESSION_STRING, DATABASE_URL, ADMIN_CHANNEL, API_ID, API_HASH]):
-    raise ValueError("❌ أحد متغيرات البيئة مفقود. تحقق من SESSION_STRING, DATABASE_URL, ADMIN_CHANNEL, API_ID, API_HASH.")
+    raise ValueError("❌ أحد متغيرات البيئة مفقود. تحقق من إعدادات Secrets في GitHub.")
 
 # ==============================
-# 🔐 إعداد البوت
+# 🔐 إعداد البوت (نظام الـ Userbot)
 # ==============================
 app = Client(
     "main_bot",
     session_string=SESSION_STRING,
     api_id=API_ID,
     api_hash=API_HASH,
-    in_memory=True
+    in_memory=True,
+    sleep_threshold=60
 )
 
 # ==============================
@@ -56,7 +58,7 @@ def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
             conn.close()
 
 # ==============================
-# ✨ دالات المساعدة
+# ✨ دالات المساعدة (التشفير والتنسيق)
 # ==============================
 def hide_text(text):
     if not text: return "‌"
@@ -67,7 +69,22 @@ def center_style(text):
     return f"{spacer}{text}{spacer}"
 
 # ==============================
-# 1️⃣ مراقبة رفع الحلقات الجديدة
+# 🔄 0️⃣ ميزة نقل البيانات التلقائي (الجديدة)
+# ==============================
+# أي فيديو ينزل في القناة المصدر يتم سحبه وتشفيره وحفظه فوراً
+@app.on_message(filters.chat(SOURCE_CHANNEL) & filters.video)
+async def auto_transfer(client, message):
+    v_id = str(message.id)
+    raw_title = message.caption or f"فيديو {v_id}"
+    safe_title = hide_text(raw_title)
+    db_query(
+        "INSERT INTO episodes (v_id, title) VALUES (%s, %s) ON CONFLICT (v_id) DO UPDATE SET title=EXCLUDED.title",
+        (v_id, safe_title), commit=True
+    )
+    print(f"📥 [نقل تلقائي] تم حفظ حلقة من {SOURCE_CHANNEL}: {v_id}")
+
+# ==============================
+# 1️⃣ مراقبة رفع الحلقات الجديدة (يدوياً)
 # ==============================
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document))
 async def on_video(client, message):
@@ -123,18 +140,19 @@ async def publish(client, query):
     data = db_query("SELECT * FROM temp_upload WHERE chat_id=%s", (query.message.chat.id,), fetchone=True)
     if not data: return
 
+    # تشفير العنوان عند الحفظ النهائي
+    safe_title = hide_text(data['title'])
     db_query(
         "INSERT INTO episodes (v_id, poster_id, title, ep_num, duration, quality) "
         "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (v_id) DO UPDATE SET title=EXCLUDED.title, ep_num=EXCLUDED.ep_num, quality=EXCLUDED.quality",
-        (data['v_id'], data['poster_id'], data['title'], data['ep_num'], data['duration'], quality), commit=True
+        (data['v_id'], data['poster_id'], safe_title, data['ep_num'], data['duration'], quality), commit=True
     )
 
     db_query("DELETE FROM temp_upload WHERE chat_id=%s", (query.message.chat.id,), commit=True)
     bot_info = await client.get_me()
     link = f"https://t.me/{bot_info.username}?start={data['v_id']}".replace(" ", "")
 
-    h_title = hide_text(data['title'])
-    hidden_cap = f"**{center_style('🎬 ' + h_title)}**\n**{center_style('🔢 حلقة رقم: ' + str(data['ep_num']))}**\n**{center_style('⚙️ الجودة: ' + quality)}**"
+    hidden_cap = f"**{center_style('🎬 ' + safe_title)}**\n**{center_style('🔢 حلقة رقم: ' + str(data['ep_num']))}**\n**{center_style('⚙️ الجودة: ' + quality)}**"
 
     for ch in PUBLIC_CHANNELS:
         try:
@@ -147,21 +165,25 @@ async def publish(client, query):
     await query.message.edit_text("✅ تم النشر في القنوات.")
 
 # ==============================
-# 5️⃣ نظام المشاهدة عند العضو
+# 5️⃣ نظام المشاهدة والبحث (بدون ردود مزعجة)
 # ==============================
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
     if len(message.command) < 2:
-        return await message.reply_text("🎬 أهلاً بك! تفضل بزيارة قناتنا.")
+        return await message.reply_text("🎬 أهلاً بك يا محمد! أرسل اسم المسلسل للبحث عن الحلقات.")
 
     param = message.command[1]
     data = db_query("SELECT * FROM episodes WHERE v_id=%s", (str(param),), fetchone=True)
     if data:
+        # تنظيف الاسم من التشفير للبحث عن الحلقات المرتبطة
         clean_name = data['title'].replace('‌', '').strip()
+        search_pattern = hide_text(clean_name)
+        
         related = db_query(
             "SELECT v_id, ep_num FROM episodes WHERE title LIKE %s ORDER BY ep_num ASC",
-            (f"%{clean_name}%",), fetchall=True
+            (f"%{search_pattern}%",), fetchall=True
         )
+        
         bot_info = await client.get_me()
         buttons, row = [], []
         if related:
@@ -171,19 +193,25 @@ async def start(client, message):
                 row.append(InlineKeyboardButton(label, url=ep_link))
                 if len(row) == 5: buttons.append(row); row = []
             if row: buttons.append(row)
+            
         buttons.append([InlineKeyboardButton("🍿 شاهد المزيد من الحلقات", url="https://t.me/MoAlmohsen")])
-        h_title = hide_text(clean_name)
-        final_cap = f"**{center_style('🎬 ' + h_title)}**\n**{center_style('🔢 حلقة رقم: ' + str(data['ep_num']))}**"
+        
         try:
-            await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(data['v_id']), caption=final_cap, reply_markup=InlineKeyboardMarkup(buttons))
+            # النسخ من القناة المصدر للأدمن
+            await client.copy_message(
+                message.chat.id, ADMIN_CHANNEL, int(data['v_id']), 
+                caption=f"**{center_style('🎬 ' + data['title'])}**\n**{center_style('🔢 حلقة رقم: ' + str(data.get('ep_num', '??')))}**", 
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
         except Exception as e:
-            await message.reply_text(f"❌ خطأ في النسخ: {e}")
+            await message.reply_text("⚠️ الحلقة مسجلة ولكن تعذر نسخها. تأكد من وجود الفيديو في قناة الأدمن.")
     else:
-        await message.reply_text("❌ الحلقة غير موجودة.")
+        # صمت تام إذا لم توجد الحلقة منعاً للإزعاج
+        pass
 
 # ==============================
 # ▶️ تشغيل البوت
 # ==============================
 if __name__ == "__main__":
-    print("🚀 البوت يعمل الآن على الاستضافة...")
+    print("🚀 البوت والناقل التلقائي يعملان الآن بنجاح...")
     app.run()
