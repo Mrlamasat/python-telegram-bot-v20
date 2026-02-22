@@ -6,6 +6,7 @@ import re
 from psycopg2.extras import RealDictCursor
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.errors import FloodWait
 
 # ==============================
 # 1. الإعدادات
@@ -14,25 +15,29 @@ API_ID = 35405228
 API_HASH = "dacba460d875d963bbd4462c5eb554d6"
 BOT_TOKEN = "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0"
 DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
-ADMIN_CHANNEL = -1003547072209
+
+# يمكن أن يكون ID أو username للقناة
+ADMIN_CHANNEL = "@Ramadan4kTV"
 PUBLIC_CHANNELS = ["@RamadanSeries26", "@MoAlmohsen"]
 
 # ==============================
-# 2. إعداد العميل الشخصي لتجاوز مشاكل البوت
+# 2. إعداد العميل (حساب شخصي)
 # ==============================
-SESSION_STRING = "BAIcPawAVbnVsmFmV_7WZNAu9ExY1RgEVfCSkUJsxiOzOtQuFzVf80cUj46AyZfLfHalT33q4ifup0NS489_hW8qxad8LLafHN0Ss_okBPlL3hE6830PlUiNAwkID4rvLD9FutTmg_Q1ZZjt6Ks2xD1BCdfpQBTgYNDtkIc429wm_EVcfTP4lyoupTRg6Bfuhb-51NPciFOh6ZS97NPUuQpPU8FjeTl9HwZYznI7KN_A-y3kE9pAXcIqJp2cx63uEVVnBwP2F_VsK6SEebmGJSWo2otgAaZIh5WQRQ3VS3kUv4JscPkHjb2d71wlVI924etj6jgbHc0WR11xVow_-oPtKu8MdAAAAAHMKGDXAA"
+SESSION_STRING = os.environ.get("USER_SESSION")
+if not SESSION_STRING:
+    raise ValueError("❌ USER_SESSION فارغ! ضع session string في المتغيرات")
 
 app = Client(
-    name="my_session_manager",
+    name="my_personal_session",
     session_string=SESSION_STRING,
     api_id=API_ID,
     api_hash=API_HASH,
     workers=20,
-    in_memory=True
+    in_memory=True  # التشغيل في الذاكرة لتجنب مشاكل اسم الملف الطويل
 )
 
 # ==============================
-# 3. دالات مساعدة
+# 3. دالات المساعدة
 # ==============================
 def hide_text(text):
     if not text: return "‌"
@@ -59,53 +64,65 @@ def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
         if conn: conn.close()
 
 # ==============================
-# 4. استيراد الحلقات القديمة والجديدة
+# 4. استيراد الحلقات القديمة من القناة
 # ==============================
 @app.on_message(filters.command("import_updated") & filters.private)
 async def import_updated_series(client, message):
     status = await message.reply_text("🔄 جاري الاتصال بالقناة وبدء السحب...")
     count = 0
     try:
+        # التعرف على القناة سواء ID أو username
         target_chat = await client.get_chat(ADMIN_CHANNEL)
-        
-        async for msg in client.get_chat_history(target_chat.id):
+        chat_id = target_chat.id
+
+        async for msg in client.get_chat_history(chat_id):
+            # نتأكد من الفيديو أو المستند الفيديو
             if not (msg.video or (msg.document and msg.document.mime_type and "video" in msg.document.mime_type)):
                 continue
 
             caption = (msg.caption or "").strip()
             if not caption: continue
 
-            # استخراج الاسم ورقم الحلقة
+            # استخراج الاسم (أول سطر غالباً)
             clean_title = caption.split('\n')[0].replace('🎬', '').strip()
+
+            # استخراج رقم الحلقة
             nums = re.findall(r'\d+', caption)
             ep_num = int(nums[0]) if nums else 1
-            quality = "1080p" if "1080" in caption else ("720p" if "720" in caption else "غير محدد")
 
-            # إضافة/تحديث المسلسل
+            # استخراج الجودة
+            quality = "1080p"
+            if "720" in caption: quality = "720p"
+
+            # تحديث أو إضافة المسلسل
             existing_series = db_query("SELECT id FROM series WHERE title=%s", (clean_title,), fetchone=True)
             if existing_series:
                 series_id = existing_series['id']
             else:
                 db_query("INSERT INTO series (title) VALUES (%s)", (clean_title,), commit=True)
-                series_id = db_query("SELECT id FROM series WHERE title=%s", (clean_title,), fetchone=True)['id']
+                res = db_query("SELECT id FROM series WHERE title=%s", (clean_title,), fetchone=True)
+                series_id = res['id'] if res else None
 
-            # إضافة الحلقة
-            db_query("""
-                INSERT INTO episodes (v_id, series_id, title, ep_num, duration, quality)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (v_id) DO UPDATE SET series_id=EXCLUDED.series_id, ep_num=EXCLUDED.ep_num
-            """, (str(msg.id), series_id, clean_title, ep_num, "0:00", quality), commit=True)
+            # إدخال الحلقة
+            if series_id:
+                db_query("""
+                    INSERT INTO episodes (v_id, series_id, title, ep_num, duration, quality)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (v_id) DO UPDATE
+                    SET series_id=EXCLUDED.series_id,
+                        ep_num=EXCLUDED.ep_num,
+                        quality=EXCLUDED.quality
+                """, (str(msg.id), series_id, clean_title, ep_num, "0:00", quality), commit=True)
+                count += 1
+                if count % 10 == 0:
+                    await status.edit_text(f"🔄 جاري العمل.. تم سحب {count} حلقة حتى الآن.")
 
-            count += 1
-            if count % 10 == 0:
-                await status.edit_text(f"🔄 جاري العمل.. تم سحب {count} حلقة حتى الآن.")
-
-        await status.edit_text(f"✅ تم الانتهاء! تم ربط {count} حلقة بالمسلسلات.")
+        await status.edit_text(f"✅ تم بنجاح! سحب {count} حلقة وربطها بالمسلسلات.")
     except Exception as e:
         await status.edit_text(f"❌ حدث خطأ أثناء السحب: {e}")
 
 # ==============================
-# 5. أوامر الإدارة (رفع الفيديو أولاً ثم البوستر)
+# 5. أوامر الإدارة (الرفع اليدوي)
 # ==============================
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document))
 async def on_video(client, message):
@@ -113,7 +130,7 @@ async def on_video(client, message):
     sec = message.video.duration if message.video else getattr(message.document, "duration", 0)
     db_query(
         "INSERT INTO temp_upload (chat_id, v_id, duration, step) VALUES (%s, %s, %s, 'awaiting_poster') "
-        "ON CONFLICT (chat_id) DO UPDATE SET v_id=EXCLUDED.v_id, step='awaiting_poster'", 
+        "ON CONFLICT (chat_id) DO UPDATE SET v_id=EXCLUDED.v_id, step='awaiting_poster'",
         (message.chat.id, v_id, f"{sec//60}:{sec%60:02d}"), commit=True
     )
     await message.reply_text("✅ استلمت الفيديو.. أرسل البوستر الآن واكتب اسم المسلسل في الوصف.")
@@ -126,9 +143,11 @@ async def on_poster(client, message):
         return await message.reply_text("⚠️ اكتب اسم المسلسل في وصف الصورة.")
 
     f_id = message.photo.file_id if message.photo else message.document.file_id
-    db_query("UPDATE temp_upload SET poster_id=%s, title=%s, step='awaiting_ep' WHERE chat_id=%s",
-             (f_id, message.caption, message.chat.id), commit=True)
-    await message.reply_text(f"✅ تم الربط بمسلسل: **{message.caption}**\n🔢 أرسل رقم الحلقة:")
+    db_query(
+        "UPDATE temp_upload SET poster_id=%s, title=%s, step='awaiting_ep' WHERE chat_id=%s",
+        (f_id, message.caption, message.chat.id), commit=True
+    )
+    await message.reply_text(f"✅ تم الربط بمسلسل: **{message.caption}**\n🔢 أرسل رقم الحلقة فقط:")
 
 @app.on_message(filters.chat(ADMIN_CHANNEL) & filters.text & ~filters.command(["start", "import_updated"]))
 async def on_num(client, message):
@@ -137,7 +156,8 @@ async def on_num(client, message):
     if not message.text.isdigit(): return
 
     db_query("UPDATE temp_upload SET ep_num=%s, step='awaiting_quality' WHERE chat_id=%s", (int(message.text), message.chat.id), commit=True)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("1080p", callback_data="q_1080p"), InlineKeyboardButton("720p", callback_data="q_720p")]])
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("1080p", callback_data="q_1080p"),
+                                InlineKeyboardButton("720p", callback_data="q_720p")]])
     await message.reply_text(f"🎬 حلقة {message.text} جاهزة.. اختر الجودة:", reply_markup=kb)
 
 @app.on_callback_query(filters.regex(r"^q_"))
@@ -163,7 +183,8 @@ async def publish(client, query):
     cap = f"**{center_style('🎬 ' + h_title)}**\n**الحلقة: {data['ep_num']}**"
 
     for ch in PUBLIC_CHANNELS:
-        try: await client.send_photo(ch, photo=data['poster_id'], caption=cap, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الآن", url=link)]]))
+        try: await client.send_photo(ch, photo=data['poster_id'], caption=cap,
+                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الآن", url=link)]]))
         except: pass
     await query.message.edit_text("✅ تم النشر بنجاح.")
 
@@ -188,15 +209,18 @@ async def start(client, message):
                 row.append(InlineKeyboardButton(label, url=f"https://t.me/{bot_info.username}?start={ep['v_id']}"))
                 if len(row) == 5: buttons.append(row); row = []
             if row: buttons.append(row)
-
         buttons.append([InlineKeyboardButton("🍿 القناة الرئيسية", url="https://t.me/MoAlmohsen")])
 
         try:
-            await client.copy_message(chat_id=message.chat.id, from_chat_id=ADMIN_CHANNEL, message_id=int(data['v_id']),
-                                      caption=f"**{center_style(hide_text(data['title']))}**\n**الحلقة: {data['ep_num']}**",
-                                      reply_markup=InlineKeyboardMarkup(buttons))
+            await client.copy_message(
+                chat_id=message.chat.id,
+                from_chat_id=ADMIN_CHANNEL,
+                message_id=int(data['v_id']),
+                caption=f"**{center_style(hide_text(data['title']))}**\n**الحلقة: {data['ep_num']}**",
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
         except:
-            await message.reply_text("❌ حدث خطأ في جلب الفيديو، تأكد من إضافة البوت كمسؤول في قناة الأرشيف.")
+            await message.reply_text("❌ حدث خطأ، تأكد من وجود البوت كمسؤول في قناة الأرشيف.")
     else:
         await message.reply_text("❌ الحلقة غير موجودة.")
 
