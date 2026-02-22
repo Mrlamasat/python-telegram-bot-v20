@@ -18,14 +18,14 @@ ADMIN_CHANNEL = -1003547072209
 PUBLIC_CHANNELS = ["@RamadanSeries26", "@MoAlmohsen"]
 
 # ==============================
-# 2. إعداد العميل (الحل لمشكلة OSError)
+# 2. إعداد العميل مع Session String
 # ==============================
 SESSION_STRING = os.environ.get("USER_SESSION")
 if not SESSION_STRING:
     raise ValueError("❌ USER_SESSION فارغ! تأكد من وضعه في Variable Variables")
 
 app = Client(
-    name="my_bot_session",      # اسم بسيط للملف
+    name="my_bot_session",      # اسم قصير لتجنب مشاكل طول الملف
     session_string=SESSION_STRING,
     api_id=API_ID,
     api_hash=API_HASH,
@@ -33,7 +33,9 @@ app = Client(
     in_memory=True             # التشغيل في الذاكرة لتجنب مشاكل أسماء الملفات الطويلة
 )
 
-# --- دالات المساعدة ---
+# ==============================
+# 3. دالات مساعدة
+# ==============================
 def hide_text(text):
     if not text: return "‌"
     return "‌".join(list(text))
@@ -59,7 +61,7 @@ def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
         if conn: conn.close()
 
 # ==============================
-# 3. أوامر الإدارة والرفع
+# 4. أوامر الإدارة والرفع
 # ==============================
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document))
 async def on_video(client, message):
@@ -77,7 +79,7 @@ async def on_poster(client, message):
     state = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
     if not state or state['step'] != 'awaiting_poster': return
     if not message.caption:
-        return await message.reply_text("⚠️ يا محمد، اكتب اسم المسلسل في وصف الصورة.")
+        return await message.reply_text("⚠️ اكتب اسم المسلسل في وصف الصورة.")
     
     f_id = message.photo.file_id if message.photo else message.document.file_id
     db_query(
@@ -108,7 +110,7 @@ async def publish(client, query):
     data = db_query("SELECT * FROM temp_upload WHERE chat_id=%s", (query.message.chat.id,), fetchone=True)
     if not data: return
     
-    # التأكد من وجود المسلسل في جدول series أولاً
+    # التأكد من وجود المسلسل
     existing_series = db_query("SELECT id FROM series WHERE title=%s", (data['title'],), fetchone=True)
     if not existing_series:
         db_query("INSERT INTO series (title, poster_id) VALUES (%s, %s)", (data['title'], data['poster_id']), commit=True)
@@ -137,23 +139,19 @@ async def publish(client, query):
     await query.message.edit_text("✅ تم النشر في القنوات.")
 
 # ==============================
-# 4. نظام المشاهدة (العضو)
+# 5. نظام المشاهدة (العضو)
 # ==============================
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
     if len(message.command) < 2:
-        return await message.reply_text("🎬 أهلاً بك يا محمد.\nتفضل بزيارة قناتنا: @MoAlmohsen")
+        return await message.reply_text("🎬 أهلاً بك.\nتفضل بزيارة قناتنا: @MoAlmohsen")
 
     param = message.command[1]
     data = db_query("SELECT * FROM episodes WHERE v_id=%s", (str(param),), fetchone=True)
     
     if data:
         clean_name = data['title'].replace('‌', '').strip()
-        # جلب جميع حلقات هذا المسلسل عبر series_id
-        related = db_query(
-            "SELECT v_id, ep_num FROM episodes WHERE series_id=%s ORDER BY ep_num ASC", 
-            (data['series_id'],), fetchall=True
-        )
+        related = db_query("SELECT v_id, ep_num FROM episodes WHERE series_id=%s ORDER BY ep_num ASC", (data['series_id'],), fetchall=True)
         
         bot_info = await client.get_me()
         buttons, row = [], []
@@ -164,20 +162,65 @@ async def start(client, message):
                 row.append(InlineKeyboardButton(label, url=ep_link))
                 if len(row) == 5: buttons.append(row); row = []
             if row: buttons.append(row)
-        
         buttons.append([InlineKeyboardButton("🍿 شـاهـد الـمـزيد مـن الـحـلـقـات", url="https://t.me/MoAlmohsen")])
+        
         h_title = hide_text(clean_name)
         final_cap = f"**{center_style('🎬 ' + h_title)}**\n**{center_style('🔢 حلقة رقم: ' + str(data['ep_num']))}**"
-        
         try:
             await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(data['v_id']), caption=final_cap, reply_markup=InlineKeyboardMarkup(buttons))
-        except Exception as e:
-            await message.reply_text("⚠️ خطأ في جلب الفيديو، تأكد من وجود البوت كآدمن في قناة الأرشيف.")
+        except:
+            await message.reply_text("⚠️ خطأ في جلب الفيديو، تأكد من وجود البوت كأدمن في قناة الأرشيف.")
     else:
         await message.reply_text("❌ الحلقة غير موجودة.")
 
 # ==============================
-# 5. تشغيل البوت
+# 6. أمر استيراد الحلقات القديمة
+# ==============================
+@app.on_message(filters.command("import_updated") & filters.private)
+async def import_updated_series(client, message):
+    await message.reply_text("🔄 بدء الاستيراد من وصف الصور الحالي...")
+    count = 0
+
+    async for msg in client.get_chat_history(ADMIN_CHANNEL, limit=0):
+        if not (msg.video or (msg.document and msg.document.mime_type.startswith("video"))):
+            continue
+        caption = (msg.caption or "").strip()
+        if not caption:
+            continue
+        title = caption.lower()
+        ep_num = None
+        quality = "غير محدد"
+        for line in caption.split("\n"):
+            if "حلقة" in line:
+                ep_num = ''.join(filter(str.isdigit, line))
+            elif "الجودة" in line:
+                quality = line.split(":")[-1].strip()
+        if not ep_num:
+            ep_num = "1"
+
+        existing = db_query("SELECT id FROM series WHERE title=%s", (title,), fetchone=True)
+        if existing:
+            series_id = existing['id']
+        else:
+            db_query("INSERT INTO series (title, poster_id) VALUES (%s, %s)", 
+                     (title, msg.photo.file_id if msg.photo else None), commit=True)
+            series_id = db_query("SELECT id FROM series WHERE title=%s", (title,), fetchone=True)['id']
+
+        db_query("""
+            INSERT INTO episodes (v_id, series_id, ep_num, duration, quality)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (v_id) DO UPDATE
+            SET series_id=EXCLUDED.series_id,
+                ep_num=EXCLUDED.ep_num,
+                quality=EXCLUDED.quality
+        """, (str(msg.id), series_id, int(ep_num), "0:00", quality), commit=True)
+
+        count += 1
+
+    await message.reply_text(f"✅ تم تحديث وربط {count} حلقة باسم المسلسل الجديد.")
+
+# ==============================
+# 7. تشغيل البوت
 # ==============================
 if __name__ == "__main__":
     print("🚀 Bot is starting...")
