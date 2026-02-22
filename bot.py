@@ -15,7 +15,6 @@ API_HASH = "dacba460d875d963bbd4462c5eb554d6"
 BOT_TOKEN = "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0"
 DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
 
-# المعرف الصحيح الذي أرسلته الآن
 ADMIN_CHANNEL = -1003547072209 
 PUBLIC_CHANNELS = ["@RamadanSeries26", "@MoAlmohsen"]
 
@@ -49,7 +48,6 @@ def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
 # ==============================
 # 2. أوامر الإدارة والرفع
 # ==============================
-
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document))
 async def on_video(client, message):
     v_id = str(message.id)
@@ -108,7 +106,6 @@ async def publish(client, query):
 # ==============================
 # 3. نظام المشاهدة (العضو)
 # ==============================
-
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
     if len(message.command) < 2:
@@ -139,7 +136,6 @@ async def start(client, message):
         final_cap = f"**{center_style('🎬 ' + h_title)}**\n**{center_style('🔢 حلقة رقم: ' + str(data['ep_num']))}**"
         
         try:
-            # النسخ من القناة بالـ ID الجديد الصحيح
             await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(data['v_id']), caption=final_cap, reply_markup=InlineKeyboardMarkup(buttons))
         except Exception as e:
             print(f"Error: {e}")
@@ -147,5 +143,78 @@ async def start(client, message):
     else:
         await message.reply_text("❌ الحلقة غير موجودة.")
 
+# ==============================
+# 4. أمر استيراد الحلقات القديمة مع الاسم الجديد
+# ==============================
+@app.on_message(filters.command("import_updated") & filters.private)
+async def import_updated_series(client, message):
+    await message.reply_text("بدأ الاستيراد من وصف الصور الحالي... ⏳")
+
+    count = 0
+    async for msg in client.get_chat_history(ADMIN_CHANNEL):
+        if not (msg.video or (msg.document and msg.document.mime_type.startswith("video"))):
+            continue
+
+        caption = (msg.caption or "").strip()
+        if not caption:
+            continue
+
+        title = caption.lower()
+        ep_num = None
+        quality = "غير محدد"
+
+        for line in caption.split("\n"):
+            if "حلقة" in line:
+                ep_num = ''.join(filter(str.isdigit, line))
+            elif "الجودة" in line:
+                quality = line.split(":")[-1].strip()
+
+        if not ep_num:
+            ep_num = "1"
+
+        existing = db_query(
+            "SELECT id FROM series WHERE title=%s",
+            (title,),
+            fetchone=True
+        )
+
+        if existing:
+            series_id = existing['id']
+        else:
+            db_query(
+                "INSERT INTO series (title, poster_id) VALUES (%s, %s)",
+                (title, msg.photo.file_id if msg.photo else None),
+                commit=True
+            )
+            series_id = db_query(
+                "SELECT id FROM series WHERE title=%s",
+                (title,),
+                fetchone=True
+            )['id']
+
+        db_query("""
+            INSERT INTO episodes (v_id, series_id, ep_num, duration, quality)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (v_id) DO UPDATE
+            SET series_id=EXCLUDED.series_id,
+                ep_num=EXCLUDED.ep_num,
+                quality=EXCLUDED.quality
+        """,
+        (
+            str(msg.id),
+            series_id,
+            int(ep_num),
+            str(msg.video.duration//60) + ":" + f"{msg.video.duration%60:02d}" if msg.video else "0:00",
+            quality
+        ),
+        commit=True)
+
+        count += 1
+
+    await message.reply_text(f"✅ تم تحديث وربط {count} حلقة باسم المسلسل الجديد")
+
+# ==============================
+# تشغيل البوت
+# ==============================
 if __name__ == "__main__":
     app.run()
