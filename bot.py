@@ -1,5 +1,4 @@
-
-import logging
+import logging  # تم تصحيح الحرف الكبير هنا
 import psycopg2
 import asyncio
 import os
@@ -9,14 +8,13 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
 
 # ==============================
-# 1. الإعدادات الصحيحة (Ramadan4kTV)
+# 1. الإعدادات (تأكد من مطابقتها لـ GitHub Secrets)
 # ==============================
 API_ID = 35405228
 API_HASH = "dacba460d875d963bbd4462c5eb554d6"
 BOT_TOKEN = "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0"
-DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway")
 
-# المعرف الصحيح الذي أرسلته الآن
 ADMIN_CHANNEL = -1003547072209 
 PUBLIC_CHANNELS = ["@RamadanSeries26", "@MoAlmohsen"]
 
@@ -24,8 +22,8 @@ app = Client("mo_final_fix", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOK
 
 # --- دالات المساعدة ---
 def hide_text(text):
-    if not text: return "‌"
-    return "‌".join(list(text))
+    if not text: return " "
+    return " ".join(list(text))
 
 def center_style(text):
     spacer = "ㅤ" * 8
@@ -47,8 +45,32 @@ def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
     finally:
         if conn: conn.close()
 
+# دالة لإنشاء الجداول إذا كانت مفقودة
+@app.on_message(filters.command("fix") & filters.user(6425332502)) # ضع الأيدي الخاص بك هنا
+async def fix_db(client, message):
+    db_query("""
+        CREATE TABLE IF NOT EXISTS episodes (
+            v_id TEXT PRIMARY KEY,
+            poster_id TEXT,
+            title TEXT,
+            ep_num INTEGER,
+            duration TEXT,
+            quality TEXT
+        );
+        CREATE TABLE IF NOT EXISTS temp_upload (
+            chat_id BIGINT PRIMARY KEY,
+            v_id TEXT,
+            poster_id TEXT,
+            title TEXT,
+            ep_num INTEGER,
+            duration TEXT,
+            step TEXT
+        );
+    """, commit=True)
+    await message.reply_text("✅ تم إنشاء وتحديث جداول قاعدة البيانات بنجاح!")
+
 # ==============================
-# 2. أوامر الإدارة والرفع
+# 2. أوامر الإدارة والرفع (قناة الأدمن)
 # ==============================
 
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document))
@@ -119,7 +141,7 @@ async def start(client, message):
     data = db_query("SELECT * FROM episodes WHERE v_id=%s", (str(param),), fetchone=True)
     
     if data:
-        clean_name = data['title'].replace('‌', '').strip()
+        clean_name = data['title'].replace(' ', '').strip()
         related = db_query(
             "SELECT v_id, ep_num FROM episodes WHERE title LIKE %s ORDER BY ep_num ASC", 
             (f"%{clean_name}%",), fetchall=True
@@ -140,10 +162,8 @@ async def start(client, message):
         final_cap = f"**{center_style('🎬 ' + h_title)}**\n**{center_style('🔢 حلقة رقم: ' + str(data['ep_num']))}**"
         
         try:
-            # النسخ من القناة بالـ ID الجديد الصحيح
             await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(data['v_id']), caption=final_cap, reply_markup=InlineKeyboardMarkup(buttons))
         except Exception as e:
-            print(f"Error: {e}")
             await message.reply_text("⚠️ تأكد من إضافة البوت كأدمن في قناة Ramadan4kTV.")
     else:
         await message.reply_text("❌ الحلقة غير موجودة.")
