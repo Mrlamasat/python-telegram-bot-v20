@@ -1,11 +1,7 @@
 name: Run Telegram Bot
 
 on:
-  push:
-    branches: [ main ]  # يعمل تلقائياً عند تحديث الكود
-  workflow_dispatch:     # يسمح لك بتشغيله يدوياً من تبويب Actions
-  schedule:
-    - cron: '0 */6 * * *' # إعادة تشغيل تلقائية كل 6 ساعات (لأن GitHub Actions له وقت محدد ويتوقف)
+  workflow_dispatch:   # لتشغيله يدويًا من GitHub
 
 jobs:
   run-bot:
@@ -18,7 +14,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.10'
+        python-version: '3.12'
 
     - name: Install Dependencies
       run: |
@@ -27,13 +23,11 @@ jobs:
 
     - name: Run Bot
       env:
-        # ربط الـ Secrets الموجودة في إعدادات GitHub بالكود
         SESSION_STRING: ${{ secrets.SESSION_STRING }}
         DATABASE_URL: ${{ secrets.DATABASE_URL }}
         ADMIN_CHANNEL: ${{ secrets.ADMIN_CHANNEL }}
         API_ID: ${{ secrets.API_ID }}
         API_HASH: ${{ secrets.API_HASH }}
-        SOURCE_CHANNEL: ${{ secrets.SOURCE_CHANNEL }}
         PUBLIC_CHANNELS: ${{ secrets.PUBLIC_CHANNELS }}
       run: |
         python bot.py
