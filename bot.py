@@ -1,91 +1,117 @@
 import os
-import re
+import asyncio
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ======= المتغيرات من GitHub Secrets =======
-API_ID = int(os.environ["API_ID"])
-API_HASH = os.environ["API_HASH"]
-BOT_TOKEN = os.environ["BOT_TOKEN"]
-DATABASE_URL = os.environ["DATABASE_URL"]
+# ==============================
+# 🔐 جلب المتغيرات من البيئة
+# ==============================
+SESSION_STRING = os.environ.get("SESSION_STRING")
+DATABASE_URL = os.environ.get("DATABASE_URL")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+API_ID = os.environ.get("API_ID")
+API_HASH = os.environ.get("API_HASH")
+ADMIN_CHANNEL = int(os.environ.get("ADMIN_CHANNEL", "0"))
+PUBLIC_CHANNELS = os.environ.get("PUBLIC_CHANNELS", "").split(",")  # قنوات للنشر التلقائي
 
-ADMIN_CHANNEL = "@Ramadan4kTV"        # مصدر الحلقات
-FORWARD_CHANNEL = "@RamadanSeries26"  # قناة النشر
-BOT_USERNAME = "Ramadan4kTVbot"
+# التحقق من وجود كل المتغيرات
+if not all([SESSION_STRING, DATABASE_URL, BOT_TOKEN, API_ID, API_HASH, ADMIN_CHANNEL]):
+    raise ValueError("❌ أحد متغيرات البيئة مفقود. تحقق من SESSION_STRING, DATABASE_URL, ADMIN_CHANNEL, API_ID, API_HASH.")
 
-# ======= تشغيل البوت =======
+# ==============================
+# 📦 إنشاء البوت
+# ==============================
 app = Client(
-    "ramadan_bot",
-    api_id=API_ID,
+    "mo_user_bot",
+    session_string=SESSION_STRING,
+    api_id=int(API_ID),
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN
+    bot_token=BOT_TOKEN,
+    sleep_threshold=60
 )
 
-# ======= قاعدة البيانات =======
+# ==============================
+# 🔒 دوال مساعدة
+# ==============================
+def encrypt_text(text):
+    return "•".join(list(text)) if text else ""
+
 def db_query(query, params=(), commit=False):
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-    cur = conn.cursor()
-    cur.execute(query, params)
-    if commit:
-        conn.commit()
-    cur.close()
-    conn.close()
-
-# ======= أمر start =======
-@app.on_message(filters.private & filters.command("start"))
-async def start_handler(client, message):
-    match = re.search(r"\d+", message.text)
-
-    if not match:
-        await message.reply_text(
-            "🎬 أهلاً بك.\nتابع القناة: @Ramadan4kTV"
-        )
-        return
-
-    v_id = int(match.group())
-
+    conn = None
     try:
-        await client.copy_message(
-            chat_id=message.chat.id,
-            from_chat_id=ADMIN_CHANNEL,
-            message_id=v_id
-        )
-    except:
-        await message.reply_text("❌ الحلقة غير متوفرة.")
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        cur = conn.cursor()
+        cur.execute(query, params)
+        if commit: conn.commit()
+        cur.close()
+    except Exception as e:
+        print(f"DB Error: {e}")
+    finally:
+        if conn: conn.close()
 
-# ======= عند نشر حلقة جديدة في المصدر =======
+# ==============================
+# 📥 سحب حلقات جديدة من القناة
+# ==============================
 @app.on_message(filters.chat(ADMIN_CHANNEL) & filters.video)
 async def handle_new_video(client, message):
     v_id = str(message.id)
-
-    # حفظ في DB
+    safe_title = encrypt_text(message.caption or f"فيديو {v_id}")
     db_query(
-        "INSERT INTO episodes (v_id) VALUES (%s) ON CONFLICT (v_id) DO NOTHING",
-        (v_id,),
+        "INSERT INTO episodes (v_id, title) VALUES (%s, %s) ON CONFLICT (v_id) DO UPDATE SET title=EXCLUDED.title",
+        (v_id, safe_title),
         commit=True
     )
+    print(f"📥 تم سحب حلقة جديدة تلقائياً: {v_id}")
 
-    # إنشاء زر المشاهدة
-    keyboard = InlineKeyboardMarkup(
-        [[
-            InlineKeyboardButton(
-                "▶ مشاهدة الحلقة",
-                url=f"https://t.me/{BOT_USERNAME}?start={v_id}"
-            )
-        ]]
-    )
+    # نشر الحلقة تلقائيًا في القنوات العامة
+    for channel in PUBLIC_CHANNELS:
+        try:
+            await app.copy_message(chat_id=channel.strip(), from_chat_id=ADMIN_CHANNEL, message_id=int(v_id))
+            await asyncio.sleep(1)
+        except Exception as e:
+            print(f"❌ خطأ في النشر للقناة {channel}: {e}")
 
-    # نشر في قناة النشر
-    await client.send_video(
-        chat_id=FORWARD_CHANNEL,
-        video=message.video.file_id,
-        caption=message.caption or "",
-        reply_markup=keyboard
-    )
+# ==============================
+# 🔄 تحديث الحلقات عند تعديلها
+# ==============================
+@app.on_edited_message(filters.chat(ADMIN_CHANNEL) & filters.video)
+async def handle_edit(client, message):
+    v_id = str(message.id)
+    safe_title = encrypt_text(message.caption or f"فيديو {v_id}")
+    db_query("UPDATE episodes SET title=%s WHERE v_id=%s", (safe_title, v_id), commit=True)
+    print(f"🔄 تم تحديث اسم الحلقة: {v_id}")
 
-    print(f"✅ تم نشر الحلقة {v_id} تلقائياً")
+# ==============================
+# 🔍 البحث الصامت
+# ==============================
+@app.on_message(filters.private & filters.text & ~filters.me & ~filters.outgoing)
+async def search_bot(client, message):
+    txt = message.text.strip()
+    if len(txt) < 2: return
+    
+    search_query = f"%{encrypt_text(txt)}%"
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    cur = conn.cursor()
+    cur.execute("SELECT v_id FROM episodes WHERE title ILIKE %s LIMIT 5", (search_query,))
+    results = cur.fetchall()
+    cur.close()
+    conn.close()
 
-print("🚀 النظام يعمل من @Ramadan4kTV وينشر تلقائياً")
-app.run()
+    if results:
+        for res in results:
+            try:
+                await app.copy_message(
+                    chat_id=message.chat.id,
+                    from_chat_id=ADMIN_CHANNEL,
+                    message_id=int(res['v_id'])
+                )
+                await asyncio.sleep(1)
+            except: pass
+
+# ==============================
+# ▶ تشغيل البوت
+# ==============================
+if __name__ == "__main__":
+    print("🚀 البوت يعمل الآن على الاستضافة...")
+    app.run()
