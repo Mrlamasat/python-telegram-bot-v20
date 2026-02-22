@@ -15,7 +15,8 @@ API_HASH = "dacba460d875d963bbd4462c5eb554d6"
 BOT_TOKEN = "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0"
 DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
 
-ADMIN_CHANNEL = -1003547072209  # يمكنك تغييره إلى "@Ramadan4kTV" إذا ظهرت مشاكل
+# استخدام username للقناة الخاصة لتجنب Peer id invalid
+ADMIN_CHANNEL = "@Ramadan4kTV"
 PUBLIC_CHANNELS = ["@RamadanSeries26", "@MoAlmohsen"]
 
 app = Client("mo_final_fix", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=20)
