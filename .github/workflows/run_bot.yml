@@ -1,36 +1,28 @@
 name: Run Bot
-
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:
-
 jobs:
   run-bot:
     runs-on: ubuntu-24.04
-
-    env:
-      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-      API_ID: ${{ secrets.API_ID }}
-      API_HASH: ${{ secrets.API_HASH }}
-      SESSION_STRING: ${{ secrets.SESSION_STRING }}
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}  # إذا كان عندك قاعدة بيانات
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
+      - uses: actions/checkout@v3
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.12"
-
-      - name: Install dependencies
+          python-version: 3.12
+      - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyrogram asyncpg TgCrypto psycopg2-binary
-
+          pip install pyrogram asyncpg TgCrypto psycopg2-binary python-dotenv
       - name: Run Bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SOURCE_CHANNEL: ${{ secrets.SOURCE_CHANNEL }}
+          ADMIN_ID: ${{ secrets.ADMIN_ID }}
         run: |
           echo "🚀 بدء تشغيل البوت..."
           python bot.py
