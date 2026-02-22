@@ -1,3 +1,4 @@
+# bot.py
 import os
 import asyncio
 import psycopg2
@@ -5,19 +6,13 @@ from psycopg2.extras import RealDictCursor
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ==============================
-# 🔐 إعدادات البوت من البيئة
-# ==============================
 SESSION_STRING = os.environ.get("SESSION_STRING")
 DATABASE_URL = os.environ.get("DATABASE_URL")
-ADMIN_CHANNEL = int(os.environ.get("ADMIN_CHANNEL", "-1003547072209"))
+ADMIN_CHANNEL = int(os.environ.get("ADMIN_CHANNEL"))
 PUBLIC_CHANNELS = os.environ.get("PUBLIC_CHANNELS", "").split(",")
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 
-# ==============================
-# ▶️ تشغيل Userbot
-# ==============================
 app = Client(
     "auto_bot",
     session_string=SESSION_STRING,
@@ -27,9 +22,7 @@ app = Client(
     sleep_threshold=60
 )
 
-# ==============================
-# 💾 قاعدة البيانات
-# ==============================
+# --- الدوال المساعدة ---
 def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
     conn = None
     try:
@@ -49,16 +42,13 @@ def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
             conn.close()
 
 def hide_text(text):
-    if not text: return "‌"
-    return "‌".join(list(text))
+    return "‌".join(list(text)) if text else "‌"
 
 def center_style(text):
     spacer = "ㅤ" * 8
     return f"{spacer}{text}{spacer}"
 
-# ==============================
-# 📹 سحب الفيديوهات الجديدة من القناة
-# ==============================
+# --- سحب الفيديوهات الجديدة ---
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document))
 async def on_video(client, message):
     v_id = str(message.id)
@@ -70,9 +60,7 @@ async def on_video(client, message):
     )
     await message.reply_text("✅ استلمت الفيديو.. أرسل البوستر الآن واكتب اسم المسلسل في الوصف.")
 
-# ==============================
-# 🖼️ استلام البوستر وربطه
-# ==============================
+# --- استلام البوستر ---
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.photo | filters.document))
 async def on_poster(client, message):
     state = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
@@ -87,9 +75,7 @@ async def on_poster(client, message):
     )
     await message.reply_text(f"✅ تم الربط بمسلسل: **{message.caption}**\n🔢 أرسل رقم الحلقة فقط:")
 
-# ==============================
-# 🔢 استلام رقم الحلقة واختيار الجودة
-# ==============================
+# --- استلام رقم الحلقة ---
 @app.on_message(filters.chat(ADMIN_CHANNEL) & filters.text & ~filters.command(["start", "fix"]))
 async def on_num(client, message):
     state = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
@@ -100,13 +86,9 @@ async def on_num(client, message):
         "UPDATE temp_upload SET ep_num=%s, step='awaiting_quality' WHERE chat_id=%s",
         (int(message.text), message.chat.id), commit=True
     )
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("1080p", callback_data="q_1080p"),
-                                InlineKeyboardButton("720p", callback_data="q_720p")]])
-    await message.reply_text(f"🎬 حلقة {message.text} جاهزة.. اختر الجودة للنشر:", reply_markup=kb)
+    await message.reply_text("🎬 حلقة جاهزة.. اختر الجودة للنشر: 1080p أو 720p")
 
-# ==============================
-# ▶️ نشر الفيديو في القنوات العامة
-# ==============================
+# --- نشر الفيديو تلقائياً ---
 @app.on_callback_query(filters.regex(r"^q_"))
 async def publish(client, query):
     quality = query.data.split("_")[1]
@@ -124,8 +106,7 @@ async def publish(client, query):
     bot_info = await client.get_me()
     link = f"https://t.me/{bot_info.username}?start={data['v_id']}".replace(" ", "")
     
-    h_title = hide_text(data['title'])
-    hidden_cap = f"**{center_style('🎬 ' + h_title)}**\n" \
+    hidden_cap = f"**{center_style('🎬 ' + hide_text(data['title']))}**\n" \
                  f"**{center_style('🔢 حلقة رقم: ' + str(data['ep_num']))}**\n" \
                  f"**{center_style('⚙️ الجودة: ' + quality)}**"
     
@@ -140,14 +121,11 @@ async def publish(client, query):
         except: pass
     await query.message.edit_text("✅ تم النشر في القنوات.")
 
-# ==============================
-# ▶️ نظام مشاهدة الحلقة
-# ==============================
+# --- نظام مشاهدة الحلقة ---
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
     if len(message.command) < 2:
-        return await message.reply_text("🎬 أهلاً بك.\nتفضل بزيارة قناتنا: @MoAlmohsen")
-
+        return await message.reply_text(f"🎬 أهلاً بك.\nتفضل بزيارة قناتنا: {PUBLIC_CHANNELS[0]}")
     param = message.command[1]
     data = db_query("SELECT * FROM episodes WHERE v_id=%s", (str(param),), fetchone=True)
     
@@ -157,7 +135,6 @@ async def start(client, message):
             "SELECT v_id, ep_num FROM episodes WHERE title LIKE %s ORDER BY ep_num ASC",
             (f"%{clean_name}%",), fetchall=True
         )
-        
         bot_info = await client.get_me()
         buttons, row = [], []
         if related:
@@ -167,11 +144,8 @@ async def start(client, message):
                 row.append(InlineKeyboardButton(label, url=ep_link))
                 if len(row) == 5: buttons.append(row); row = []
             if row: buttons.append(row)
-        
-        buttons.append([InlineKeyboardButton("🍿 شـاهـد الـمـزيد مـن الـحـلـقـات", url="https://t.me/MoAlmohsen")])
-        h_title = hide_text(clean_name)
-        final_cap = f"**{center_style('🎬 ' + h_title)}**\n**{center_style('🔢 حلقة رقم: ' + str(data['ep_num']))}**"
-        
+        buttons.append([InlineKeyboardButton("🍿 شـاهـد الـمـزيد مـن الـحـلـقـات", url=PUBLIC_CHANNELS[0])])
+        final_cap = f"**{center_style('🎬 ' + hide_text(clean_name))}**\n**{center_style('🔢 حلقة رقم: ' + str(data['ep_num']))}**"
         try:
             await client.copy_message(message.chat.id, ADMIN_CHANNEL, int(data['v_id']), caption=final_cap,
                                       reply_markup=InlineKeyboardMarkup(buttons))
@@ -180,9 +154,7 @@ async def start(client, message):
     else:
         await message.reply_text("❌ الحلقة غير موجودة.")
 
-# ==============================
-# ▶️ تشغيل البوت
-# ==============================
+# --- تشغيل البوت ---
 if __name__ == "__main__":
     print("🚀 البوت يعمل الآن على GitHub Actions / السيرفر...")
     app.run()
