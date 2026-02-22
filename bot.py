@@ -1,26 +1,21 @@
 import os
-import asyncio
+import re
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ==========================
-# إعدادات من Environment
-# ==========================
-
+# ======= المتغيرات من GitHub Secrets =======
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 
-ADMIN_CHANNEL = os.environ["ADMIN_CHANNEL"]  # مثال: @MoAlmohsen
-PUBLISH_CHANNEL_1 = os.environ["PUBLISH_CHANNEL_1"]  # مثال: @MoAlmohsen
-PUBLISH_CHANNEL_2 = os.environ["PUBLISH_CHANNEL_2"]  # مثال: @RamadanSeries26
-BOT_USERNAME = os.environ["BOT_USERNAME"]  # مثال: Ramadan4kTVbot
+ADMIN_CHANNEL = "@Ramadan4kTV"        # مصدر الحلقات
+FORWARD_CHANNEL = "@RamadanSeries26"  # قناة النشر
+BOT_USERNAME = "Ramadan4kTVbot"
 
-# ==========================
-
+# ======= تشغيل البوت =======
 app = Client(
     "ramadan_bot",
     api_id=API_ID,
@@ -28,99 +23,69 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
-# ==========================
-# قاعدة البيانات
-# ==========================
+# ======= قاعدة البيانات =======
+def db_query(query, params=(), commit=False):
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    cur = conn.cursor()
+    cur.execute(query, params)
+    if commit:
+        conn.commit()
+    cur.close()
+    conn.close()
 
-def db_query(query, params=(), fetch=False, commit=False):
-    conn = None
-    try:
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-        cur = conn.cursor()
-        cur.execute(query, params)
-        result = cur.fetchall() if fetch else None
-        if commit:
-            conn.commit()
-        cur.close()
-        return result
-    except Exception as e:
-        print("DB Error:", e)
-        return None
-    finally:
-        if conn:
-            conn.close()
-
-# ==========================
-# عند نشر فيديو في القناة الأساسية
-# ==========================
-
-@app.on_message(filters.chat(ADMIN_CHANNEL) & filters.video)
-async def new_video_handler(client, message):
-    v_id = message.id
-    title = message.caption or f"Episode {v_id}"
-
-    # حفظ في قاعدة البيانات
-    db_query(
-        "INSERT INTO episodes (v_id, title) VALUES (%s, %s) ON CONFLICT (v_id) DO UPDATE SET title=EXCLUDED.title",
-        (str(v_id), title),
-        commit=True
-    )
-
-    # زر المشاهدة
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "▶ مشاهدة الحلقة",
-                url=f"https://t.me/{BOT_USERNAME}?start={v_id}"
-            )
-        ]
-    ])
-
-    # نشر في القناتين
-    try:
-        await client.copy_message(
-            chat_id=PUBLISH_CHANNEL_1,
-            from_chat_id=ADMIN_CHANNEL,
-            message_id=v_id,
-            reply_markup=keyboard
-        )
-
-        await client.copy_message(
-            chat_id=PUBLISH_CHANNEL_2,
-            from_chat_id=ADMIN_CHANNEL,
-            message_id=v_id,
-            reply_markup=keyboard
-        )
-
-        print("✅ تم النشر في القناتين")
-    except Exception as e:
-        print("❌ خطأ في النشر:", e)
-
-# ==========================
-# استقبال start
-# ==========================
-
+# ======= أمر start =======
 @app.on_message(filters.private & filters.command("start"))
 async def start_handler(client, message):
+    match = re.search(r"\d+", message.text)
 
-    if len(message.command) < 2:
+    if not match:
         await message.reply_text(
-            "🎬 أهلاً بك.\nتفضل بزيارة قناتنا: @MoAlmohsen"
+            "🎬 أهلاً بك.\nتابع القناة: @Ramadan4kTV"
         )
         return
 
-    v_id = message.command[1]
+    v_id = int(match.group())
 
     try:
         await client.copy_message(
             chat_id=message.chat.id,
             from_chat_id=ADMIN_CHANNEL,
-            message_id=int(v_id)
+            message_id=v_id
         )
     except:
         await message.reply_text("❌ الحلقة غير متوفرة.")
 
-# ==========================
+# ======= عند نشر حلقة جديدة في المصدر =======
+@app.on_message(filters.chat(ADMIN_CHANNEL) & filters.video)
+async def handle_new_video(client, message):
+    v_id = str(message.id)
 
-print("🚀 البوت يعمل الآن بنجاح...")
+    # حفظ في DB
+    db_query(
+        "INSERT INTO episodes (v_id) VALUES (%s) ON CONFLICT (v_id) DO NOTHING",
+        (v_id,),
+        commit=True
+    )
+
+    # إنشاء زر المشاهدة
+    keyboard = InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton(
+                "▶ مشاهدة الحلقة",
+                url=f"https://t.me/{BOT_USERNAME}?start={v_id}"
+            )
+        ]]
+    )
+
+    # نشر في قناة النشر
+    await client.send_video(
+        chat_id=FORWARD_CHANNEL,
+        video=message.video.file_id,
+        caption=message.caption or "",
+        reply_markup=keyboard
+    )
+
+    print(f"✅ تم نشر الحلقة {v_id} تلقائياً")
+
+print("🚀 النظام يعمل من @Ramadan4kTV وينشر تلقائياً")
 app.run()
