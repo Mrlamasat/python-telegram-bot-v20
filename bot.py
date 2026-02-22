@@ -5,7 +5,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import asyncpg
 from dotenv import load_dotenv
 
-# تحميل المتغيرات من .env
+# تحميل متغيرات البيئة
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -18,7 +18,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID"))
 app = Client("my_bot", bot_token=BOT_TOKEN, api_id=API_ID, api_hash=API_HASH)
 
 # ==============================
-# قاعدة البيانات
+# إعداد قاعدة البيانات
 # ==============================
 async def init_db():
     conn = await asyncpg.connect(DATABASE_URL)
@@ -34,7 +34,7 @@ async def init_db():
     await conn.close()
 
 # ==============================
-# رفع الحلقات (Admin only)
+# رفع الحلقات (Admin فقط)
 # ==============================
 @app.on_message(filters.private & filters.user(ADMIN_ID) & filters.command("upload"))
 async def upload_episode(client, message):
@@ -74,7 +74,7 @@ async def upload_episode(client, message):
     await message.reply_text(f"✅ تم أرشفة الحلقة {episode_number} بالجودة {quality}")
 
 # ==============================
-# مشاهدة الحلقة
+# مشاهدة الحلقات
 # ==============================
 @app.on_message(filters.private & filters.command("watch"))
 async def watch_episode(client, message):
