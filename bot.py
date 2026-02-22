@@ -14,10 +14,12 @@ API_ID = 35405228
 API_HASH = "dacba460d875d963bbd4462c5eb554d6"
 DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
 
-# ⚠️ الآن نستخدم User Session String بدل BOT TOKEN
+# ⚠️ استخدم Session String من متغير البيئة
 USER_SESSION = os.environ.get("USER_SESSION")
 
-# القناة الرئيسية والقنوات العامة للنشر
+if not USER_SESSION:
+    raise ValueError("❌ USER_SESSION فارغ! ضع Session String كامل في Environment Variables")
+
 ADMIN_CHANNEL = "@Ramadan4kTV"
 PUBLIC_CHANNELS = ["@RamadanSeries26", "@MoAlmohsen"]
 
