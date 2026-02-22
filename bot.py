@@ -1,12 +1,9 @@
 import logging
 import psycopg2
-import os
-import re
 import asyncio
 from psycopg2.extras import RealDictCursor
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import FloodWait
 
 # ==============================
 # 1. الإعدادات
@@ -14,8 +11,8 @@ from pyrogram.errors import FloodWait
 BOT_TOKEN = "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0"
 SESSION_STRING = "BAIcPawAqsz8F_p2JJmXjf2wJeeg2frJbPyA1FfK3gb4urW94P9VCR5N5apDGsEmeJxtehLGkZs7of6guY6fUqlhG3AnvjVKlxCAHA_xja75TxKgIRqUi-GcjFb_JSguFGioFPTIeX5donwup7_TXxfxCqNURpL_4EPenFnqc6EEbOhRa5Wz7rqE7kv-0KznphGohGYovuftOxoZhUAv0ASyD_pYjcyFBn6798_tmUa-LZyluuxY_msjiigO35H0V8gukbedFVezTLBsuoY6iK61mwXHFeFEkczFfOlEXNp-_ZmU4uBSuFqRdaZOLaRAeaXKoX2eWruWCmCY9bq-VErWbe6GTQAAAAHMKGDXAA"
 DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
-ADMIN_CHANNEL = -1003547072209       # معرف القناة الرقمي للأدمن
-PUBLIC_CHANNELS = ["@Ramadan4kTV"]  # القنوات العامة للنشر
+ADMIN_CHANNEL = -1003547072209
+PUBLIC_CHANNELS = ["@Ramadan4kTV"]
 
 # ==============================
 # 2. إعداد العميل
@@ -56,50 +53,26 @@ def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
         if conn: conn.close()
 
 # ==============================
-# 4. سحب الفيديوهات القديمة
+# 4. سحب الحلقات القديمة مباشرة
 # ==============================
-@app.on_message(filters.command("import_updated") & filters.private)
-async def import_updated_series(client, message):
-    status = await message.reply_text("🔄 بدء سحب الفيديوهات القديمة...")
-    count = 0
+async def import_old_videos():
+    print("🔄 بدء سحب الفيديوهات القديمة من القناة...")
     try:
-        target_chat = await client.get_chat(ADMIN_CHANNEL)
-        async for msg in client.get_chat_history(target_chat.id):
-            if not (msg.video or (msg.document and msg.document.mime_type and "video" in msg.document.mime_type)):
-                continue
-            caption = (msg.caption or "").strip()
-            if not caption: continue
-
-            clean_title = caption.split('\n')[0].replace('🎬', '').strip()
-            nums = re.findall(r'\d+', caption)
-            ep_num = int(nums[0]) if nums else 1
-            quality = "1080p" if "1080" in caption else "720p"
-
-            # إضافة المسلسل إذا لم يكن موجود
-            existing_series = db_query("SELECT id FROM series WHERE title=%s", (clean_title,), fetchone=True)
-            if existing_series:
-                series_id = existing_series['id']
-            else:
-                db_query("INSERT INTO series (title) VALUES (%s)", (clean_title,), commit=True)
-                res = db_query("SELECT id FROM series WHERE title=%s", (clean_title,), fetchone=True)
-                series_id = res['id'] if res else None
-
-            # إضافة الحلقة
-            if series_id:
-                db_query("""
-                    INSERT INTO episodes (v_id, series_id, title, ep_num, duration, quality)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (v_id) DO UPDATE SET series_id=EXCLUDED.series_id, ep_num=EXCLUDED.ep_num
-                """, (str(msg.id), series_id, clean_title, ep_num, "0:00", quality), commit=True)
-                count += 1
-                if count % 10 == 0:
-                    await status.edit_text(f"🔄 جاري العمل.. تم سحب {count} حلقة حتى الآن.")
-        await status.edit_text(f"✅ تم بنجاح! سحب {count} حلقة وربطها بالمسلسلات.")
+        async for msg in app.get_chat_history(ADMIN_CHANNEL, limit=5000):
+            if msg.video or msg.document:
+                v_id = str(msg.id)
+                duration = msg.video.duration if msg.video else getattr(msg.document, "duration", 0)
+                db_query(
+                    "INSERT INTO temp_upload (chat_id, v_id, duration, step) VALUES (%s, %s, %s, 'awaiting_poster') "
+                    "ON CONFLICT (chat_id) DO UPDATE SET v_id=EXCLUDED.v_id, step='awaiting_poster'",
+                    (ADMIN_CHANNEL, v_id, f"{duration//60}:{duration%60:02d}"), commit=True
+                )
+        print("✅ انتهى سحب الفيديوهات القديمة، الآن أرسل البوسترات لتسمية المسلسلات.")
     except Exception as e:
-        await status.edit_text(f"❌ حدث خطأ أثناء السحب: {e}")
+        print(f"⚠️ خطأ أثناء السحب: {e}")
 
 # ==============================
-# 5. رفع الحلقات الجديدة (أدمن)
+# 5. رفع الحلقات الجديدة (أدمن فقط)
 # ==============================
 @app.on_message(filters.chat(ADMIN_CHANNEL) & (filters.video | filters.document))
 async def on_video(client, message):
@@ -125,7 +98,7 @@ async def on_poster(client, message):
     )
     await message.reply_text(f"✅ تم الربط بمسلسل: **{message.caption}**\n🔢 أرسل رقم الحلقة فقط:")
 
-@app.on_message(filters.chat(ADMIN_CHANNEL) & filters.text & ~filters.command(["start", "import_updated"]))
+@app.on_message(filters.chat(ADMIN_CHANNEL) & filters.text & ~filters.command(["start"]))
 async def on_num(client, message):
     state = db_query("SELECT step FROM temp_upload WHERE chat_id=%s", (message.chat.id,), fetchone=True)
     if not state or state['step'] != "awaiting_ep": return
@@ -193,11 +166,11 @@ async def start(client, message):
         except:
             await message.reply_text("❌ حدث خطأ، تأكد من وجود البوت كمسؤول في قناة الأرشيف.")
     else:
-        await message.reply_text("❌ الحلقة غير موجودة.")
+        await message.reply_text("❌ الحلقة غير موجود.")
 
 # ==============================
-# 7. تشغيل البوت
+# 7. تشغيل البوت مع استدعاء السحب القديم
 # ==============================
 if __name__ == "__main__":
     print("🚀 البوت بدأ العمل الآن...")
-    app.run()
+    app.run(import_old_videos())
