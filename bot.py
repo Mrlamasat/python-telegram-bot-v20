@@ -2,7 +2,7 @@ import logging
 import psycopg2
 import asyncio
 from psycopg2.extras import RealDictCursor
-from pyrogram import Client, filters
+from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ==============================
@@ -171,8 +171,16 @@ async def start(client, message):
 # ==============================
 # 7. تشغيل البوت بشكل صحيح
 # ==============================
-if __name__ == "__main__":
+async def main():
+    await app.start()
     print("🚀 البوت بدأ العمل الآن...")
-    app.start()  # يبدأ البوت
-    asyncio.get_event_loop().run_until_complete(import_old_videos())  # سحب الحلقات القديمة
-    app.idle()  # يظل البوت متصلاً لتلقي الرسائل
+    await import_old_videos()
+    print("🤖 البوت الآن في وضع الاستعداد (Idle)...")
+    await idle()
+    await app.stop()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
