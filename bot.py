@@ -1,6 +1,7 @@
 import os
 import psycopg2
 import logging
+import re  # مكتبة استخراج الأرقام من النصوص
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import UserNotParticipant
@@ -54,11 +55,10 @@ def init_db():
 
 init_db()
 
-# ===== 1. دالة الاشتراك (نفس منطق كودك القديم الناجح) =====
+# ===== Force Subscription Check =====
 async def check_subscription(client, user_id):
     try:
         member = await client.get_chat_member(FORCE_SUB_CHANNEL, user_id)
-        # هذا هو الشرط الذي كان يعمل عندك:
         if member.status in ["left", "kicked"]:
             return False
         return True
@@ -66,13 +66,14 @@ async def check_subscription(client, user_id):
         return False
     except Exception as e:
         logging.error(f"Subscription error: {e}")
-        return True # نمرره في حال حدوث خطأ تقني
+        return True
 
-# ===== 2. دوال المساعدة (التشفير وأزرار الحلقات) =====
+# ===== Helpers (Encoding & Episodes List) =====
 def encode_hidden(text):
     return "".join(["\u200b" + char for char in text])
 
 async def get_episodes_markup(title, current_v_id):
+    # جلب جميع حلقات هذا المسلسل وترتيبها حسب رقم الحلقة
     res = db_query("SELECT v_id, ep_num FROM videos WHERE title = %s AND status = 'posted' ORDER BY ep_num ASC", (title,))
     if not res: return None
     buttons, row = [], []
@@ -87,21 +88,31 @@ async def get_episodes_markup(title, current_v_id):
     if row: buttons.append(row)
     return buttons
 
-# ===== 3. نظام المزامنة والرفع =====
+# ===== Auto-Sync (للحلقات القديمة والأرقام التلقائية) =====
 @app.on_edited_message(filters.chat(SOURCE_CHANNEL))
 async def sync_old_videos(client, message):
     if message.video or message.document:
         v_id = str(message.id)
         title = message.caption or "مسلسل جديد"
+        
+        # استخراج أول رقم موجود في الوصف ليكون رقم الحلقة
+        ep_num = 1
+        numbers = re.findall(r'\d+', title)
+        if numbers:
+            ep_num = int(numbers[0])
+
         dur_sec = message.video.duration if message.video else 0
         duration = f"{dur_sec // 60} دقيقة" if dur_sec > 0 else "غير محدد"
+        
         db_query("""
             INSERT INTO videos (v_id, title, status, duration, quality, ep_num) 
             VALUES (%s, %s, %s, %s, %s, %s) 
-            ON CONFLICT (v_id) DO UPDATE SET title=%s, status='posted'
-        """, (v_id, title, 'posted', duration, 'HD', 1, title), fetch=False)
-        await message.reply_text(f"🔄 تم سحب الحلقة {v_id} بنجاح!")
+            ON CONFLICT (v_id) DO UPDATE SET title=%s, status='posted', ep_num=%s
+        """, (v_id, title, 'posted', duration, 'HD', ep_num, title, ep_num), fetch=False)
+        
+        await message.reply_text(f"🔄 تم تحديث الحلقة {ep_num} بنجاح!")
 
+# ===== Receive New Content (للرفع الجديد) =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document))
 async def receive_video(client, message):
     v_id = str(message.id)
@@ -142,49 +153,40 @@ async def receive_ep(client, message):
     await client.send_photo(PUBLIC_POST_CHANNEL, poster_id, caption=caption, reply_markup=markup)
     await message.reply_text("🚀 تم النشر بنجاح.")
 
-# ===== 4. معالج المستخدمين (Start & Callback) =====
+# ===== User Interaction (Start & Recheck) =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
     user_id = message.from_user.id
     if len(message.command) < 2:
-        await message.reply_text(f"أهلاً بك يا محمد!")
+        await message.reply_text(f"أهلاً بك يا محمد! استمتع بالمشاهدة.")
         return
-    
     v_id = message.command[1]
     res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (v_id,))
-    
     if not res:
-        await message.reply_text("❌ غير متوفر حالياً. (قم بتعديل وصف الفيديو في قناة الرفع لمزامنته)")
+        await message.reply_text("❌ غير متوفر. (قم بتعديل وصف الفيديو في قناة الرفع لمزامنته)")
         return
-    
     if not await check_subscription(client, user_id):
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📢 اشترك في القناة", url=FORCE_SUB_LINK)],
-            [InlineKeyboardButton("🔄 تحقق", callback_data=f"recheck_{v_id}")]
-        ])
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك هنا", url=FORCE_SUB_LINK)], [InlineKeyboardButton("🔄 تحقق", callback_data=f"recheck_{v_id}")]])
         await message.reply_text("⚠️ يجب الاشتراك في القناة أولاً لمشاهدة الحلقة.", reply_markup=markup)
         return
-
-    await send_video_content(client, message.chat.id, v_id, *res[0])
+    await send_v_content(client, message.chat.id, v_id, *res[0])
 
 @app.on_callback_query(filters.regex("^recheck_"))
-async def recheck_callback(client, callback_query):
+async def recheck_cb(client, callback_query):
     user_id = callback_query.from_user.id
     v_id = callback_query.data.split("_")[1]
-    
     if not await check_subscription(client, user_id):
         await callback_query.answer("❌ لم يتم الاشتراك بعد", show_alert=True)
         return
-
     res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (v_id,))
     if res:
         await callback_query.message.delete()
-        await send_video_content(client, callback_query.message.chat.id, v_id, *res[0])
+        await send_v_content(client, callback_query.message.chat.id, v_id, *res[0])
 
-async def send_video_content(client, chat_id, v_id, title, ep, q, dur):
+async def send_v_content(client, chat_id, v_id, title, ep, q, dur):
     btns = await get_episodes_markup(title, v_id)
-    caption = f"الحلقة [{ep}]\nالجودة [{q}]\nالمده [{dur}]\n\n{encode_hidden(title)}\n\nنتمنى لكم مشاهده ممتعة."
-    await client.copy_message(chat_id, SOURCE_CHANNEL, int(v_id), caption=caption, reply_markup=InlineKeyboardMarkup(btns) if btns else None)
+    cap = f"الحلقة [{ep}]\nالجودة [{q}]\nالمده [{dur}]\n\n{encode_hidden(title)}\n\nنتمنى لكم مشاهده ممتعة."
+    await client.copy_message(chat_id, SOURCE_CHANNEL, int(v_id), caption=cap, reply_markup=InlineKeyboardMarkup(btns) if btns else None)
 
 if __name__ == "__main__":
     app.run()
