@@ -4,25 +4,24 @@ import logging
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import UserNotParticipant
-from pyrogram.enums import ChatMemberStatus
 
-# ===== 1. إعدادات التنبيهات =====
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# ===== Logging =====
+logging.basicConfig(level=logging.INFO)
 
-# ===== 2. جلب البيانات =====
+# ===== Environment Variables =====
 API_ID = int(os.environ.get("API_ID", 35405228))
 API_HASH = os.environ.get("API_HASH", "dacba460d875d963bbd4462c5eb554d6")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8579897728:AAHtplbFHhJ-4fatqVWXQowETrKg-u0cr0Q")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 SOURCE_CHANNEL = -1003547072209
-FORCE_SUB_CHANNEL = -1003790915936
-FORCE_SUB_LINK = "https://t.me/+KyrbVyp0QCJhZGU8"
+FORCE_SUB_CHANNEL = "@MoAlmohsen"
+FORCE_SUB_LINK = "https://t.me/MoAlmohsen"
 PUBLIC_POST_CHANNEL = "@MoAlmohsen"
 
-app = Client("MoAlmohsenBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ===== 3. إدارة قاعدة البيانات =====
+# ===== Database =====
 def db_query(query, params=(), fetch=True):
     try:
         conn = psycopg2.connect(DATABASE_URL, sslmode="require")
@@ -52,13 +51,25 @@ def init_db():
             duration TEXT
         )
     """, fetch=False)
-    logging.info("✅ Database initialized.")
 
 init_db()
 
-# ===== 4. الدوال المساعدة =====
+# ===== 1. دالة الاشتراك (نفس منطق كودك القديم الناجح) =====
+async def check_subscription(client, user_id):
+    try:
+        member = await client.get_chat_member(FORCE_SUB_CHANNEL, user_id)
+        # هذا هو الشرط الذي كان يعمل عندك:
+        if member.status in ["left", "kicked"]:
+            return False
+        return True
+    except UserNotParticipant:
+        return False
+    except Exception as e:
+        logging.error(f"Subscription error: {e}")
+        return True # نمرره في حال حدوث خطأ تقني
+
+# ===== 2. دوال المساعدة (التشفير وأزرار الحلقات) =====
 def encode_hidden(text):
-    if not text: return ""
     return "".join(["\u200b" + char for char in text])
 
 async def get_episodes_markup(title, current_v_id):
@@ -76,13 +87,7 @@ async def get_episodes_markup(title, current_v_id):
     if row: buttons.append(row)
     return buttons
 
-async def is_subscribed(client, user_id):
-    try:
-        member = await client.get_chat_member(FORCE_SUB_CHANNEL, user_id)
-        return member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
-    except: return False
-
-# ===== 5. نظام المزامنة والرفع =====
+# ===== 3. نظام المزامنة والرفع =====
 @app.on_edited_message(filters.chat(SOURCE_CHANNEL))
 async def sync_old_videos(client, message):
     if message.video or message.document:
@@ -135,39 +140,51 @@ async def receive_ep(client, message):
     caption = f"🎬 **{title}**\n\nالحلقة [{ep_num}]\nالجودة [{quality}]\nالمده [{duration}]\n\nنتمنى لكم مشاهده ممتعة."
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهده الحلقة", url=f"https://t.me/{bot_info.username}?start={v_id}")]])
     await client.send_photo(PUBLIC_POST_CHANNEL, poster_id, caption=caption, reply_markup=markup)
-    await message.reply_text("🚀 تم النشر.")
+    await message.reply_text("🚀 تم النشر بنجاح.")
 
-# ===== 6. معالج المستخدمين =====
+# ===== 4. معالج المستخدمين (Start & Callback) =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
+    user_id = message.from_user.id
     if len(message.command) < 2:
         await message.reply_text(f"أهلاً بك يا محمد!")
         return
+    
     v_id = message.command[1]
     res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (v_id,))
+    
     if not res:
-        await message.reply_text("❌ غير متوفر. (قم بتعديل وصف الفيديو في قناة الرفع لمزامنته)")
+        await message.reply_text("❌ غير متوفر حالياً. (قم بتعديل وصف الفيديو في قناة الرفع لمزامنته)")
         return
-    if not await is_subscribed(client, message.from_user.id):
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك هنا", url=FORCE_SUB_LINK)], [InlineKeyboardButton("🔄 تحقق", callback_data=f"chk_{v_id}")]])
-        await message.reply_text("⚠️ اشترك أولاً.", reply_markup=markup)
+    
+    if not await check_subscription(client, user_id):
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📢 اشترك في القناة", url=FORCE_SUB_LINK)],
+            [InlineKeyboardButton("🔄 تحقق", callback_data=f"recheck_{v_id}")]
+        ])
+        await message.reply_text("⚠️ يجب الاشتراك في القناة أولاً لمشاهدة الحلقة.", reply_markup=markup)
         return
-    await send_v(client, message.chat.id, v_id, *res[0])
 
-@app.on_callback_query(filters.regex("^chk_"))
-async def chk_cb(client, callback_query):
+    await send_video_content(client, message.chat.id, v_id, *res[0])
+
+@app.on_callback_query(filters.regex("^recheck_"))
+async def recheck_callback(client, callback_query):
+    user_id = callback_query.from_user.id
     v_id = callback_query.data.split("_")[1]
-    if await is_subscribed(client, callback_query.from_user.id):
-        res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (v_id,))
-        await callback_query.message.delete()
-        await send_v(client, callback_query.from_user.id, v_id, *res[0])
-    else:
-        await callback_query.answer("❌ لم تشترك!", show_alert=True)
+    
+    if not await check_subscription(client, user_id):
+        await callback_query.answer("❌ لم يتم الاشتراك بعد", show_alert=True)
+        return
 
-async def send_v(client, chat_id, v_id, title, ep, q, dur):
+    res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (v_id,))
+    if res:
+        await callback_query.message.delete()
+        await send_video_content(client, callback_query.message.chat.id, v_id, *res[0])
+
+async def send_video_content(client, chat_id, v_id, title, ep, q, dur):
     btns = await get_episodes_markup(title, v_id)
-    cap = f"الحلقة [{ep}]\nالجودة [{q}]\nالمده [{dur}]\n\n{encode_hidden(title)}\n\nنتمنى لكم مشاهده ممتعة."
-    await client.copy_message(chat_id, SOURCE_CHANNEL, int(v_id), caption=cap, reply_markup=InlineKeyboardMarkup(btns) if btns else None)
+    caption = f"الحلقة [{ep}]\nالجودة [{q}]\nالمده [{dur}]\n\n{encode_hidden(title)}\n\nنتمنى لكم مشاهده ممتعة."
+    await client.copy_message(chat_id, SOURCE_CHANNEL, int(v_id), caption=caption, reply_markup=InlineKeyboardMarkup(btns) if btns else None)
 
 if __name__ == "__main__":
     app.run()
