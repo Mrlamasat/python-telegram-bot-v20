@@ -1,4 +1,3 @@
-pyrogram==2.0.106
-tgcrypto==1.2.3
-psycopg2-binary==2.9.9
-asyncio
+pyrogram
+tgcrypto
+psycopg2-binary
