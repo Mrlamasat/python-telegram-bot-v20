@@ -13,7 +13,7 @@ API_HASH = os.environ.get("API_HASH", "dacba460d875d963bbd4462c5eb554d6")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8579897728:AAHCeFONuRJca-Y1iwq9bV7OK8RQotldzr0")
 DATABASE_URL = os.environ.get("DATABASE_URL") # رابط قاعدة بيانات Railway
 CHANNEL_ID = -1003547072209 # قناة Ramadan4kTV
-PUBLIC_CHANNEL = os.environ.get("PUBLIC_CHANNEL", "@MoAlmohsen")
+PUBLIC_CHANNEL = os.environ.get("PUBLIC_CHANNEL", "@RamadanSeries26)
 
 app = Client("BottemoBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
