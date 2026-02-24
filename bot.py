@@ -16,7 +16,7 @@ API_HASH = os.environ.get("API_HASH", "dacba460d875d963bbd4462c5eb554d6")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8579897728:AAHtplbFHhJ-4fatqVWXQowETrKg-u0cr0Q")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# إعدادات القنوات الخاصة بك يا محمد
+# إعدادات القنوات المحدثة
 SOURCE_CHANNEL = -1003547072209      # قناة الرفع
 FORCE_SUB_CHANNEL = -1003790915936   # قناة الاشتراك الإجباري
 FORCE_SUB_LINK = "https://t.me/+KyrbVyp0QCJhZGU8"
@@ -63,11 +63,11 @@ def encode_hidden(text):
 
 def clean_series_title(text):
     if not text: return "مسلسل"
-    # حذف كلمة حلقة أو الحلقة والأرقام والرموز الزائدة
+    # حذف كلمة حلقة أو الحلقة والأرقام والرموز الزائدة لتوحيد الاسم
     text = re.sub(r'(الحلقة|حلقة)?\s*\d+', '', text)
     return text.strip()
 
-async def get_episodes_markup(title, current_v_id):
+async def get_episodes_markup(title, current_v_id, current_ep=1):
     res = db_query("SELECT v_id, ep_num FROM videos WHERE title = %s AND status = 'posted' ORDER BY ep_num ASC", (title,))
     if not res: return None
     
@@ -75,6 +75,7 @@ async def get_episodes_markup(title, current_v_id):
     bot_info = await app.get_me()
     current_v_id = str(current_v_id)
     
+    # بناء أزرار الحلقات (5 في كل سطر)
     for v_id, ep_num in res:
         v_id_str = str(v_id)
         if ep_num in seen_eps: continue
@@ -88,19 +89,35 @@ async def get_episodes_markup(title, current_v_id):
             row = []
     if row: buttons.append(row)
 
-    # --- أزرار المشاركة (تليجرام + واتساب) ---
+    # --- أزرار المشاركة بتصميم تشويقي (تليجرام + واتساب) ---
     share_link = f"https://t.me/{bot_info.username}?start={current_v_id}"
-    share_text = f"🍿 شاهد مسلسل: {title}\n🎬 متوفر الآن بجودة عالية عبر البوت الرسمي 👇"
     
-    encoded_text = urllib.parse.quote(share_text)
+    # نص واتساب (Bold ومرتب)
+    wa_text = (
+        f"🔥 حان وقت المشاهدة! 🔥\n\n"
+        f"🎬 مسلسل: *{title}*\n"
+        f"🍿 الحلقة: *{current_ep}* أصبحت متاحة الآن!\n\n"
+        f"📺 شاهدها أولاً بجودة عالية وبدون إعلانات هنا 👇\n"
+        f"{share_link}"
+    )
+    
+    # نص تليجرام
+    tg_text = (
+        f"🎬 **{title}**\n"
+        f"🍿 الحلقة [{current_ep}] متوفرة الآن!\n"
+        f"بجودة عالية وبدون حقوق 📥"
+    )
+
+    encoded_wa = urllib.parse.quote(wa_text)
+    encoded_tg = urllib.parse.quote(tg_text)
     encoded_url = urllib.parse.quote(share_link)
 
-    tg_share = f"https://t.me/share/url?url={encoded_url}&text={encoded_text}"
-    wa_share = f"https://api.whatsapp.com/send?text={encoded_text}%20{encoded_url}"
+    tg_share_url = f"https://t.me/share/url?url={encoded_url}&text={encoded_tg}"
+    wa_share_url = f"https://api.whatsapp.com/send?text={encoded_wa}"
 
     buttons.append([
-        InlineKeyboardButton("📢 تليجرام", url=tg_share),
-        InlineKeyboardButton("🟢 واتساب", url=wa_share)
+        InlineKeyboardButton("📢 تليجرام", url=tg_share_url),
+        InlineKeyboardButton("🟢 واتساب", url=wa_share_url)
     ])
     
     return buttons
@@ -112,7 +129,7 @@ async def check_subscription(client, user_id):
     except UserNotParticipant: return False
     except: return True
 
-# ===== المزامنة والتعديل التلقائي =====
+# ===== المزامنة والتعديل التلقائي (للأرشيف القديم) =====
 @app.on_edited_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document))
 async def sync_edited_video(client, message):
     v_id = str(message.id)
@@ -131,14 +148,13 @@ async def sync_edited_video(client, message):
     
     await message.reply_text(f"🔄 تم تحديث الربط: **{title}** حلقة {ep_num}")
 
-# ===== إجراءات النشر الجديد =====
+# ===== إجراءات النشر الجديد (الخطوات) =====
 
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document))
 async def receive_video(client, message):
     v_id = str(message.id)
     dur = f"{message.video.duration // 60} دقيقة" if message.video else "غير محدد"
     
-    # قراءة الاسم والرقم من وصف الفيديو مباشرة
     caption = message.caption or ""
     title = clean_series_title(caption)
     ep_num = 1
@@ -159,7 +175,6 @@ async def receive_poster(client, message):
     if not res: return
     v_id, video_title = res[0]
     
-    # استخدام وصف الصورة كاسم، أو الاسم المسحوب من الفيديو إذا كانت الصورة بدون وصف
     title = clean_series_title(message.caption) if message.caption else video_title
     
     db_query("UPDATE videos SET title=%s, poster_id=%s, status='awaiting_quality' WHERE v_id=%s", (title, message.photo.file_id, v_id), fetch=False)
@@ -175,7 +190,7 @@ async def receive_poster(client, message):
 async def set_quality(client, callback_query):
     _, q, v_id = callback_query.data.split("_")
     db_query("UPDATE videos SET quality=%s, status='awaiting_ep' WHERE v_id=%s", (q, v_id), fetch=False)
-    await callback_query.message.edit_text(f"✅ الجودة: {q}\nأرسل الآن رقم الحلقة النهائي:")
+    await callback_query.message.edit_text(f"✅ الجودة: {q}\nأرسل الآن رقم الحلقة النهائي للنشر:")
 
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.text & ~filters.command(["start"]))
 async def receive_ep_num(client, message):
@@ -192,9 +207,9 @@ async def receive_ep_num(client, message):
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهده الحلقة", url=f"https://t.me/{bot_info.username}?start={v_id}")]])
     
     await client.send_photo(PUBLIC_POST_CHANNEL, poster_id, caption=caption, reply_markup=markup)
-    await message.reply_text(f"🚀 تم النشر بنجاح.")
+    await message.reply_text(f"🚀 تم النشر بنجاح في قناة العرض.")
 
-# ===== Interaction (المشاهدة) =====
+# ===== Interaction (استخدام الأعضاء للبوت) =====
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
@@ -206,10 +221,12 @@ async def start_handler(client, message):
     if not res:
         await message.reply_text("❌ الحلقة غير متوفرة.")
         return
+    
     if not await check_subscription(client, message.from_user.id):
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك هنا", url=FORCE_SUB_LINK)], [InlineKeyboardButton("🔄 تحقق", callback_data=f"recheck_{v_id}")]])
-        await message.reply_text("⚠️ يجب عليك الاشتراك أولاً لمشاهدة المحتوى.", reply_markup=markup)
+        await message.reply_text("⚠️ يجب عليك الاشتراك في القناة أولاً لمشاهدة المحتوى.", reply_markup=markup)
         return
+    
     await send_video_final(client, message.chat.id, v_id, *res[0])
 
 @app.on_callback_query(filters.regex("^recheck_"))
@@ -221,12 +238,18 @@ async def recheck_cb(client, callback_query):
             await callback_query.message.delete()
             await send_video_final(client, callback_query.from_user.id, v_id, *res[0])
     else:
-        await callback_query.answer("❌ لم تشترك بعد!", show_alert=True)
+        await callback_query.answer("❌ لم تشترك بعد في القناة!", show_alert=True)
 
 async def send_video_final(client, chat_id, v_id, title, ep, q, dur):
-    btns = await get_episodes_markup(title, v_id)
+    btns = await get_episodes_markup(title, v_id, ep)
     cap = f"الحلقة [{ep}]\nالجودة [{q}]\nالمده [{dur}]\n\n{encode_hidden(title)}\n\nنتمنى لكم مشاهده ممتعة."
-    await client.copy_message(chat_id, SOURCE_CHANNEL, int(v_id), caption=cap, reply_markup=InlineKeyboardMarkup(btns) if btns else None)
+    await client.copy_message(
+        chat_id, 
+        SOURCE_CHANNEL, 
+        int(v_id), 
+        caption=cap, 
+        reply_markup=InlineKeyboardMarkup(btns) if btns else None
+    )
 
 if __name__ == "__main__":
     app.run()
