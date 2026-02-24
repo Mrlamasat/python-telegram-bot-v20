@@ -9,16 +9,17 @@ from pyrogram.errors import UserNotParticipant
 # ===== Logging =====
 logging.basicConfig(level=logging.INFO)
 
-# ===== Environment Variables =====
+# ===== Environment Variables & Configuration =====
 API_ID = int(os.environ.get("API_ID", 35405228))
 API_HASH = os.environ.get("API_HASH", "dacba460d875d963bbd4462c5eb554d6")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8579897728:AAHtplbFHhJ-4fatqVWXQowETrKg-u0cr0Q")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
+# إعدادات القنوات (تم التحديث للقناة الخاصة)
 SOURCE_CHANNEL = -1003547072209
-FORCE_SUB_CHANNEL = "@MoAlmohsen"
-FORCE_SUB_LINK = "https://t.me/MoAlmohsen"
-PUBLIC_POST_CHANNEL = "@MoAlmohsen"
+FORCE_SUB_CHANNEL = -1003790915936  # الأيدي الرقمي للقناة الخاصة
+FORCE_SUB_LINK = "https://t.me/+KyrbVyp0QCJhZGU8"  # الرابط الكامل للانضمام
+PUBLIC_POST_CHANNEL = -1003790915936  # قناة النشر (نفس القناة الخاصة)
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -42,15 +43,15 @@ def db_query(query, params=(), fetch=True):
 
 def init_db():
     db_query("""
-        CREATE TABLE IF NOT EXISTS videos (
-            v_id TEXT PRIMARY KEY,
-            title TEXT,
-            poster_id TEXT,
-            status TEXT,
-            ep_num INTEGER,
-            quality TEXT,
-            duration TEXT
-        )
+    CREATE TABLE IF NOT EXISTS videos (
+        v_id TEXT PRIMARY KEY,
+        title TEXT,
+        poster_id TEXT,
+        status TEXT,
+        ep_num INTEGER,
+        quality TEXT,
+        duration TEXT
+    )
     """, fetch=False)
 
 init_db()
@@ -60,7 +61,6 @@ def encode_hidden(text):
     return "".join(["\u200b" + char for char in text])
 
 def clean_series_title(text):
-    """حذف كلمة حلقة والأرقام من العنوان لتوحيده"""
     if not text: return "مسلسل"
     return re.sub(r'(الحلقة|حلقة)?\s*\d+', '', text).strip()
 
@@ -86,10 +86,9 @@ async def check_subscription(client, user_id):
         member = await client.get_chat_member(FORCE_SUB_CHANNEL, user_id)
         return member.status not in ["left", "kicked"]
     except UserNotParticipant: return False
-    except: return True
+    except Exception: return True
 
-# ===== Handlers (النشر والرفع) =====
-
+# ===== Handlers =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document))
 async def receive_video(client, message):
     v_id = str(message.id)
@@ -109,6 +108,7 @@ async def receive_poster(client, message):
 
 @app.on_callback_query(filters.regex("^q_"))
 async def set_quality(client, callback_query):
+    # تم تصحيح خطأ الـ split هنا
     _, q, v_id = callback_query.data.split("_")
     db_query("UPDATE videos SET quality=%s, status='awaiting_ep' WHERE v_id=%s", (q, v_id), fetch=False)
     await callback_query.message.edit_text(f"✅ الجودة: {q}\nأرسل الآن رقم الحلقة الذي سيظهر للأعضاء:")
@@ -119,31 +119,16 @@ async def receive_ep_num(client, message):
     res = db_query("SELECT v_id, title, poster_id, quality, duration FROM videos WHERE status='awaiting_ep' ORDER BY v_id DESC LIMIT 1")
     if not res: return
     v_id, title, poster_id, quality, duration = res[0]
-    ep_num = int(message.text) # هذا هو الرقم الذي أدخلته يدوياً
+    ep_num = int(message.text)
+
+    db_query("UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s", (ep_num, v_id), fetch=False)  
     
-    db_query("UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s", (ep_num, v_id), fetch=False)
-    
-    bot_info = await client.get_me()
-    caption = f"🎬 **{title}**\n\nالحلقة [{ep_num}]\nالجودة [{quality}]\nالمده [{duration}]\n\nنتمنى لكم مشاهده ممتعة."
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهده الحلقة", url=f"https://t.me/{bot_info.username}?start={v_id}")]])
-    await client.send_photo(PUBLIC_POST_CHANNEL, poster_id, caption=caption, reply_markup=markup)
+    bot_info = await client.get_me()  
+    caption = f"🎬 **{title}**\n\nالحلقة [{ep_num}]\nالجودة [{quality}]\nالمده [{duration}]\n\nنتمنى لكم مشاهده ممتعة."  
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهده الحلقة", url=f"https://t.me/{bot_info.username}?start={v_id}")]])  
+    await client.send_photo(PUBLIC_POST_CHANNEL, poster_id, caption=caption, reply_markup=markup)  
     await message.reply_text(f"🚀 تم النشر بنجاح بالحلقة رقم {ep_num}.")
 
-# ===== المزامنة (تعديل الوصف) =====
-@app.on_edited_message(filters.chat(SOURCE_CHANNEL))
-async def sync_old_videos(client, message):
-    if message.video or message.document:
-        v_id = str(message.id)
-        title = clean_series_title(message.caption)
-        ep_num = 1
-        nums = re.findall(r'\d+', message.caption or "")
-        if nums: ep_num = int(nums[0])
-        db_query("""INSERT INTO videos (v_id, title, status, ep_num, quality) VALUES (%s, %s, %s, %s, %s) 
-                    ON CONFLICT (v_id) DO UPDATE SET title=%s, status='posted', ep_num=%s""", 
-                 (v_id, title, 'posted', ep_num, 'HD', title, ep_num), fetch=False)
-        await message.reply_text(f"🔄 تم تحديث {title} حلقة {ep_num}")
-
-# ===== Interaction =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
     if len(message.command) < 2:
@@ -156,7 +141,7 @@ async def start_handler(client, message):
         return
     if not await check_subscription(client, message.from_user.id):
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك هنا", url=FORCE_SUB_LINK)], [InlineKeyboardButton("🔄 تحقق", callback_data=f"recheck_{v_id}")]])
-        await message.reply_text("⚠️ اشترك أولاً.", reply_markup=markup)
+        await message.reply_text("⚠️ يجب عليك الاشتراك في القناة أولاً لمشاهدة المحتوى.", reply_markup=markup)
         return
     await send_video_final(client, message.chat.id, v_id, *res[0])
 
@@ -168,6 +153,8 @@ async def recheck_cb(client, callback_query):
         if res:
             await callback_query.message.delete()
             await send_video_final(client, callback_query.from_user.id, v_id, *res[0])
+    else:
+        await callback_query.answer("❌ لم تشترك بعد!", show_alert=True)
 
 async def send_video_final(client, chat_id, v_id, title, ep, q, dur):
     btns = await get_episodes_markup(title, v_id)
