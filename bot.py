@@ -78,7 +78,7 @@ async def get_episodes_markup(title, current_v_id):
         if ep_num in seen_eps: continue
         seen_eps.add(ep_num)
         
-        label = f"📍 {ep_num}" if v_id_str == current_v_id else f"{ep_num}"
+        label = f"▶️ {ep_num}" if v_id_str == current_v_id else f"{ep_num}"
         btn = InlineKeyboardButton(label, url=f"https://t.me/{bot_info.username}?start={v_id_str}")
         row.append(btn)
         if len(row) == 5:
