@@ -15,11 +15,11 @@ API_HASH = os.environ.get("API_HASH", "dacba460d875d963bbd4462c5eb554d6")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8579897728:AAHtplbFHhJ-4fatqVWXQowETrKg-u0cr0Q")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# --- القنوات (تم التحديث بناءً على طلبك) ---
-SOURCE_CHANNEL = -1003547072209  # قناة المصدر (لم تتغير)
-FORCE_SUB_CHANNEL = "@ramadan2206"  # القناة الجديدة للاشتراك الإجباري
-FORCE_SUB_LINK = "https://t.me/ramadan2206"  # رابط القناة الجديدة
-PUBLIC_POST_CHANNEL = "@ramadan2206"  # قناة النشر العام الجديدة
+# --- القنوات والاعدادات ---
+SOURCE_CHANNEL = -1003547072209  # قناة المصدر
+FORCE_SUB_CHANNEL = "@ramadan2206"
+FORCE_SUB_LINK = "https://t.me/ramadan2206"
+PUBLIC_POST_CHANNEL = "@ramadan2206"
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -56,7 +56,13 @@ def init_db():
 
 init_db()
 
-# ===== Helpers =====
+# ===== Helpers (التشفير والحماية) =====
+
+def obfuscate_text(text):
+    """تشفير النص بإضافة فواصل غير مرئية لمنع محركات البحث من قراءته"""
+    if not text: return ""
+    return "\u200c".join(list(text))
+
 def encode_hidden(text):
     return "".join(["\u200b" + char for char in text])
 
@@ -66,9 +72,10 @@ def clean_series_title(text):
 
 async def get_episodes_markup(title, current_v_id):
     res = db_query("SELECT v_id, ep_num FROM videos WHERE title = %s AND status = 'posted' ORDER BY ep_num ASC", (title,))
-    if not res: return None
     buttons, row, seen_eps = [], [], set()
     bot_info = await app.get_me()
+    if not res: return []
+    
     for v_id, ep_num in res:
         if ep_num in seen_eps: continue
         seen_eps.add(ep_num)
@@ -123,26 +130,36 @@ async def receive_ep_num(client, message):
     
     db_query("UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s", (ep_num, v_id), fetch=False)
     
+    # تشفير العنوان عند النشر في القناة العامة
+    safe_title = obfuscate_text(title)
     bot_info = await client.get_me()
-    caption = f"🎬 **{title}**\n\nالحلقة [{ep_num}]\nالجودة [{quality}]\nالمده [{duration}]\n\nنتمنى لكم مشاهده ممتعة."
+    
+    caption = f"🎬 **{safe_title}**\n\nالحلقة [{ep_num}]\nالجودة [{quality}]\nالمده [{duration}]\n\nنتمنى لكم مشاهده ممتعة."
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهده الحلقة", url=f"https://t.me/{bot_info.username}?start={v_id}")]])
+    
     await client.send_photo(PUBLIC_POST_CHANNEL, poster_id, caption=caption, reply_markup=markup)
-    await message.reply_text(f"🚀 تم النشر بنجاح بالحلقة رقم {ep_num}.")
+    await message.reply_text(f"🚀 تم النشر بنجاح باسم مشفر: {safe_title}")
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
     if len(message.command) < 2:
-        await message.reply_text(f"أهلاً بك يا {message.from_user.first_name}!")
+        await message.reply_text(f"أهلاً بك يا {message.from_user.first_name} في بوت المسلسلات.")
         return
     v_id = message.command[1]
     res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (v_id,))
     if not res:
         await message.reply_text("❌ الحلقة غير متوفرة.")
         return
+    
+    # التحقق من الاشتراك الإجباري
     if not await check_subscription(client, message.from_user.id):
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك هنا", url=FORCE_SUB_LINK)], [InlineKeyboardButton("🔄 تحقق", callback_data=f"recheck_{v_id}")]])
-        await message.reply_text("⚠️ لمشاهدة الحلقة، يجب عليك الاشتراك في قناة المسلسلات أولاً.", reply_markup=markup)
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📢 اشترك هنا أولاً", url=FORCE_SUB_LINK)],
+            [InlineKeyboardButton("🔄 تحقق من الاشتراك", callback_data=f"recheck_{v_id}")]
+        ])
+        await message.reply_text("⚠️ لمشاهدة الحلقة، يجب عليك الاشتراك في قناة المسلسلات الجديدة أولاً بسبب إغلاق القناة السابقة.", reply_markup=markup)
         return
+        
     await send_video_final(client, message.chat.id, v_id, *res[0])
 
 @app.on_callback_query(filters.regex("^recheck_"))
@@ -154,12 +171,37 @@ async def recheck_cb(client, callback_query):
             await callback_query.message.delete()
             await send_video_final(client, callback_query.from_user.id, v_id, *res[0])
     else:
-        await callback_query.answer("⚠️ لم تشترك بعد!", show_alert=True)
+        await callback_query.answer("⚠️ لم تشترك بعد في القناة!", show_alert=True)
 
 async def send_video_final(client, chat_id, v_id, title, ep, q, dur):
-    btns = await get_episodes_markup(title, v_id)
-    cap = f"الحلقة [{ep}]\nالجودة [{q}]\nالمده [{dur}]\n\n{encode_hidden(title)}\n\nنتمنى لكم مشاهده ممتعة."
-    await client.copy_message(chat_id, SOURCE_CHANNEL, int(v_id), caption=cap, reply_markup=InlineKeyboardMarkup(btns) if btns else None)
+    # جلب أزرار الحلقات وتشفير العنوان
+    episode_btns = await get_episodes_markup(title, v_id)
+    safe_title = obfuscate_text(title)
+    
+    # رسالة التنبيه المطلوبة
+    cap = (
+        f"🎬 **{safe_title}**\n\n"
+        f"الحلقة [{ep}]\n"
+        f"الجودة [{q}]\n"
+        f"المده [{dur}]\n\n"
+        "━━━━━━━━━━━━━━\n"
+        "⚠️ **تنبيه هام جداً:**\n"
+        "لقد تم إغلاق القناة السابقة نهائياً. لن تتمكن من متابعة باقي الحلقات إلا إذا انضممت إلى قناتنا الرسمية الجديدة أدناه 👇"
+    )
+
+    # زر الاشتراك الإلزامي في القمة
+    sub_btn = [InlineKeyboardButton("📢 انضم للقناة الجديدة لمتابعة الحلقات", url=FORCE_SUB_LINK)]
+    
+    # دمج الأزرار
+    final_markup = [sub_btn] + episode_btns
+    
+    await client.copy_message(
+        chat_id=chat_id, 
+        from_chat_id=SOURCE_CHANNEL, 
+        message_id=int(v_id), 
+        caption=cap, 
+        reply_markup=InlineKeyboardMarkup(final_markup)
+    )
 
 if __name__ == "__main__":
     app.run()
