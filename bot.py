@@ -15,12 +15,12 @@ API_HASH = os.environ.get("API_HASH", "dacba460d875d963bbd4462c5eb554d6")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8579897728:AAHtplbFHhJ-4fatqVWXQowETrKg-u0cr0Q")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# --- التعديلات المطلوبة يا محمد ---
-SOURCE_CHANNEL = -1003678294148      # القناة المصدر (التي تحتوي الملفات)
-FORCE_SUB_CHANNEL = -1003790915936   # قناة الاشتراك الإجباري الجديدة
-FORCE_SUB_LINK = "https://t.me/+KyrbVyp0QCJhZGU8"
+# --- التعديلات النهائية المعتمدة يا محمد ---
+SOURCE_CHANNEL = -1003678294148      # القناة المصدر (ثابتة)
 PUBLIC_POST_CHANNEL = -1003790915936 # قناة النشر العامة الجديدة
-# --------------------------------
+FORCE_SUB_CHANNEL = -1003554018307   # قناة الاشتراك الإجباري الجديدة
+FORCE_SUB_LINK = "https://t.me/+PyUeOtPN1fs0NDA0" # رابط الاشتراك الجديد
+# ----------------------------------------
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -84,21 +84,23 @@ async def get_episodes_markup(title, current_v_id):
 
 async def check_subscription(client, user_id):
     try:
+        # استخدام الآيدي الرقمي حصراً لتجنب أخطاء PeerType
         member = await client.get_chat_member(FORCE_SUB_CHANNEL, user_id)
         return member.status not in ["left", "kicked"]
-    except UserNotParticipant: return False
+    except UserNotParticipant: 
+        return False
     except Exception as e:
-        logging.error(f"Subscription check error: {e}")
+        logging.error(f"⚠️ Subscription Check Error: {e}")
         return True
 
-# ===== Handlers =====
+# ===== Handlers (الرفع والنشر) =====
 
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document))
 async def receive_video(client, message):
     v_id = str(message.id)
     dur = f"{message.video.duration // 60} دقيقة" if message.video else "غير محدد"
     db_query("INSERT INTO videos (v_id, status, duration) VALUES (%s, %s, %s) ON CONFLICT (v_id) DO UPDATE SET status='waiting'", (v_id, "waiting", dur), fetch=False)
-    await message.reply_text("✅ تم استلام الفيديو من المصدر. أرسل البوستر الآن.")
+    await message.reply_text("✅ تم استلام الفيديو. أرسل البוستر الآن.")
 
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.photo)
 async def receive_poster(client, message):
@@ -129,23 +131,30 @@ async def receive_ep_num(client, message):
     bot_info = await client.get_me()
     caption = f"🎬 **{title}**\n\nالحلقة [{ep_num}]\nالجودة [{quality}]\nالمده [{duration}]\n\nنتمنى لكم مشاهده ممتعة."
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهده الحلقة", url=f"https://t.me/{bot_info.username}?start={v_id}")]])
+    
+    # النشر في القناة العامة الجديدة
     await client.send_photo(PUBLIC_POST_CHANNEL, poster_id, caption=caption, reply_markup=markup)
-    await message.reply_text(f"🚀 تم النشر بنجاح في القناة الجديدة.")
+    await message.reply_text(f"🚀 تم النشر بنجاح.")
+
+# ===== Interaction (البوت الخاص) =====
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
     if len(message.command) < 2:
-        await message.reply_text(f"أهلاً بك يا محمد المـحسن في بوت التحميل.")
+        await message.reply_text("أهلاً بك يا محمد المـحسن!")
         return
     v_id = message.command[1]
     res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (v_id,))
     if not res:
-        await message.reply_text("❌ الحلقة غير متوفرة في قاعدة البيانات.")
+        await message.reply_text("❌ الحلقة غير متوفرة.")
         return
+    
+    # التحقق من الاشتراك في القناة الجديدة
     if not await check_subscription(client, message.from_user.id):
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك هنا", url=FORCE_SUB_LINK)], [InlineKeyboardButton("🔄 تحقق", callback_data=f"recheck_{v_id}")]])
-        await message.reply_text("⚠️ يرجى الاشتراك في القناة أولاً لمشاهدة الحلقة.", reply_markup=markup)
+        await message.reply_text("⚠️ يرجى الاشتراك في القناة أولاً لمشاهدة الفيديو.", reply_markup=markup)
         return
+    
     await send_video_final(client, message.chat.id, v_id, *res[0])
 
 @app.on_callback_query(filters.regex("^recheck_"))
@@ -162,7 +171,7 @@ async def send_video_final(client, chat_id, v_id, title, ep, q, dur):
         btns = await get_episodes_markup(title, v_id)
         cap = f"الحلقة [{ep}]\nالجودة [{q}]\nالمده [{dur}]\n\n{encode_hidden(title)}\n\nنتمنى لكم مشاهده ممتعة."
         
-        # محاولة النسخ مع معالجة الأخطاء
+        # النسخ من القناة المصدر
         await client.copy_message(
             chat_id=chat_id,
             from_chat_id=SOURCE_CHANNEL,
@@ -170,11 +179,9 @@ async def send_video_final(client, chat_id, v_id, title, ep, q, dur):
             caption=cap,
             reply_markup=InlineKeyboardMarkup(btns) if btns else None
         )
-    except MessageIdInvalid:
-        await client.send_message(chat_id, "⚠️ عذراً، يبدو أن الرسالة الأصلية حُذفت من القناة المصدر.")
-    except RPCError as e:
-        logging.error(f"Copy Error: {e}")
-        await client.send_message(chat_id, "⚠️ حدث خطأ تقني أثناء جلب الفيديو، تأكد من وجود البوت في القناة المصدر.")
+    except Exception as e:
+        logging.error(f"❌ Copy Error: {e}")
+        await client.send_message(chat_id, "⚠️ حدث خطأ في جلب الفيديو، تأكد من وجود الملف في القناة المصدر.")
 
 if __name__ == "__main__":
     app.run()
