@@ -4,7 +4,7 @@ import logging
 import re
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from pyrogram.errors import UserNotParticipant
+from pyrogram.errors import UserNotParticipant, MessageIdInvalid, RPCError
 
 # ===== Logging =====
 logging.basicConfig(level=logging.INFO)
@@ -15,14 +15,12 @@ API_HASH = os.environ.get("API_HASH", "dacba460d875d963bbd4462c5eb554d6")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8579897728:AAHtplbFHhJ-4fatqVWXQowETrKg-u0cr0Q")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# --- التحديثات الجديدة الخاصة بالقنوات والاشتراك ---
-SOURCE_CHANNEL = -1003678294148      # القناة المصدر
-PUBLIC_POST_CHANNEL = -1003790915936 # قناة النشر العامة
-
-# بيانات الاشتراك الإجباري الجديدة
-FORCE_SUB_CHANNEL = -1003554018307   # آيدي قناة الاشتراك الإجباري
-FORCE_SUB_LINK = "https://t.me/+PyUeOtPN1fs0NDA0" # رابط القناة
-# -----------------------------------------------
+# --- التعديلات المطلوبة يا محمد ---
+SOURCE_CHANNEL = -1003678294148      # القناة المصدر (التي تحتوي الملفات)
+FORCE_SUB_CHANNEL = -1003790915936   # قناة الاشتراك الإجباري الجديدة
+FORCE_SUB_LINK = "https://t.me/+KyrbVyp0QCJhZGU8"
+PUBLIC_POST_CHANNEL = -1003790915936 # قناة النشر العامة الجديدة
+# --------------------------------
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -89,16 +87,18 @@ async def check_subscription(client, user_id):
         member = await client.get_chat_member(FORCE_SUB_CHANNEL, user_id)
         return member.status not in ["left", "kicked"]
     except UserNotParticipant: return False
-    except: return True
+    except Exception as e:
+        logging.error(f"Subscription check error: {e}")
+        return True
 
-# ===== Handlers (النشر والرفع) =====
+# ===== Handlers =====
 
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document))
 async def receive_video(client, message):
     v_id = str(message.id)
     dur = f"{message.video.duration // 60} دقيقة" if message.video else "غير محدد"
     db_query("INSERT INTO videos (v_id, status, duration) VALUES (%s, %s, %s) ON CONFLICT (v_id) DO UPDATE SET status='waiting'", (v_id, "waiting", dur), fetch=False)
-    await message.reply_text("✅ تم استلام الفيديو. أرسل البوستر الآن.")
+    await message.reply_text("✅ تم استلام الفيديو من المصدر. أرسل البوستر الآن.")
 
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.photo)
 async def receive_poster(client, message):
@@ -114,7 +114,7 @@ async def receive_poster(client, message):
 async def set_quality(client, callback_query):
     _, q, v_id = callback_query.data.split("_")
     db_query("UPDATE videos SET quality=%s, status='awaiting_ep' WHERE v_id=%s", (q, v_id), fetch=False)
-    await callback_query.message.edit_text(f"✅ الجودة: {q}\nأرسل الآن رقم الحلقة الذي سيظهر للأعضاء:")
+    await callback_query.message.edit_text(f"✅ الجودة: {q}\nأرسل الآن رقم الحلقة:")
 
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.text & ~filters.command(["start"]))
 async def receive_ep_num(client, message):
@@ -130,22 +130,21 @@ async def receive_ep_num(client, message):
     caption = f"🎬 **{title}**\n\nالحلقة [{ep_num}]\nالجودة [{quality}]\nالمده [{duration}]\n\nنتمنى لكم مشاهده ممتعة."
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهده الحلقة", url=f"https://t.me/{bot_info.username}?start={v_id}")]])
     await client.send_photo(PUBLIC_POST_CHANNEL, poster_id, caption=caption, reply_markup=markup)
-    await message.reply_text(f"🚀 تم النشر بنجاح بالحلقة رقم {ep_num}.")
+    await message.reply_text(f"🚀 تم النشر بنجاح في القناة الجديدة.")
 
-# ===== Interaction =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
     if len(message.command) < 2:
-        await message.reply_text(f"أهلاً بك يا محمد المـحسن!")
+        await message.reply_text(f"أهلاً بك يا محمد المـحسن في بوت التحميل.")
         return
     v_id = message.command[1]
     res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (v_id,))
     if not res:
-        await message.reply_text("❌ الحلقة غير متوفرة.")
+        await message.reply_text("❌ الحلقة غير متوفرة في قاعدة البيانات.")
         return
     if not await check_subscription(client, message.from_user.id):
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك هنا", url=FORCE_SUB_LINK)], [InlineKeyboardButton("🔄 تحقق", callback_data=f"recheck_{v_id}")]])
-        await message.reply_text("⚠️ لمشاهدة الحلقة، يجب عليك الاشتراك في القناة أولاً.", reply_markup=markup)
+        await message.reply_text("⚠️ يرجى الاشتراك في القناة أولاً لمشاهدة الحلقة.", reply_markup=markup)
         return
     await send_video_final(client, message.chat.id, v_id, *res[0])
 
@@ -159,9 +158,23 @@ async def recheck_cb(client, callback_query):
             await send_video_final(client, callback_query.from_user.id, v_id, *res[0])
 
 async def send_video_final(client, chat_id, v_id, title, ep, q, dur):
-    btns = await get_episodes_markup(title, v_id)
-    cap = f"الحلقة [{ep}]\nالجودة [{q}]\nالمده [{dur}]\n\n{encode_hidden(title)}\n\nنتمنى لكم مشاهده ممتعة."
-    await client.copy_message(chat_id, SOURCE_CHANNEL, int(v_id), caption=cap, reply_markup=InlineKeyboardMarkup(btns) if btns else None)
+    try:
+        btns = await get_episodes_markup(title, v_id)
+        cap = f"الحلقة [{ep}]\nالجودة [{q}]\nالمده [{dur}]\n\n{encode_hidden(title)}\n\nنتمنى لكم مشاهده ممتعة."
+        
+        # محاولة النسخ مع معالجة الأخطاء
+        await client.copy_message(
+            chat_id=chat_id,
+            from_chat_id=SOURCE_CHANNEL,
+            message_id=int(v_id),
+            caption=cap,
+            reply_markup=InlineKeyboardMarkup(btns) if btns else None
+        )
+    except MessageIdInvalid:
+        await client.send_message(chat_id, "⚠️ عذراً، يبدو أن الرسالة الأصلية حُذفت من القناة المصدر.")
+    except RPCError as e:
+        logging.error(f"Copy Error: {e}")
+        await client.send_message(chat_id, "⚠️ حدث خطأ تقني أثناء جلب الفيديو، تأكد من وجود البوت في القناة المصدر.")
 
 if __name__ == "__main__":
     app.run()
