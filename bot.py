@@ -4,11 +4,12 @@ import logging
 import re
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import UserNotParticipant, RPCError
+from pyrogram.errors import UserNotParticipant, RPCError, PeerIdInvalid
 
 # ===== Logging =====
 logging.basicConfig(level=logging.INFO)
-logging.getLogger("pyrogram").setLevel(logging.WARNING) # إخفاء التنبيهات غير الضرورية
+# تقليل الضجيج في السجلات لإظهار الأخطاء الهامة فقط
+logging.getLogger("pyrogram").setLevel(logging.WARNING)
 
 # ===== Environment Variables =====
 API_ID = int(os.environ.get("API_ID", 35405228))
@@ -16,12 +17,12 @@ API_HASH = os.environ.get("API_HASH", "dacba460d875d963bbd4462c5eb554d6")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8579897728:AAHtplbFHhJ-4fatqVWXQowETrKg-u0cr0Q")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# --- التعديل للقنوات الجديدة الشغالة (البعيدة عن الحظر) ---
-SOURCE_CHANNEL = -1003790915936      # القناة الجديدة (ارفع فيها الفيديوهات الآن)
-PUBLIC_POST_CHANNEL = -1003790915936 # قناة النشر
-FORCE_SUB_CHANNEL = -1003554018307   # قناة الاشتراك الإجباري
+# --- الإعدادات المطلوبة يا محمد ---
+SOURCE_CHANNEL = -1003678294148      # المصدر (الذي ذكرت أنه لم يتغير)
+PUBLIC_POST_CHANNEL = -1003790915936 # قناة النشر العامة الجديدة
+FORCE_SUB_CHANNEL = -1003554018307   # قناة الاشتراك الإجباري الجديدة
 FORCE_SUB_LINK = "https://t.me/+PyUeOtPN1fs0NDA0"
-# -------------------------------------------------------
+# ------------------------------
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -82,7 +83,7 @@ async def receive_video(client, message):
     v_id = str(message.id)
     dur = f"{message.video.duration // 60} دقيقة" if message.video else "غير محدد"
     db_query("INSERT INTO videos (v_id, status, duration) VALUES (%s, %s, %s) ON CONFLICT (v_id) DO UPDATE SET status='waiting'", (v_id, "waiting", dur), fetch=False)
-    await message.reply_text("✅ تم استلام الفيديو في القناة الجديدة. أرسل البوستر الآن.")
+    await message.reply_text("✅ تم استلام الفيديو. أرسل البوستر الآن.")
 
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.photo)
 async def receive_poster(client, message):
@@ -123,11 +124,11 @@ async def start_handler(client, message):
     v_id = message.command[1]
     res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (v_id,))
     if not res:
-        await message.reply_text("❌ الحلقة غير متوفرة.")
+        await message.reply_text("❌ الحلقة غير متوفرة في قاعدة البيانات.")
         return
     if not await check_subscription(client, message.from_user.id):
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك هنا", url=FORCE_SUB_LINK)], [InlineKeyboardButton("🔄 تحقق", callback_data=f"recheck_{v_id}")]])
-        await message.reply_text("⚠️ اشترك أولاً.", reply_markup=markup)
+        await message.reply_text("⚠️ يرجى الاشتراك في القناة أولاً لمشاهدة الحلقة.", reply_markup=markup)
         return
     await send_video_final(client, message.chat.id, v_id, *res[0])
 
@@ -145,8 +146,11 @@ async def send_video_final(client, chat_id, v_id, title, ep, q, dur):
         btns = await get_episodes_markup(title, v_id)
         cap = f"الحلقة [{ep}]\nالجودة [{q}]\nالمده [{dur}]\n\n{encode_hidden(title)}\n\nنتمنى لكم مشاهده ممتعة."
         await client.copy_message(chat_id, SOURCE_CHANNEL, int(v_id), caption=cap, reply_markup=InlineKeyboardMarkup(btns) if btns else None)
+    except PeerIdInvalid:
+        await client.send_message(chat_id, "⚠️ خطأ: البوت لا يملك صلاحية الوصول للقناة المصدر (قد تكون محظورة أو البوت ليس مشرفاً).")
     except Exception as e:
-        await client.send_message(chat_id, "⚠️ الفيديو غير موجود في القناة الجديدة، يرجى إعادة رفعه.")
+        logging.error(f"❌ Error sending video: {e}")
+        await client.send_message(chat_id, "⚠️ عذراً، تعذر جلب الفيديو من المصدر حالياً.")
 
 if __name__ == "__main__":
     app.run()
