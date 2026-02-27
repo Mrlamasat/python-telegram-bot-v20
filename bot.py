@@ -15,10 +15,12 @@ API_HASH = os.environ.get("API_HASH", "dacba460d875d963bbd4462c5eb554d6")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8579897728:AAHtplbFHhJ-4fatqVWXQowETrKg-u0cr0Q")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-SOURCE_CHANNEL = -1003547072209
-FORCE_SUB_CHANNEL = "@MoAlmohsen"
-FORCE_SUB_LINK = "https://t.me/MoAlmohsen"
-PUBLIC_POST_CHANNEL = "@MoAlmohsen"
+# --- التحديثات الجديدة هنا يا محمد ---
+SOURCE_CHANNEL = -1003678294148
+FORCE_SUB_CHANNEL = -1003790915936  # تم استخدام آيدي القناة الجديدة للتحقق
+FORCE_SUB_LINK = "https://t.me/+KyrbVyp0QCJhZGU8"
+PUBLIC_POST_CHANNEL = -1003790915936
+# ------------------------------------
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -60,7 +62,6 @@ def encode_hidden(text):
     return "".join(["\u200b" + char for char in text])
 
 def clean_series_title(text):
-    """حذف كلمة حلقة والأرقام من العنوان لتوحيده"""
     if not text: return "مسلسل"
     return re.sub(r'(الحلقة|حلقة)?\s*\d+', '', text).strip()
 
@@ -95,7 +96,7 @@ async def receive_video(client, message):
     v_id = str(message.id)
     dur = f"{message.video.duration // 60} دقيقة" if message.video else "غير محدد"
     db_query("INSERT INTO videos (v_id, status, duration) VALUES (%s, %s, %s) ON CONFLICT (v_id) DO UPDATE SET status='waiting'", (v_id, "waiting", dur), fetch=False)
-    await message.reply_text("✅ تم استلام الفيديو. أرسل البوستر الآن.")
+    await message.reply_text("✅ تم استلام الفيديو من القناة المصدر. أرسل البوستر الآن.")
 
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.photo)
 async def receive_poster(client, message):
@@ -119,35 +120,23 @@ async def receive_ep_num(client, message):
     res = db_query("SELECT v_id, title, poster_id, quality, duration FROM videos WHERE status='awaiting_ep' ORDER BY v_id DESC LIMIT 1")
     if not res: return
     v_id, title, poster_id, quality, duration = res[0]
-    ep_num = int(message.text) # هذا هو الرقم الذي أدخلته يدوياً
+    ep_num = int(message.text)
     
     db_query("UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s", (ep_num, v_id), fetch=False)
     
     bot_info = await client.get_me()
     caption = f"🎬 **{title}**\n\nالحلقة [{ep_num}]\nالجودة [{quality}]\nالمده [{duration}]\n\nنتمنى لكم مشاهده ممتعة."
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهده الحلقة", url=f"https://t.me/{bot_info.username}?start={v_id}")]])
+    
+    # سيتم النشر في القناة الجديدة المحددة
     await client.send_photo(PUBLIC_POST_CHANNEL, poster_id, caption=caption, reply_markup=markup)
-    await message.reply_text(f"🚀 تم النشر بنجاح بالحلقة رقم {ep_num}.")
-
-# ===== المزامنة (تعديل الوصف) =====
-@app.on_edited_message(filters.chat(SOURCE_CHANNEL))
-async def sync_old_videos(client, message):
-    if message.video or message.document:
-        v_id = str(message.id)
-        title = clean_series_title(message.caption)
-        ep_num = 1
-        nums = re.findall(r'\d+', message.caption or "")
-        if nums: ep_num = int(nums[0])
-        db_query("""INSERT INTO videos (v_id, title, status, ep_num, quality) VALUES (%s, %s, %s, %s, %s) 
-                    ON CONFLICT (v_id) DO UPDATE SET title=%s, status='posted', ep_num=%s""", 
-                 (v_id, title, 'posted', ep_num, 'HD', title, ep_num), fetch=False)
-        await message.reply_text(f"🔄 تم تحديث {title} حلقة {ep_num}")
+    await message.reply_text(f"🚀 تم النشر بنجاح في القناة المستهدفة بالحلقة رقم {ep_num}.")
 
 # ===== Interaction =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
     if len(message.command) < 2:
-        await message.reply_text("أهلاً بك يا محمد!")
+        await message.reply_text(f"أهلاً بك يا {message.from_user.mention}!")
         return
     v_id = message.command[1]
     res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (v_id,))
@@ -156,7 +145,7 @@ async def start_handler(client, message):
         return
     if not await check_subscription(client, message.from_user.id):
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك هنا", url=FORCE_SUB_LINK)], [InlineKeyboardButton("🔄 تحقق", callback_data=f"recheck_{v_id}")]])
-        await message.reply_text("⚠️ اشترك أولاً.", reply_markup=markup)
+        await message.reply_text("⚠️ يجب عليك الاشتراك في القناة أولاً لمشاهدة الفيديو.", reply_markup=markup)
         return
     await send_video_final(client, message.chat.id, v_id, *res[0])
 
@@ -172,6 +161,7 @@ async def recheck_cb(client, callback_query):
 async def send_video_final(client, chat_id, v_id, title, ep, q, dur):
     btns = await get_episodes_markup(title, v_id)
     cap = f"الحلقة [{ep}]\nالجودة [{q}]\nالمده [{dur}]\n\n{encode_hidden(title)}\n\nنتمنى لكم مشاهده ممتعة."
+    # يتم النسخ من القناة المصدر الجديدة
     await client.copy_message(chat_id, SOURCE_CHANNEL, int(v_id), caption=cap, reply_markup=InlineKeyboardMarkup(btns) if btns else None)
 
 if __name__ == "__main__":
