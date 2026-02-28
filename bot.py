@@ -15,10 +15,10 @@ API_HASH = os.environ.get("API_HASH", "dacba460d875d963bbd4462c5eb554d6")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8579897728:AAHtplbFHhJ-4fatqVWXQowETrKg-u0cr0Q")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# --- القنوات ---
+# --- القنوات المعدلة ---
 SOURCE_CHANNEL = -1003547072209  
-FORCE_SUB_CHANNEL = "@ramadan2206"  
-FORCE_SUB_LINK = "https://t.me/ramadan2206"  
+FORCE_SUB_CHANNEL = -1003554018307  # الآيدي الجديد الذي أرسلته
+FORCE_SUB_LINK = "https://t.me/+PyUeOtPN1fs0NDA0"  # الرابط الجديد
 PUBLIC_POST_CHANNEL = "@ramadan2206"  
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -58,13 +58,10 @@ init_db()
 
 # ===== Helpers =====
 
-def obfuscate_text(text):
-    """تشفير النص للفصل بين الحروف بمحارف غير مرئية"""
+def obfuscate_visual(text):
+    """تشفير بصري بوضع نقاط بين الحروف"""
     if not text: return ""
-    return "\u200c".join(list(text))
-
-def encode_hidden(text):
-    return "".join(["\u200b" + char for char in text])
+    return " . ".join(list(text))
 
 def clean_series_title(text):
     if not text: return "مسلسل"
@@ -92,7 +89,9 @@ async def check_subscription(client, user_id):
         member = await client.get_chat_member(FORCE_SUB_CHANNEL, user_id)
         return member.status not in ["left", "kicked"]
     except UserNotParticipant: return False
-    except: return True
+    except Exception as e:
+        logging.error(f"Subscription Check Error: {e}")
+        return True
 
 # ===== Handlers =====
 
@@ -129,8 +128,7 @@ async def receive_ep_num(client, message):
     
     db_query("UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s", (ep_num, v_id), fetch=False)
     
-    # تشفير الاسم للنشر العام
-    safe_title = obfuscate_text(title)
+    safe_title = obfuscate_visual(title)
     bot_info = await client.get_me()
     caption = f"🎬 **{safe_title}**\n\nالحلقة [{ep_num}]\nالجودة [{quality}]\nالمده [{duration}]\n\nنتمنى لكم مشاهده ممتعة."
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهده الحلقة", url=f"https://t.me/{bot_info.username}?start={v_id}")]])
@@ -147,15 +145,9 @@ async def start_handler(client, message):
     if not res:
         await message.reply_text("❌ الحلقة غير متوفرة.")
         return
-    if not await check_subscription(client, message.from_user.id):
-        # رسالة الاشتراك الإجباري
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📢 اشترك هنا", url=FORCE_SUB_LINK)],
-            [InlineKeyboardButton("🔄 تحقق", callback_data=f"recheck_{v_id}")]
-        ])
-        await message.reply_text("⚠️ لمشاهدة الحلقة، يجب عليك الاشتراك في قناة المسلسلات أولاً.", reply_markup=markup)
-        return
-    await send_video_final(client, message.chat.id, v_id, *res[0])
+    
+    # استخدام الدالة الموحدة للإرسال مع فحص الاشتراك
+    await send_video_final(client, message.chat.id, message.from_user.id, v_id, *res[0])
 
 @app.on_callback_query(filters.regex("^recheck_"))
 async def recheck_cb(client, callback_query):
@@ -164,33 +156,68 @@ async def recheck_cb(client, callback_query):
         res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (v_id,))
         if res:
             await callback_query.message.delete()
-            await send_video_final(client, callback_query.from_user.id, v_id, *res[0])
+            await send_video_final(client, callback_query.from_user.id, callback_query.from_user.id, v_id, *res[0])
     else:
-        await callback_query.answer("⚠️ لم تشترك بعد!", show_alert=True)
+        await callback_query.answer("⚠️ لم تشترك بعد في القناة الجديدة!", show_alert=True)
 
-async def send_video_final(client, chat_id, v_id, title, ep, q, dur):
+async def send_video_final(client, chat_id, user_id, v_id, title, ep, q, dur):
     # جلب أزرار الحلقات
     btns = await get_episodes_markup(title, v_id)
     
-    # زر الاشتراك الجديد الذي طلبته
-    new_channel_btn = [InlineKeyboardButton("📢 انضم هنا لمتابعة باقي الحلقات", url=FORCE_SUB_LINK)]
+    # فحص الاشتراك في القناة الجديدة
+    is_subscribed = await check_subscription(client, user_id)
     
-    # دمج الأزرار (زر القناة الجديدة أولاً)
-    final_keyboard = [new_channel_btn] + (btns if btns else [])
+    # تشفير مرئي للاسم
+    safe_title = obfuscate_visual(title)
     
-    # تشفير الاسم والرسالة التحذيرية
-    safe_title = obfuscate_text(title)
-    warning_text = "\n\n⚠️ **تنبيه:** تم إغلاق القناة السابقة، لن تتمكن من مشاهدة المزيد إلا بالانضمام للقناة أعلاه."
+    if is_subscribed:
+        # رسالة نظيفة للمشتركين
+        cap = (
+            f"🎬 **{safe_title}**\n\n"
+            f"الحلقة [{ep}]\n"
+            f"الجودة [{q}]\n"
+            f"المده [{dur}]\n\n"
+            f"نتمنى لكم مشاهده ممتعة."
+        )
+        reply_markup = InlineKeyboardMarkup(btns) if btns else None
+    else:
+        # رسالة تنبيه لغير المشتركين مع الزر العريض
+        button_text = "📥 اضغط هنا للانضمام للقناة الجديدة (مهم)"
+        new_channel_btn = [InlineKeyboardButton(button_text, url=FORCE_SUB_LINK)]
+        final_keyboard = [new_channel_btn] + (btns if btns else [])
+        
+        warning_text = (
+            "\n\n⚠️ **تنبيه هام جداً:**\n"
+            "لقد تم نقل الحلقات القادمة إلى قناتنا البديلة. لضمان استمرار المشاهدة، يرجى الضغط على **الزر العريض بالأسفل** للانضمام مباشرة 👇👇"
+        )
+        
+        cap = (
+            f"🎬 **{safe_title}**\n\n"
+            f"الحلقة [{ep}]\n"
+            f"الجودة [{q}]\n"
+            f"المده [{dur}]"
+            f"{warning_text}\n\n"
+            f"نتمنى لكم مشاهده ممتعة."
+        )
+        reply_markup = InlineKeyboardMarkup(final_keyboard)
     
-    cap = f"**{safe_title}**\n\nالحلقة [{ep}]\nالجودة [{q}]\nالمده [{dur}]{warning_text}\n\n{encode_hidden(title)}\n\nنتمنى لكم مشاهده ممتعة."
-    
-    await client.copy_message(
-        chat_id, 
-        SOURCE_CHANNEL, 
-        int(v_id), 
-        caption=cap, 
-        reply_markup=InlineKeyboardMarkup(final_keyboard)
-    )
+    try:
+        await client.copy_message(
+            chat_id, 
+            SOURCE_CHANNEL, 
+            int(v_id), 
+            caption=cap, 
+            reply_markup=reply_markup
+        )
+    except Exception as e:
+        logging.error(f"Error copying message: {e}")
+        # في حال عدم الاشتراك وفشل الإرسال المباشر (كإجراء احتياطي)
+        if not is_subscribed:
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📢 اشترك هنا", url=FORCE_SUB_LINK)],
+                [InlineKeyboardButton("🔄 تحقق", callback_data=f"recheck_{v_id}")]
+            ])
+            await client.send_message(chat_id, "⚠️ يجب الاشتراك في القناة الجديدة لمشاهدة المحتوى:", reply_markup=markup)
 
 if __name__ == "__main__":
     app.run()
