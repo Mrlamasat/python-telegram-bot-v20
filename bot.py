@@ -2,6 +2,7 @@ import os
 import psycopg2
 import logging
 import re
+from html import escape  # حماية النصوص من أخطاء HTML
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -10,7 +11,7 @@ API_ID = int(os.environ.get("API_ID", 35405228))
 API_HASH = os.environ.get("API_HASH", "dacba460d875d963bbd4462c5eb554d6")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8579897728:AAHtplbFHhJ-4fatqVWXQowETrKg-u0cr0Q")
 DATABASE_URL = os.environ.get("DATABASE_URL")
-ADMIN_ID = 7720165591  # الآيدي الخاص بك يا محمد
+ADMIN_ID = 7720165591  # آيدي محمد المحسن
 
 # --- معرفات القنوات ---
 SOURCE_CHANNEL = -1003547072209  
@@ -70,16 +71,18 @@ async def check_subscription(client, user_id):
         return member.status not in ["left", "kicked"]
     except Exception: return False
 
-# ===== إرسال الفيديو النهائي مع عداد المشاهدات =====
+# ===== إرسال الفيديو النهائي مع حماية HTML وعداد المشاهدات =====
 async def send_video_final(client, chat_id, user_id, v_id, title, ep, q, dur):
-    # تحديث عداد المشاهدات تلقائياً
+    # زيادة عداد المشاهدات
     db_query("UPDATE videos SET views = COALESCE(views, 0) + 1 WHERE v_id = %s", (v_id,), fetch=False)
     
     btns = await get_episodes_markup(title, v_id)
     is_subscribed = await check_subscription(client, user_id)
-    safe_title = obfuscate_visual(title)
+    
+    # حماية النص لتجنب خطأ الـ Parser الذي ظهر لك
+    safe_title = obfuscate_visual(escape(title))
 
-    # التنسيق العريض مع الأيقونات المتحركة (GIF) - شغل الغلابة المحترفين
+    # التنسيق العريض مع أيقونات GIF مخفية (مجانية 100%)
     info_text = (
         f"<b><a href='https://s6.gifyu.com/images/S6atp.gif'>&#8205;</a>📺 المسلسل : {safe_title}</b>\n"
         f"<b><a href='https://s6.gifyu.com/images/S6at3.gif'>&#8205;</a>🎞️ رقم الحلقة : {ep}</b>\n"
@@ -97,27 +100,31 @@ async def send_video_final(client, chat_id, user_id, v_id, title, ep, q, dur):
     else:
         reply_markup = InlineKeyboardMarkup(btns) if btns else None
 
-    await client.copy_message(chat_id, SOURCE_CHANNEL, int(v_id), caption=cap, parse_mode="HTML", reply_markup=reply_markup)
+    try:
+        await client.copy_message(
+            chat_id, SOURCE_CHANNEL, int(v_id), 
+            caption=cap, parse_mode="HTML", reply_markup=reply_markup
+        )
+    except Exception as e:
+        logging.error(f"❌ HTML Parsing Error: {e}")
+        # إرسال بديل بسيط في حال فشل التنسيق المعقد
+        await client.send_message(chat_id, f"🎬 <b>{safe_title}</b>\nحلقة رقم {ep}", parse_mode="HTML")
 
-# ===== معالجة أمر الإحصائيات (حصري لمحمد) =====
+# ===== أمر الإحصائيات لمحمد فقط =====
 @app.on_message(filters.command("stats") & filters.private)
 async def get_stats(client, message):
-    if message.from_user.id != ADMIN_ID:
-        return # يتجاهل أي شخص آخر
-        
-    # جلب أفضل 10 حلقات مشاهدة
-    top_eps = db_query("SELECT title, ep_num, views FROM videos WHERE status='posted' ORDER BY views DESC LIMIT 10")
+    if message.from_user.id != ADMIN_ID: return
     
-    text = "📊 <b>تقرير الأداء والمشاهدات:</b>\n\n"
+    top_eps = db_query("SELECT title, ep_num, views FROM videos WHERE status='posted' ORDER BY views DESC LIMIT 10")
+    text = "📊 <b>تقرير الحلقات الأكثر مشاهدة:</b>\n\n"
     if top_eps:
         for i, row in enumerate(top_eps, 1):
             text += f"{i}. 🎬 <b>{row[0]}</b>\n└ حلقة {row[1]} ← 👤 <b>{row[2]} مشاهدة</b>\n\n"
     else:
-        text += "لا توجد بيانات مشاهدة حتى الآن."
-    
+        text += "لا توجد بيانات مشاهدة بعد."
     await message.reply_text(text, parse_mode="HTML")
 
-# ===== استقبال الفيديو والبوستر (نفس المنطق السابق) =====
+# ===== معالجة القناة المصدر =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document | filters.animation))
 async def receive_video(client, message):
     v_id = str(message.id)
@@ -155,7 +162,7 @@ async def receive_ep_num(client, message):
     db_query("UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s", (ep_num, v_id), fetch=False)
     
     bot_info = await client.get_me()
-    caption = f"🎬 <b>{obfuscate_visual(title)}</b>\n\n<b>الحلقة:</b> <b>[{ep_num}]</b>\n<b>الجودة:</b> <b>[{quality}]</b>\n<b>المدة:</b> <b>[{duration}]</b>\n\nنتمنى لكم مشاهده ممتعة."
+    caption = f"🎬 <b>{obfuscate_visual(escape(title))}</b>\n\n<b>الحلقة:</b> <b>[{ep_num}]</b>\n<b>الجودة:</b> <b>[{quality}]</b>\n<b>المدة:</b> <b>[{duration}]</b>\n\nنتمنى لكم مشاهده ممتعة."
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهده الحلقة", url=f"https://t.me/{bot_info.username}?start={v_id}")]])
     await client.send_photo(PUBLIC_POST_CHANNEL, poster_id, caption=caption, reply_markup=markup, parse_mode="HTML")
     await message.reply_text(f"🚀 تم النشر بنجاح.")
