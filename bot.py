@@ -2,7 +2,7 @@ import os
 import psycopg2
 import logging
 import re
-from html import escape  # حماية النصوص من أخطاء HTML
+from html import escape  # حماية النصوص من الرموز الخاصة
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -71,18 +71,18 @@ async def check_subscription(client, user_id):
         return member.status not in ["left", "kicked"]
     except Exception: return False
 
-# ===== إرسال الفيديو النهائي مع حماية HTML وعداد المشاهدات =====
+# ===== إرسال الفيديو النهائي (تم إصلاح الروابط هنا) =====
 async def send_video_final(client, chat_id, user_id, v_id, title, ep, q, dur):
-    # زيادة عداد المشاهدات
+    # تحديث عداد المشاهدات
     db_query("UPDATE videos SET views = COALESCE(views, 0) + 1 WHERE v_id = %s", (v_id,), fetch=False)
     
     btns = await get_episodes_markup(title, v_id)
     is_subscribed = await check_subscription(client, user_id)
     
-    # حماية النص لتجنب خطأ الـ Parser الذي ظهر لك
+    # حماية الاسم من أي رموز تكسر الـ HTML
     safe_title = obfuscate_visual(escape(title))
 
-    # التنسيق العريض مع أيقونات GIF مخفية (مجانية 100%)
+    # التنسيق الاحترافي مع صور GIF مخفية (تم إلغاء المسافات الزائدة لضمان الاستقرار)
     info_text = (
         f"<b><a href='https://s6.gifyu.com/images/S6atp.gif'>&#8205;</a>📺 المسلسل : {safe_title}</b>\n"
         f"<b><a href='https://s6.gifyu.com/images/S6at3.gif'>&#8205;</a>🎞️ رقم الحلقة : {ep}</b>\n"
@@ -94,29 +94,31 @@ async def send_video_final(client, chat_id, user_id, v_id, title, ep, q, dur):
 
     if not is_subscribed:
         cap += "\n\n⚠️ <b>انضم للقناة البديلة لمتابعة الحلقات القادمة 👇</b>"
-        button_text = "📥 اضغط هنا للانضمام (مهم)"
-        new_channel_btn = [InlineKeyboardButton(button_text, url=FORCE_SUB_LINK)]
+        new_channel_btn = [InlineKeyboardButton("📥 اضغط هنا للانضمام (مهم)", url=FORCE_SUB_LINK)]
         reply_markup = InlineKeyboardMarkup([new_channel_btn] + (btns if btns else []))
     else:
         reply_markup = InlineKeyboardMarkup(btns) if btns else None
 
     try:
         await client.copy_message(
-            chat_id, SOURCE_CHANNEL, int(v_id), 
-            caption=cap, parse_mode="HTML", reply_markup=reply_markup
+            chat_id=chat_id,
+            from_chat_id=SOURCE_CHANNEL,
+            message_id=int(v_id),
+            caption=cap,
+            parse_mode="HTML",
+            reply_markup=reply_markup
         )
     except Exception as e:
-        logging.error(f"❌ HTML Parsing Error: {e}")
-        # إرسال بديل بسيط في حال فشل التنسيق المعقد
+        logging.error(f"❌ Error in send_video_final: {e}")
+        # خطة بديلة بسيطة جداً في حال فشل التنسيق
         await client.send_message(chat_id, f"🎬 <b>{safe_title}</b>\nحلقة رقم {ep}", parse_mode="HTML")
 
-# ===== أمر الإحصائيات لمحمد فقط =====
+# ===== أمر الإحصائيات (لمحمد فقط) =====
 @app.on_message(filters.command("stats") & filters.private)
 async def get_stats(client, message):
     if message.from_user.id != ADMIN_ID: return
-    
     top_eps = db_query("SELECT title, ep_num, views FROM videos WHERE status='posted' ORDER BY views DESC LIMIT 10")
-    text = "📊 <b>تقرير الحلقات الأكثر مشاهدة:</b>\n\n"
+    text = "📊 <b>تقرير الأداء (الأكثر مشاهدة):</b>\n\n"
     if top_eps:
         for i, row in enumerate(top_eps, 1):
             text += f"{i}. 🎬 <b>{row[0]}</b>\n└ حلقة {row[1]} ← 👤 <b>{row[2]} مشاهدة</b>\n\n"
@@ -124,7 +126,7 @@ async def get_stats(client, message):
         text += "لا توجد بيانات مشاهدة بعد."
     await message.reply_text(text, parse_mode="HTML")
 
-# ===== معالجة القناة المصدر =====
+# ===== استقبال الفيديو والبوستر من قناة المصدر =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document | filters.animation))
 async def receive_video(client, message):
     v_id = str(message.id)
@@ -133,7 +135,6 @@ async def receive_video(client, message):
     if media and hasattr(media, 'duration'):
         d = media.duration
         dur = f"{d//3600:02}:{(d%3600)//60:02}:{d%60:02}"
-        
     db_query("INSERT INTO videos (v_id, status, duration) VALUES (%s, %s, %s) ON CONFLICT (v_id) DO UPDATE SET status='waiting', duration=%s", (v_id, "waiting", dur, dur), fetch=False)
     await message.reply_text(f"✅ تم استلام المرفق.\n⏱ المدة: <b>{dur}</b>\nأرسل البوستر الآن.", parse_mode="HTML")
 
@@ -160,7 +161,6 @@ async def receive_ep_num(client, message):
     v_id, title, poster_id, quality, duration = res[0]
     ep_num = int(message.text)
     db_query("UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s", (ep_num, v_id), fetch=False)
-    
     bot_info = await client.get_me()
     caption = f"🎬 <b>{obfuscate_visual(escape(title))}</b>\n\n<b>الحلقة:</b> <b>[{ep_num}]</b>\n<b>الجودة:</b> <b>[{quality}]</b>\n<b>المدة:</b> <b>[{duration}]</b>\n\nنتمنى لكم مشاهده ممتعة."
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهده الحلقة", url=f"https://t.me/{bot_info.username}?start={v_id}")]])
