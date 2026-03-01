@@ -7,10 +7,10 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 
-# ===== الإعدادات الأساسية =====
-API_ID = int(os.environ.get("API_ID", 35405228))
-API_HASH = os.environ.get("API_HASH", "dacba460d875d963bbd4462c5eb554d6")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8579897728:AAHtplbFHhJ-4fatqVWXQowETrKg-u0cr0Q")
+# ===== الإعدادات الأساسية (تُسحب من إعدادات Railway وليس من الكود) =====
+API_ID = int(os.environ.get("API_ID"))
+API_HASH = os.environ.get("API_HASH")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_ID = 7720165591
 
@@ -21,6 +21,8 @@ FORCE_SUB_LINK = "https://t.me/+PyUeOtPN1fs0NDA0"
 PUBLIC_POST_CHANNEL = "@ramadan2206"
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# (بقية الكود الخاص بقاعدة البيانات ومعالجة الحلقات كما هو دون تغيير...)
 
 # ===== قاعدة البيانات =====
 def db_query(query, params=(), fetch=True):
@@ -57,7 +59,7 @@ async def get_episodes_markup(title, current_v_id):
     for v_id, ep_num in res:
         if ep_num in seen_eps: continue
         seen_eps.add(ep_num)
-        label = f"📍 {ep_num}" if v_id == current_v_id else f"{ep_num}"
+        label = f"✅️ {ep_num}" if v_id == current_v_id else f"{ep_num}"
         btn = InlineKeyboardButton(label, url=f"https://t.me/{bot_info.username}?start={v_id}")
         row.append(btn)
         if len(row) == 5:
