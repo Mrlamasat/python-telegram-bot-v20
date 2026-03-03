@@ -7,20 +7,22 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 
-# ===== الإعدادات الأساسية (تُسحب من Railway) =====
+# ===== الإعدادات الأساسية (تُسحب من Railway فقط للتوكن والبيانات) =====
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_ID = 7720165591
 
-# ===== إعدادات القنوات (تعديل مباشر هنا لضمان العمل) =====
-SOURCE_CHANNEL = -1003547072209  # قناة السورس
+# ===== معرفات القنوات الثابتة (بدون الاعتماد على Railway) =====
 
-# قناة النشر الخاصة (التي لم ينشر فيها الكود السابق)
+# 1. قناة السورس (التي ترسل منها الفيديو والبوستر)
+SOURCE_CHANNEL = -1003547072209
+
+# 2. قناة النشر الخاصة (التي سيتم النشر التلقائي فيها)
 PUBLIC_POST_CHANNEL = -1003554018307 
 
-# قناة الاشتراك الإجباري
+# 3. قناة الاشتراك الإجباري ورابطها
 FORCE_SUB_CHANNEL = -1003894735143 
 FORCE_SUB_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
 
@@ -76,7 +78,7 @@ async def check_subscription(client, user_id):
         return member.status not in ["left", "kicked"]
     except: return False
 
-# ===== إرسال الفيديو النهائي =====
+# ===== إرسال الفيديو النهائي للمستخدم =====
 async def send_video_final(client, chat_id, user_id, v_id, title, ep, q, dur):
     db_query("UPDATE videos SET views = COALESCE(views, 0) + 1 WHERE v_id = %s", (v_id,), fetch=False)
     btns = await get_episodes_markup(title, v_id)
@@ -102,7 +104,7 @@ async def send_video_final(client, chat_id, user_id, v_id, title, ep, q, dur):
     except:
         await client.send_message(chat_id, f"🎬 {safe_title} - حلقة {ep}")
 
-# ===== المعالجة والأوامر =====
+# ===== استقبال الفيديو والبوستر من السورس =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document | filters.animation))
 async def receive_video(client, message):
     v_id = str(message.id)
@@ -127,6 +129,7 @@ async def set_quality(client, cb):
     db_query("UPDATE videos SET quality=%s, status='awaiting_ep' WHERE v_id=%s", (q, v_id), fetch=False)
     await cb.message.edit_text(f"✅ الجودة: <b>{q}</b>. أرسل الآن رقم الحلقة:")
 
+# ===== استقبال رقم الحلقة والنشر التلقائي في القناة الخاصة =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.text & ~filters.command(["start", "stats"]))
 async def receive_ep_num(client, message):
     if not message.text.isdigit(): return
@@ -141,7 +144,7 @@ async def receive_ep_num(client, message):
     caption = f"🎬 <b>{safe_t}</b>\n\n<b>الحلقة: [{ep_num}]</b>\n<b>الجودة: [{q}]</b>\n<b>المدة: [{dur}]</b>\n\nنتمنى لكم مشاهدة ممتعة."
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الحلقة", url=f"https://t.me/{b_info.username}?start={v_id}")]])
     
-    # محاولة النشر في القناة الخاصة المحددة بالـ ID
+    # النشر في القناة الخاصة المحددة بالـ ID مباشرة
     try:
         await client.send_photo(
             chat_id=PUBLIC_POST_CHANNEL, 
@@ -152,8 +155,9 @@ async def receive_ep_num(client, message):
         )
         await message.reply_text("🚀 تم النشر في القناة الخاصة بنجاح.")
     except Exception as e:
-        await message.reply_text(f"❌ فشل النشر في القناة {PUBLIC_POST_CHANNEL}.\nالسبب: {e}")
+        await message.reply_text(f"❌ فشل النشر في القناة {PUBLIC_POST_CHANNEL}.\nتأكد أن البوت مشرف هناك!\nالخطأ: {e}")
 
+# ===== أمر Start للمستخدمين =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
     if len(message.command) < 2:
@@ -162,6 +166,18 @@ async def start_handler(client, message):
     v_id = message.command[1]
     res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (v_id,))
     if res: await send_video_final(client, message.chat.id, message.from_user.id, v_id, *res[0])
+
+# ===== أمر الإحصائيات للأدمن =====
+@app.on_message(filters.command("stats") & filters.private)
+async def get_stats(client, message):
+    if message.from_user.id != ADMIN_ID: return
+    top = db_query("SELECT title, ep_num, views FROM videos WHERE status='posted' ORDER BY views DESC LIMIT 10")
+    text = "📊 <b>تقرير الأداء (الأكثر مشاهدة):</b>\n\n"
+    if top:
+        for i, r in enumerate(top, 1):
+            text += f"{i}. 🎬 <b>{escape(r[0])}</b>\n└ حلقة {r[1]} ← 👤 <b>{r[2]} مشاهدة</b>\n\n"
+    else: text += "لا توجد بيانات بعد."
+    await message.reply_text(text, parse_mode=ParseMode.HTML)
 
 if __name__ == "__main__":
     app.run()
