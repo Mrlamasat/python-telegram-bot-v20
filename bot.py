@@ -7,24 +7,27 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 
-# ===== الإعدادات الأساسية (تُسحب من إعدادات Railway وليس من الكود) =====
+# ===== الإعدادات الأساسية (تُسحب من إعدادات Railway) =====
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_ID = 7720165591
 
-# ===== معرفات القنوات =====
+# ===== معرفات القنوات المحدثة =====
 SOURCE_CHANNEL = -1003547072209
-FORCE_SUB_CHANNEL = -1003554018307
-FORCE_SUB_LINK = "https://t.me/+PyUeOtPN1fs0NDA0"
-PUBLIC_POST_CHANNEL = "@ramadan2206"
+
+# قناة الاشتراك الإجباري الجديدة
+FORCE_SUB_CHANNEL = -1003894735143 
+FORCE_SUB_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
+
+# قناة النشر العامة الجديدة (التي كانت سابقاً @ramadan2206)
+PUBLIC_POST_CHANNEL = -1003554018307 
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# (بقية الكود الخاص بقاعدة البيانات ومعالجة الحلقات كما هو دون تغيير...)
+# (دوال قاعدة البيانات والمساعدة تبقى كما هي لضمان استقرار العمل)
 
-# ===== قاعدة البيانات =====
 def db_query(query, params=(), fetch=True):
     try:
         conn = psycopg2.connect(DATABASE_URL, sslmode="require")
@@ -42,7 +45,6 @@ def db_query(query, params=(), fetch=True):
         logging.error(f"❌ Database Error: {e}")
         return None
 
-# ===== الدوال المساعدة =====
 def obfuscate_visual(text):
     if not text: return ""
     return " . ".join(list(text))
@@ -150,6 +152,7 @@ async def receive_ep_num(client, message):
     caption = f"🎬 <b>{safe_t}</b>\n\n<b>الحلقة: [{ep_num}]</b>\n<b>الجودة: [{q}]</b>\n<b>المدة: [{dur}]</b>\n\nنتمنى لكم مشاهدة ممتعة."
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الحلقة", url=f"https://t.me/{b_info.username}?start={v_id}")]])
     
+    # النشر في القناة العامة المحدثة بالمعرف الرقمي
     await client.send_photo(PUBLIC_POST_CHANNEL, p_id, caption=caption, reply_markup=markup, parse_mode=ParseMode.HTML)
     await message.reply_text("🚀 تم النشر في القناة العامة بنجاح.")
 
