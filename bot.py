@@ -14,19 +14,20 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_ID = 7720165591
 
-# ===== معرفات القنوات (تم تثبيت السورس وتحديث البقية) =====
-SOURCE_CHANNEL = -1003547072209  # تبقى كما هي دون تغيير
+# ===== معرفات القنوات (المعرفات الرقمية للقنوات الخاصة) =====
+SOURCE_CHANNEL = -1003547072209  # قناة السورس (الأساسية)
 
-# قناة الاشتراك الإجباري الجديدة
+# قناة الاشتراك الإجباري (خاصة)
 FORCE_SUB_CHANNEL = -1003894735143 
 FORCE_SUB_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
 
-# قناة النشر العامة الجديدة
+# قناة النشر (خاصة) - تم استخدام ID القناة الذي زودتني به
 PUBLIC_POST_CHANNEL = -1003554018307 
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ===== قاعدة البيانات =====
+# (بقية الدوال المساعدة وقاعدة البيانات تبقى كما هي)
+
 def db_query(query, params=(), fetch=True):
     try:
         conn = psycopg2.connect(DATABASE_URL, sslmode="require")
@@ -44,7 +45,6 @@ def db_query(query, params=(), fetch=True):
         logging.error(f"❌ Database Error: {e}")
         return None
 
-# ===== الدوال المساعدة =====
 def obfuscate_visual(text):
     if not text: return ""
     return " . ".join(list(text))
@@ -76,7 +76,6 @@ async def check_subscription(client, user_id):
         return member.status not in ["left", "kicked"]
     except: return False
 
-# ===== إرسال الفيديو النهائي =====
 async def send_video_final(client, chat_id, user_id, v_id, title, ep, q, dur):
     db_query("UPDATE videos SET views = COALESCE(views, 0) + 1 WHERE v_id = %s", (v_id,), fetch=False)
     btns = await get_episodes_markup(title, v_id)
@@ -98,13 +97,11 @@ async def send_video_final(client, chat_id, user_id, v_id, title, ep, q, dur):
         markup = InlineKeyboardMarkup(btns) if btns else None
 
     try:
-        # استخدام SOURCE_CHANNEL الأصلية لنسخ المحتوى
         await client.copy_message(chat_id, SOURCE_CHANNEL, int(v_id), caption=cap, parse_mode=ParseMode.HTML, reply_markup=markup)
     except Exception as e:
-        logging.error(f"Error copying message: {e}")
+        logging.error(f"Error copying video: {e}")
         await client.send_message(chat_id, f"🎬 {safe_title} - حلقة {ep}")
 
-# ===== الأوامر والمعالجة =====
 @app.on_message(filters.command("stats") & filters.private)
 async def get_stats(client, message):
     if message.from_user.id != ADMIN_ID: return
@@ -154,12 +151,12 @@ async def receive_ep_num(client, message):
     caption = f"🎬 <b>{safe_t}</b>\n\n<b>الحلقة: [{ep_num}]</b>\n<b>الجودة: [{q}]</b>\n<b>المدة: [{dur}]</b>\n\nنتمنى لكم مشاهدة ممتعة."
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الحلقة", url=f"https://t.me/{b_info.username}?start={v_id}")]])
     
-    # النشر في القناة العامة الجديدة
+    # النشر في قناة النشر (الخاصة)
     try:
         await client.send_photo(PUBLIC_POST_CHANNEL, p_id, caption=caption, reply_markup=markup, parse_mode=ParseMode.HTML)
-        await message.reply_text("🚀 تم النشر في القناة العامة بنجاح.")
+        await message.reply_text("🚀 تم النشر في القناة الخاصة بنجاح.")
     except Exception as e:
-        await message.reply_text(f"❌ خطأ في النشر: تأكد أن البوت مشرف في القناة {PUBLIC_POST_CHANNEL}")
+        await message.reply_text(f"❌ فشل النشر في القناة الخاصة {PUBLIC_POST_CHANNEL}.\nتأكد أن البوت مشرف هناك!")
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
