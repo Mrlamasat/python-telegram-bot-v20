@@ -7,27 +7,26 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 
-# ===== الإعدادات الأساسية (تُسحب من إعدادات Railway) =====
+# ===== الإعدادات الأساسية =====
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_ID = 7720165591
 
-# ===== معرفات القنوات المحدثة =====
-SOURCE_CHANNEL = -1003547072209
+# ===== معرفات القنوات (تم تثبيت السورس وتحديث البقية) =====
+SOURCE_CHANNEL = -1003547072209  # تبقى كما هي دون تغيير
 
 # قناة الاشتراك الإجباري الجديدة
 FORCE_SUB_CHANNEL = -1003894735143 
 FORCE_SUB_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
 
-# قناة النشر العامة الجديدة (التي كانت سابقاً @ramadan2206)
+# قناة النشر العامة الجديدة
 PUBLIC_POST_CHANNEL = -1003554018307 
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# (دوال قاعدة البيانات والمساعدة تبقى كما هي لضمان استقرار العمل)
-
+# ===== قاعدة البيانات =====
 def db_query(query, params=(), fetch=True):
     try:
         conn = psycopg2.connect(DATABASE_URL, sslmode="require")
@@ -45,6 +44,7 @@ def db_query(query, params=(), fetch=True):
         logging.error(f"❌ Database Error: {e}")
         return None
 
+# ===== الدوال المساعدة =====
 def obfuscate_visual(text):
     if not text: return ""
     return " . ".join(list(text))
@@ -98,8 +98,10 @@ async def send_video_final(client, chat_id, user_id, v_id, title, ep, q, dur):
         markup = InlineKeyboardMarkup(btns) if btns else None
 
     try:
+        # استخدام SOURCE_CHANNEL الأصلية لنسخ المحتوى
         await client.copy_message(chat_id, SOURCE_CHANNEL, int(v_id), caption=cap, parse_mode=ParseMode.HTML, reply_markup=markup)
-    except:
+    except Exception as e:
+        logging.error(f"Error copying message: {e}")
         await client.send_message(chat_id, f"🎬 {safe_title} - حلقة {ep}")
 
 # ===== الأوامر والمعالجة =====
@@ -152,9 +154,12 @@ async def receive_ep_num(client, message):
     caption = f"🎬 <b>{safe_t}</b>\n\n<b>الحلقة: [{ep_num}]</b>\n<b>الجودة: [{q}]</b>\n<b>المدة: [{dur}]</b>\n\nنتمنى لكم مشاهدة ممتعة."
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الحلقة", url=f"https://t.me/{b_info.username}?start={v_id}")]])
     
-    # النشر في القناة العامة المحدثة بالمعرف الرقمي
-    await client.send_photo(PUBLIC_POST_CHANNEL, p_id, caption=caption, reply_markup=markup, parse_mode=ParseMode.HTML)
-    await message.reply_text("🚀 تم النشر في القناة العامة بنجاح.")
+    # النشر في القناة العامة الجديدة
+    try:
+        await client.send_photo(PUBLIC_POST_CHANNEL, p_id, caption=caption, reply_markup=markup, parse_mode=ParseMode.HTML)
+        await message.reply_text("🚀 تم النشر في القناة العامة بنجاح.")
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ في النشر: تأكد أن البوت مشرف في القناة {PUBLIC_POST_CHANNEL}")
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
