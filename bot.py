@@ -14,10 +14,10 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_ID = 7720165591
 
-# ===== IDs القنوات المحدثة =====
-SOURCE_CHANNEL = -1003547072209        # قناة الاستقبال (السورس)
-PUBLIC_POST_CHANNEL = -1003554018307   # قناة النشر العامة
-FORCE_SUB_CHANNEL = -1003894735143     # قناة الاشتراك الإجباري
+# ===== IDs القنوات =====
+SOURCE_CHANNEL = -1003547072209        # قناة الاستقبال
+PUBLIC_POST_CHANNEL = -1003554018307   # قناة النشر
+FORCE_SUB_CHANNEL = -1003894735143     # قناة الاشتراك
 FORCE_SUB_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -40,15 +40,22 @@ def db_query(query, params=(), fetch=True):
         logging.error(f"❌ خطأ في قاعدة البيانات: {e}")
         return None
 
-# ===== الدوال المساعدة =====
+# ===== الدالة المطورة: البحث الذكي وتوحيد النصوص =====
 def normalize_text(text):
     if not text: return ""
     text = text.strip().lower()
+    
+    # 1. إزالة الكلمات التعريفية الزائدة (حل مشكلة "مسلسل مولانا")
+    text = re.sub(r'^(مسلسل|فيلم|برنامج|كرتون|انمي|افلام|مسلسلات)\s+', '', text)
+    
+    # 2. توحيد الأحرف العربية الصعبة
     text = re.sub(r'[أإآ]', 'ا', text)
     text = re.sub(r'[ة]', 'ه', text)
     text = re.sub(r'[ى]', 'ي', text)
     text = re.sub(r'[ئؤ]', 'ء', text)
-    text = re.sub(r'\s+', ' ', text)
+    
+    # 3. تنظيف المسافات
+    text = re.sub(r'\s+', ' ', text).strip()
     return text
 
 def obfuscate_visual(text):
@@ -66,7 +73,7 @@ async def check_subscription(client, user_id):
     except: 
         return False
 
-# القائمة الثابتة (البحث والطلب)
+# القائمة الثابتة بالأسفل
 MAIN_MENU = ReplyKeyboardMarkup(
     [
         [KeyboardButton("🔍 كيف أبحث عن مسلسل؟")],
@@ -100,15 +107,13 @@ async def send_video_final(client, chat_id, user_id, v_id, title, ep, q, dur):
     cap = f"<b>📺 المسلسل : {obfuscate_visual(escape(title))}</b>\n<b>🎞️ رقم الحلقة : {ep}</b>\n<b>💿 الجودة : {q}</b>\n<b>⏳ المدة : {dur}</b>"
     
     try:
-        # إرسال الفيديو مع أرقام الحلقات
         await client.copy_message(chat_id, SOURCE_CHANNEL, int(v_id), caption=cap, 
                                  reply_markup=InlineKeyboardMarkup(final_btns) if final_btns else None)
-        # إرسال رسالة نصية منفصلة لإجبار القائمة السفلية على الظهور
-        await client.send_message(chat_id, "🔍 يمكنك البحث عن أي مسلسل بكتابة اسمه هنا 👇", reply_markup=MAIN_MENU)
+        await client.send_message(chat_id, "🔍 ابحث عن أي مسلسل آخر بكتابة اسمه هنا 👇", reply_markup=MAIN_MENU)
     except:
         await client.send_message(chat_id, f"🎬 {title} - حلقة {ep}", reply_markup=MAIN_MENU)
 
-# ===== معالجة الرسائل والبحث =====
+# ===== معالجة الرسائل والبحث الذكي =====
 @app.on_message(filters.private & filters.text & ~filters.command(["start", "stats"]))
 async def message_handler(client, message):
     if message.from_user.is_bot: return 
@@ -116,19 +121,19 @@ async def message_handler(client, message):
     text = message.text
 
     if text == "🔍 كيف أبحث عن مسلسل؟":
-        await message.reply_text("🔎 **طريقة البحث:** اكتب اسم المسلسل هنا مباشرة (مثلاً: قيامة عثمان) وسأعرض لك النتائج!")
+        await message.reply_text("🔎 **طريقة البحث:** اكتب اسم المسلسل مباشرة (مثلاً: قيامة عثمان).\nسيقوم البوت بتجاهل كلمات مثل 'مسلسل' أو 'فيلم' والبحث عن الاسم مباشرة!")
         return
     if text == "✍️ طلب مسلسل جديد":
-        await message.reply_text("📥 أرسل اسم المسلسل وسأبلغ الإدارة فوراً لتوفيره.")
+        await message.reply_text("📥 أرسل اسم المسلسل وسأبلغ الإدارة فوراً.")
         return
 
     if not await check_subscription(client, user_id):
-        await message.reply_text("⚠️ يجب الاشتراك أولاً لتتمكن من استخدام ميزة البحث:", 
-                                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 اشترك الآن", url=FORCE_SUB_LINK)]]))
+        await message.reply_text("⚠️ اشترك أولاً لتفعيل البحث:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 اشترك الآن", url=FORCE_SUB_LINK)]]))
         return
 
+    # استخدام الدالة المطورة لمعالجة نص البحث
     norm_query = normalize_text(text)
-    if len(norm_query) < 2: return
+    if not norm_query or len(norm_query) < 2: return
 
     res = db_query("SELECT DISTINCT title FROM videos WHERE status='posted' ORDER BY title ASC")
     matches = [row[0] for row in (res or []) if norm_query in normalize_text(row[0])]
@@ -138,8 +143,8 @@ async def message_handler(client, message):
         buttons = [[InlineKeyboardButton(f"🎬 {t}", callback_data=f"lst_{t[:40]}")] for t in matches]
         await message.reply_text(f"🔍 نتائج البحث عن '{text}':", reply_markup=InlineKeyboardMarkup(buttons))
     else:
-        await message.reply_text(f"❌ لم أجد '{text}' حالياً. تم إبلاغ الإدارة.")
-        try: await client.send_message(ADMIN_ID, f"📥 طلب جديد من {message.from_user.mention}: {text}")
+        await message.reply_text(f"❌ لم أجد '{text}'. تم إرسال طلبك للإدارة.")
+        try: await client.send_message(ADMIN_ID, f"📥 طلب جديد: {text}")
         except: pass
 
 # ===== أمر Start =====
@@ -153,8 +158,7 @@ async def start_handler(client, message):
             if res:
                 title, ep = res[0]
                 qualities = db_query("SELECT DISTINCT quality, v_id FROM videos WHERE title=%s AND ep_num=%s AND status='posted'", (title, ep))
-                btns = [[InlineKeyboardButton(f"💿 جودة {q}", callback_data=f"get_vid_{vid}")] for q, vid in qualities]
-                # إظهار القائمة السفلية فوراً عند اختيار الجودة
+                btns = [[InlineKeyboardButton(f"💿 {q}", callback_data=f"get_vid_{vid}")] for q, vid in qualities]
                 await message.reply_text(f"🎬 **{escape(title)} - حلقة {ep}**\n\nاختر الجودة المطلوبة 👇:", 
                                          reply_markup=MAIN_MENU) 
                 await message.reply_text("👇", reply_markup=InlineKeyboardMarkup(btns))
@@ -162,9 +166,9 @@ async def start_handler(client, message):
             res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (param,))
             if res: await send_video_final(client, message.chat.id, message.from_user.id, param, *res[0])
     else:
-        await message.reply_text(f"👋 أهلاً بك يا {message.from_user.first_name}.\nاستخدم القائمة بالأسفل للبحث أو طلب مسلسل.", reply_markup=MAIN_MENU)
+        await message.reply_text(f"👋 أهلاً بك يا {message.from_user.first_name}.\nاستخدم القائمة بالأسفل للبحث أو الطلب.", reply_markup=MAIN_MENU)
 
-# ===== Callback Queries (أزرار البحث والجودة) =====
+# (بقية دوال Callback ورفع المرفقات تبقى كما هي في الكود السابق لضمان استقرار العمل)
 @app.on_callback_query(filters.regex("^lst_|^sqs_|^get_vid_|^q_"))
 async def cb_handler(client, cb):
     if cb.data.startswith("lst_"):
@@ -184,7 +188,7 @@ async def cb_handler(client, cb):
         if res:
             title, ep = res[0]
             qualities = db_query("SELECT DISTINCT quality, v_id FROM videos WHERE title=%s AND ep_num=%s AND status='posted'", (title, ep))
-            btns = [[InlineKeyboardButton(f"💿 جودة {q}", callback_data=f"get_vid_{vid}")] for q, vid in qualities]
+            btns = [[InlineKeyboardButton(f"💿 {q}", callback_data=f"get_vid_{vid}")] for q, vid in qualities]
             await cb.message.edit_text(f"🎬 {title} - حلقة {ep}\nاختر الجودة:", reply_markup=InlineKeyboardMarkup(btns))
     elif cb.data.startswith("get_vid_"):
         v_id = cb.data.replace("get_vid_", "")
