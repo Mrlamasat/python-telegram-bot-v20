@@ -6,7 +6,7 @@ from html import escape
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 
-# ===== الإعدادات =====
+# ===== الإعدادات الأساسية =====
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
-# المعرفات (تأكد أنها مطابقة لقنواتك)
+# المعرفات (IDs)
 SOURCE_CHANNEL = -1003547072209
 PUBLIC_POST_CHANNEL = -1003554018307 
 FORCE_SUB_CHANNEL = -1003894735143 
@@ -24,7 +24,6 @@ app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # ===== دوال قاعدة البيانات =====
 def init_database():
-    """تهيئة الجداول عند التشغيل"""
     try:
         conn = psycopg2.connect(DATABASE_URL, sslmode="require")
         cur = conn.cursor()
@@ -44,7 +43,7 @@ def init_database():
         conn.commit()
         cur.close()
         conn.close()
-        logger.info("✅ Database Initialized")
+        logger.info("✅ Database Initialized Successfully")
     except Exception as e:
         logger.error(f"❌ Database Init Error: {e}")
 
@@ -68,12 +67,22 @@ def db_query(query, params=(), fetch=True):
     finally:
         if conn: conn.close()
 
+# ===== دوال المعالجة الذكية =====
 def obfuscate_visual(text):
-    """تنسيق الاسم بالتنقيط"""
+    """تنسيق الاسم بالتنقيط للنشر"""
     if not text: return ""
     return " . ".join(list(text.replace(" ", "  ")))
 
-# ===== 1. استقبال الفيديو (المصدر) =====
+def clean_for_search(text):
+    """تنظيف النص لمطابقة البحث (إزالة النقاط والزخارف)"""
+    if not text: return ""
+    text = text.replace(".", "").replace(" ", "")
+    text = re.sub(r'[أإآ]', 'ا', text)
+    text = re.sub(r'[ة]', 'ه', text)
+    text = re.sub(r'[ى]', 'ي', text)
+    return text.lower()
+
+# ===== 1. استقبال الفيديو (قناة المصدر) =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document | filters.animation))
 async def receive_video(client, message):
     v_id = str(message.id)
@@ -87,17 +96,16 @@ async def receive_video(client, message):
     )
     await message.reply_text(f"✅ تم استلام الملف ({dur}).\n**أرسل البوستر الآن واكتب اسم المسلسل في وصفه.**", quote=True)
 
-# ===== 2. استقبال البوستر (المصدر) =====
+# ===== 2. استقبال البوستر (قناة المصدر) =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.photo)
 async def receive_poster(client, message):
     res = db_query("SELECT v_id FROM videos WHERE status='waiting' ORDER BY created_at DESC LIMIT 1")
-    if not res:
-        return
+    if not res: return
 
     v_id = res[0][0]
     title = message.caption
     if not title:
-        await message.reply_text("⚠️ خطأ: يجب كتابة اسم المسلسل في وصف الصورة!", quote=True)
+        await message.reply_text("⚠️ خطأ: يجب كتابة اسم المسلسل في وصف الصورة لكي أتمكن من الربط!", quote=True)
         return
 
     db_query("UPDATE videos SET title=%s, poster_id=%s, status='awaiting_quality' WHERE v_id=%s", (title, message.photo.file_id, v_id), fetch=False)
@@ -107,14 +115,14 @@ async def receive_poster(client, message):
          InlineKeyboardButton("HD", callback_data=f"q_HD_{v_id}"), 
          InlineKeyboardButton("SD", callback_data=f"q_SD_{v_id}")]
     ])
-    await message.reply_text(f"📌 الاسم: {title}\n**اختر الجودة:**", reply_markup=markup, quote=True)
+    await message.reply_text(f"📌 الاسم: {title}\n**اختر الجودة الآن:**", reply_markup=markup, quote=True)
 
 # ===== 3. اختيار الجودة (Callback) =====
 @app.on_callback_query(filters.regex("^q_"))
 async def set_quality(client, cb):
     _, q, v_id = cb.data.split("_")
     db_query("UPDATE videos SET quality=%s, status='awaiting_ep' WHERE v_id=%s", (q, v_id), fetch=False)
-    await cb.message.edit_text(f"✅ الجودة: {q}\n**أرسل رقم الحلقة الآن:**")
+    await cb.message.edit_text(f"✅ الجودة: {q}\n**أرسل الآن رقم الحلقة فقط (مثال: 5):**")
 
 # ===== 4. رقم الحلقة والنشر النهائي =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.text)
@@ -128,13 +136,7 @@ async def receive_ep_num(client, message):
     ep_num = message.text
     
     safe_title = obfuscate_visual(escape(title))
-    caption = (
-        f"🎬 <b>{safe_title}</b>\n\n"
-        f"الحلقة: [{ep_num}]\n"
-        f"الجودة: [{q}]\n"
-        f"المدة: [{dur}]\n\n"
-        f"نتمنى لكم مشاهدة ممتعة."
-    )
+    caption = f"🎬 <b>{safe_title}</b>\n\nالحلقة: [{ep_num}]\nالجودة: [{q}]\nالمدة: [{dur}]\n\nنتمنى لكم مشاهدة ممتعة."
     
     me = await client.get_me()
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الحلقة", url=f"https://t.me/{me.username}?start={v_id}")]])
@@ -142,9 +144,9 @@ async def receive_ep_num(client, message):
     try:
         post = await client.send_photo(chat_id=PUBLIC_POST_CHANNEL, photo=p_id, caption=caption, reply_markup=markup)
         db_query("UPDATE videos SET ep_num=%s, status='posted', post_id=%s WHERE v_id=%s", (ep_num, post.id, v_id), fetch=False)
-        await message.reply_text(f"🚀 تم النشر بنجاح: {title}")
+        await message.reply_text(f"🚀 تم النشر بنجاح: {title}\nالحلقة: {ep_num}", quote=True)
     except Exception as e:
-        await message.reply_text(f"❌ خطأ: {e}")
+        await message.reply_text(f"❌ خطأ في النشر: {e}")
 
 # ===== 5. تحديث القناة عند تعديل البوستر في المصدر =====
 @app.on_edited_message(filters.chat(SOURCE_CHANNEL) & filters.photo)
@@ -153,29 +155,70 @@ async def handle_edit(client, message):
     if not new_title: return
     
     res = db_query("SELECT v_id, ep_num, quality, duration, post_id FROM videos WHERE poster_id=%s LIMIT 1", (message.photo.file_id,))
-    if res and res[0][4]: # التأكد من وجود post_id
+    if res and res[0][4]:
         v_id, ep, q, dur, post_id = res[0]
         db_query("UPDATE videos SET title=%s WHERE v_id=%s", (new_title, v_id), fetch=False)
         
         safe_title = obfuscate_visual(escape(new_title))
-        new_caption = (
-            f"🎬 <b>{safe_title}</b>\n\n"
-            f"الحلقة: [{ep}]\n"
-            f"الجودة: [{q}]\n"
-            f"المدة: [{dur}]\n\n"
-            f"نتمنى لكم مشاهدة ممتعة."
-        )
+        new_caption = f"🎬 <b>{safe_title}</b>\n\nالحلقة: [{ep}]\nالجودة: [{q}]\nالمدة: [{dur}]\n\nنتمنى لكم مشاهدة ممتعة."
+        
         me = await client.get_me()
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الحلقة", url=f"https://t.me/{me.username}?start={v_id}")]])
         
         try:
             await client.edit_message_caption(chat_id=PUBLIC_POST_CHANNEL, message_id=int(post_id), caption=new_caption, reply_markup=markup)
-            logger.info(f"✅ Updated post {post_id} from source edit.")
-        except Exception as e:
-            logger.error(f"❌ Edit Failed: {e}")
+            logger.info(f"✅ Auto-updated post {post_id}")
+        except: pass
 
-# ===== تشغيل البوت =====
+# ===== 6. نظام البحث الذكي (الرسائل الخاصة) =====
+@app.on_message(filters.private & filters.text & ~filters.command(["start"]))
+async def search_handler(client, message):
+    query = clean_for_search(message.text)
+    if len(query) < 2: return
+
+    res = db_query("SELECT DISTINCT title FROM videos WHERE status='posted'")
+    matches = [t[0] for t in (res or []) if query in clean_for_search(t[0])]
+
+    if matches:
+        btns = [[InlineKeyboardButton(f"🎬 {m}", callback_data=f"list_{m[:40]}")] for m in matches[:10]]
+        await message.reply_text(f"🔍 نتائج البحث عن '{message.text}':", reply_markup=InlineKeyboardMarkup(btns))
+    else:
+        await message.reply_text("❌ لم أجد حلقات بهذا الاسم.")
+
+@app.on_callback_query(filters.regex("^list_"))
+async def list_episodes(client, cb):
+    title = cb.data.replace("list_", "")
+    res = db_query("SELECT v_id, ep_num FROM videos WHERE title LIKE %s AND status='posted' ORDER BY CAST(ep_num AS INTEGER) ASC", (f"{title}%",))
+    btns, row = [], []
+    for vid, ep in (res or []):
+        row.append(InlineKeyboardButton(f"حلقة {ep}", callback_data=f"send_{vid}"))
+        if len(row) == 3: btns.append(row); row = []
+    if row: btns.append(row)
+    await cb.message.edit_text(f"📺 حلقات مسلسل: {title}", reply_markup=InlineKeyboardMarkup(btns))
+
+@app.on_callback_query(filters.regex("^send_"))
+async def send_final_video(client, cb):
+    v_id = cb.data.replace("send_", "")
+    res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (v_id,))
+    if res:
+        t, e, q, d = res[0]
+        cap = f"<b>📺 المسلسل: {obfuscate_visual(t)}</b>\n<b>🎞️ الحلقة: {e}</b>\n<b>💿 الجودة: {q}</b>\n<b>⏳ المدة: {d}</b>"
+        await client.copy_message(cb.message.chat.id, SOURCE_CHANNEL, int(v_id), caption=cap)
+
+@app.on_message(filters.command("start") & filters.private)
+async def start(client, message):
+    if len(message.command) > 1:
+        v_id = message.command[1]
+        res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (v_id,))
+        if res:
+            t, e, q, d = res[0]
+            cap = f"<b>📺 المسلسل: {obfuscate_visual(t)}</b>\n<b>🎞️ الحلقة: {e}</b>\n<b>💿 الجودة: {q}</b>\n<b>⏳ المدة: {d}</b>"
+            await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), caption=cap)
+    else:
+        await message.reply_text(f"أهلاً بك يا {message.from_user.first_name} في بوت المسلسلات!", 
+                               reply_markup=ReplyKeyboardMarkup([[KeyboardButton("🔍 كيف أبحث؟")]], resize_keyboard=True))
+
+# ===== التشغيل =====
 if __name__ == "__main__":
     init_database()
-    logger.info("🚀 Bot is starting...")
     app.run()
