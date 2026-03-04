@@ -22,7 +22,37 @@ FORCE_SUB_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ===== قاعدة البيانات =====
+# ===== إعداد قاعدة البيانات مع إنشاء الجداول =====
+def init_database():
+    """إنشاء الجداول إذا لم تكن موجودة"""
+    try:
+        conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+        cur = conn.cursor()
+        
+        # إنشاء جدول videos
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS videos (
+                v_id TEXT PRIMARY KEY,
+                title TEXT,
+                poster_id TEXT,
+                quality TEXT,
+                duration TEXT,
+                ep_num TEXT,
+                views INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'waiting',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        logging.info("✅ تم إنشاء/التحقق من جداول قاعدة البيانات")
+        return True
+    except Exception as e:
+        logging.error(f"❌ خطأ في إنشاء قاعدة البيانات: {e}")
+        return False
+
 def db_query(query, params=(), fetch=True):
     try:
         conn = psycopg2.connect(DATABASE_URL, sslmode="require")
@@ -67,7 +97,7 @@ MAIN_MENU = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# ===== 1. كود الإحصائيات المصلح =====
+# ===== 1. كود الإحصائيات =====
 @app.on_message(filters.command("stats") & filters.private)
 async def get_stats(client, message):
     if message.from_user.id != ADMIN_ID: return
@@ -75,8 +105,8 @@ async def get_stats(client, message):
     res_total = db_query("SELECT COUNT(*), SUM(COALESCE(views, 0)) FROM videos WHERE status='posted'")
     res_top = db_query("SELECT title, ep_num, views FROM videos WHERE status='posted' ORDER BY views DESC LIMIT 5")
     
-    total_eps = res_total[0][0] if res_total else 0
-    total_views = res_total[0][1] if res_total else 0
+    total_eps = res_total[0][0] if res_total and res_total[0][0] else 0
+    total_views = res_total[0][1] if res_total and res_total[0][1] else 0
     
     text = f"📊 **إحصائيات المنصة:**\n\n"
     text += f"📽️ إجمالي الحلقات: `{total_eps}`\n"
@@ -86,17 +116,21 @@ async def get_stats(client, message):
     if res_top:
         for i, r in enumerate(res_top, 1):
             text += f"{i}. {r[0]} (حلقة {r[1]}) ← {r[2]} مشاهدة\n"
+    else:
+        text += "لا توجد بيانات بعد"
     
     await message.reply_text(text)
 
-# ===== 2. نظام النشر المصلح (خطوة رقم الحلقة) =====
+# ===== 2. نظام النشر =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.text & ~filters.command(["start", "stats"]))
 async def receive_ep_num(client, message):
     if not message.text.isdigit(): return
     
     # جلب آخر فيديو ينتظر رقم الحلقة
     res = db_query("SELECT v_id, title, poster_id, quality, duration FROM videos WHERE status='awaiting_ep' ORDER BY created_at DESC LIMIT 1")
-    if not res: return
+    if not res:
+        await message.reply_text("❌ لا يوجد فيديو في انتظار رقم الحلقة")
+        return
     
     v_id, title, p_id, q, dur = res[0]
     ep_num = message.text
@@ -113,21 +147,25 @@ async def receive_ep_num(client, message):
     except Exception as e:
         await message.reply_text(f"❌ خطأ في النشر: {e}")
 
-# ===== 3. نظام البحث المصلح (مسلسل الكينج) =====
+# ===== 3. نظام البحث =====
 @app.on_message(filters.private & filters.text & ~filters.command(["start", "stats"]))
 async def message_handler(client, message):
     if message.text == "🔍 كيف أبحث عن مسلسل؟":
-        await message.reply_text("🔎 اكتب اسم المسلسل مباشرة (مثلاً: الكينج) وسأظهر لك النتائج.")
+        await message.reply_text("🔎 اكتب اسم المسلسل مباشرة (مثلاً: الكينج) وسأظهر لك النتائج.", reply_markup=MAIN_MENU)
         return
     if message.text == "✍️ طلب مسلسل جديد":
-        await message.reply_text("📥 أرسل اسم المسلسل وسأبلغ الإدارة فوراً.")
+        await message.reply_text("📥 أرسل اسم المسلسل وسأبلغ الإدارة فوراً.", reply_markup=MAIN_MENU)
         return
 
     query = normalize_text(message.text)
     if len(query) < 2: return
 
     res = db_query("SELECT DISTINCT title FROM videos WHERE status='posted'")
-    matches = [t[0] for t in (res or []) if query in normalize_text(t[0])]
+    if not res:
+        await message.reply_text("❌ لا توجد مسلسلات في قاعدة البيانات بعد.")
+        return
+        
+    matches = [t[0] for t in res if query in normalize_text(t[0])]
     
     if matches:
         btns = [[InlineKeyboardButton(f"🎬 {m}", callback_data=f"lst_{m[:40]}")] for m in list(dict.fromkeys(matches))[:10]]
@@ -135,7 +173,7 @@ async def message_handler(client, message):
     else:
         await message.reply_text(f"❌ لم أجد '{message.text}'. تم إبلاغ الإدارة.")
 
-# ===== بقية الأكواد (الرفع و Start) =====
+# ===== استقبال الفيديو =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document | filters.animation))
 async def receive_video(client, message):
     v_id = str(message.id)
@@ -145,26 +183,45 @@ async def receive_video(client, message):
     db_query("INSERT INTO videos (v_id, status, duration, created_at) VALUES (%s, 'waiting', %s, CURRENT_TIMESTAMP) ON CONFLICT (v_id) DO UPDATE SET status='waiting'", (v_id, dur), fetch=False)
     await message.reply_text(f"✅ تم استقبال الملف. أرسل البوستر الآن.")
 
+# ===== استقبال البوستر =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.photo)
 async def receive_poster(client, message):
     res = db_query("SELECT v_id FROM videos WHERE status='waiting' ORDER BY created_at DESC LIMIT 1")
-    if not res: return
+    if not res:
+        await message.reply_text("❌ لا يوجد فيديو في انتظار بوستر")
+        return
     v_id = res[0][0]
     title = clean_series_title(message.caption or "مسلسل")
     db_query("UPDATE videos SET title=%s, poster_id=%s, status='awaiting_quality' WHERE v_id=%s", (title, message.photo.file_id, v_id), fetch=False)
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("4K", callback_data=f"q_4K_{v_id}"), InlineKeyboardButton("HD", callback_data=f"q_HD_{v_id}"), InlineKeyboardButton("SD", callback_data=f"q_SD_{v_id}")]])
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("4K", callback_data=f"q_4K_{v_id}"), 
+         InlineKeyboardButton("HD", callback_data=f"q_HD_{v_id}"), 
+         InlineKeyboardButton("SD", callback_data=f"q_SD_{v_id}")]
+    ])
     await message.reply_text(f"📌 المسلسل: {title}\nاختر الجودة:", reply_markup=markup)
 
+# ===== اختيار الجودة =====
 @app.on_callback_query(filters.regex("^q_"))
 async def set_quality(client, cb):
     _, q, v_id = cb.data.split("_")
     db_query("UPDATE videos SET quality=%s, status='awaiting_ep' WHERE v_id=%s", (q, v_id), fetch=False)
     await cb.message.edit_text(f"✅ الجودة: {q}. أرسل الآن رقم الحلقة:")
 
+# ===== أمر start =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
-    # (نفس كود الاستارت السابق لإرسال الفيديو والتحقق من الاشتراك)
-    await message.reply_text(f"👋 أهلاً بك يا {message.from_user.first_name}", reply_markup=MAIN_MENU)
+    welcome_text = f"👋 أهلاً بك يا {message.from_user.first_name}\n\n"
+    welcome_text += "مرحباً بك في بوت المسلسلات\n"
+    welcome_text += "يمكنك البحث عن أي مسلسل بكتابة اسمه"
+    
+    await message.reply_text(welcome_text, reply_markup=MAIN_MENU)
 
+# ===== تشغيل البوت مع تهيئة قاعدة البيانات =====
 if __name__ == "__main__":
-    app.run()
+    # تهيئة قاعدة البيانات أولاً
+    if init_database():
+        print("✅ تم تهيئة قاعدة البيانات بنجاح")
+        print("🚀 تشغيل البوت...")
+        app.run()
+    else:
+        print("❌ فشل في تهيئة قاعدة البيانات. تأكد من اتصال DATABASE_URL")
