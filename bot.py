@@ -64,11 +64,11 @@ async def check_subscription(client, user_id):
         return member.status not in ["left", "kicked"]
     except: return False
 
-# القائمة الثابتة أسفل الشاشة
+# القائمة الثابتة (أزرار البحث والطلب)
 MAIN_MENU = ReplyKeyboardMarkup(
     [
         [KeyboardButton("🔍 كيف أبحث عن مسلسل؟")],
-        [KeyboardButton("📋 قائمة المسلسلات"), KeyboardButton("✍️ طلب مسلسل جديد")]
+        [KeyboardButton("✍️ طلب مسلسل")]
     ],
     resize_keyboard=True
 )
@@ -76,8 +76,6 @@ MAIN_MENU = ReplyKeyboardMarkup(
 # ===== إرسال الفيديو النهائي =====
 async def send_video_final(client, chat_id, user_id, v_id, title, ep, q, dur):
     db_query("UPDATE videos SET views = COALESCE(views, 0) + 1 WHERE v_id = %s", (v_id,), fetch=False)
-    
-    # جلب الحلقات
     res = db_query("SELECT v_id, ep_num FROM videos WHERE title = %s AND status = 'posted' ORDER BY ep_num ASC", (title,))
     buttons, row, seen_eps = [], [], set()
     me = await client.get_me()
@@ -96,37 +94,33 @@ async def send_video_final(client, chat_id, user_id, v_id, title, ep, q, dur):
     if buttons: final_btns.extend(buttons)
 
     cap = f"<b>📺 المسلسل : {obfuscate_visual(escape(title))}</b>\n<b>🎞️ رقم الحلقة : {ep}</b>\n<b>💿 الجودة : {q}</b>\n<b>⏳ المدة : {dur}</b>\n\n🍿 <b>مشاهدة ممتعة!</b>"
-
+    
+    # إرسال الفيديو مع تفعيل القائمة الثابتة تلقائياً
     try:
-        await client.copy_message(chat_id, SOURCE_CHANNEL, int(v_id), caption=cap, reply_markup=InlineKeyboardMarkup(final_btns) if final_btns else None)
+        await client.copy_message(chat_id, SOURCE_CHANNEL, int(v_id), caption=cap, 
+                                 reply_markup=InlineKeyboardMarkup(final_btns) if final_btns else None)
+        # إرسال رسالة تفعيل القائمة إذا لم تكن ظاهرة
+        await client.send_message(chat_id, "ℹ️ تم تفعيل ميزة البحث والطلب في القائمة بالأسفل 👇", reply_markup=MAIN_MENU)
     except:
-        await client.send_message(chat_id, f"🎬 {title} - حلقة {ep}")
+        await client.send_message(chat_id, f"🎬 {title} - حلقة {ep}", reply_markup=MAIN_MENU)
 
-# ===== معالجة الرسائل النصية والبحث =====
+# ===== معالجة الرسائل والبحث =====
 @app.on_message(filters.private & ~filters.command(["start", "stats"]))
 async def message_handler(client, message):
-    user_id = message.from_user.id
     text = message.text
+    user_id = message.from_user.id
 
-    # شرح ميزة البحث
     if text == "🔍 كيف أبحث عن مسلسل؟":
-        await message.reply_text(
-            "🔎 **طريقة البحث الذكي:**\n\n"
-            "فقط اكتب اسم المسلسل (مثلاً: قيامة عثمان) وأرسله هنا مباشرة.\n"
-            "سأقوم بعرض النتائج المطابقة فوراً.\n\n"
-            "✅ **نصيحة:** اكتب الكلمات الأساسية من اسم المسلسل لنتائج أدق.",
-            reply_markup=MAIN_MENU
-        )
+        await message.reply_text("🔎 **للبحث الفوري:**\nاكتب اسم المسلسل الذي تريده هنا (مثلاً: قيامة عثمان) وسأعرض لك النتائج فوراً!")
+        return
+    
+    if text == "✍️ طلب مسلسل":
+        await message.reply_text("📥 أرسل اسم المسلسل الذي تطلبه وسنقوم بتوفيره قريباً.")
         return
 
-    # طلب مسلسل
-    if text == "✍️ طلب مسلسل جديد":
-        await message.reply_text("📥 **أرسل اسم المسلسل الذي تطلبه الآن وسيتم إبلاغ الإدارة فوراً.**")
-        return
-
-    # تنفيذ البحث الفعلي
+    # البحث الفعلي
     if not await check_subscription(client, user_id):
-        await message.reply_text("⚠️ اشتراك أولاً لتفعيل البحث:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 اشترك الآن", url=FORCE_SUB_LINK)]]))
+        await message.reply_text("⚠️ اشترك أولاً لتتمكن من البحث:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 اشترك الآن", url=FORCE_SUB_LINK)]]))
         return
 
     norm_query = normalize_text(text)
@@ -135,15 +129,16 @@ async def message_handler(client, message):
     
     if matches:
         buttons = [[InlineKeyboardButton(f"🎬 {t}", callback_data=f"lst_{t[:30]}")] for t in matches[:10]]
-        await message.reply_text(f"🔍 **نتائج البحث عن '{text}':**", reply_markup=InlineKeyboardMarkup(buttons))
+        await message.reply_text(f"🔍 نتائج البحث عن '{text}':", reply_markup=InlineKeyboardMarkup(buttons))
     else:
-        await message.reply_text(f"❌ لم أجد '{text}' في المكتبة.\n✅ تم إرسال طلبك للإدارة.")
-        try: await client.send_message(ADMIN_ID, f"📥 طلب جديد من {message.from_user.mention}: {text}")
+        await message.reply_text(f"❌ لم أجد '{text}'. تم إرسال طلبك للإدارة.")
+        try: await client.send_message(ADMIN_ID, f"📥 طلب جديد: {text}")
         except: pass
 
-# ===== أمر Start =====
+# ===== أمر Start المعدل للظهور التلقائي =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
+    user_id = message.from_user.id
     if len(message.command) > 1:
         param = message.command[1]
         if param.startswith("choose_"):
@@ -152,18 +147,21 @@ async def start_handler(client, message):
             if res:
                 title, ep = res[0]
                 qualities = db_query("SELECT quality, v_id FROM videos WHERE title=%s AND ep_num=%s AND status='posted'", (title, ep))
-                btns = [[InlineKeyboardButton(f"💿 جودة {q}", callback_data=f"get_vid_{vid}")] for q, vid in qualities]
-                await message.reply_text(f"🎬 **{escape(title)} - حلقة {ep}**\nاختر الجودة:", reply_markup=InlineKeyboardMarkup(btns))
+                btns = [[InlineKeyboardButton(f"💿 {q}", callback_data=f"get_vid_{vid}")] for q, vid in qualities]
+                # إظهار اختيار الجودة مع تفعيل القائمة بالأسفل فوراً
+                await message.reply_text(f"🎬 {escape(title)} - حلقة {ep}\n\nاختر الجودة المطلوبة:", 
+                                         reply_markup=MAIN_MENU) 
+                await message.reply_text("👇", reply_markup=InlineKeyboardMarkup(btns))
         else:
             res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (param,))
-            if res: await send_video_final(client, message.chat.id, message.from_user.id, param, *res[0])
+            if res: await send_video_final(client, message.chat.id, user_id, param, *res[0])
     else:
         await message.reply_text(
-            f"👋 أهلاً بك يا {message.from_user.first_name} في بوت المسلسلات.\n\nاستخدم الأزرار أسفل الشاشة لمعرفة طريقة البحث أو طلب مسلسل جديد.",
+            f"👋 أهلاً بك يا {message.from_user.first_name}\nيمكنك الآن البحث عن أي مسلسل مباشرة عبر القائمة بالأسفل.",
             reply_markup=MAIN_MENU
         )
 
-# (بقية الدوال: callback_query, receive_video, receive_poster, receive_ep_num تظل كما هي في النسخة السابقة)
+# [بقية الدوال كما هي]
 @app.on_callback_query(filters.regex("^lst_|^sqs_|^get_vid_|^q_"))
 async def cb_handler(client, cb):
     if cb.data.startswith("lst_"):
@@ -176,15 +174,15 @@ async def cb_handler(client, cb):
                 row.append(InlineKeyboardButton(f"حلقة {ep}", callback_data=f"sqs_{v_res[0][0]}"))
                 if len(row) == 3: buttons.append(row); row = []
         if row: buttons.append(row)
-        await cb.message.edit_text("📺 **اختر رقم الحلقة:**", reply_markup=InlineKeyboardMarkup(buttons))
+        await cb.message.edit_text("📺 اختر رقم الحلقة:", reply_markup=InlineKeyboardMarkup(buttons))
     elif cb.data.startswith("sqs_"):
         v_id = cb.data.replace("sqs_", "")
         res = db_query("SELECT title, ep_num FROM videos WHERE v_id=%s", (v_id,))
         if res:
             title, ep = res[0]
             qualities = db_query("SELECT quality, v_id FROM videos WHERE title=%s AND ep_num=%s AND status='posted'", (title, ep))
-            btns = [[InlineKeyboardButton(f"💿 جودة {q}", callback_data=f"get_vid_{vid}")] for q, vid in qualities]
-            await cb.message.edit_text(f"🎬 **{title} - حلقة {ep}**\nاختر الجودة:", reply_markup=InlineKeyboardMarkup(btns))
+            btns = [[InlineKeyboardButton(f"💿 {q}", callback_data=f"get_vid_{vid}")] for q, vid in qualities]
+            await cb.message.edit_text(f"🎬 {title} - حلقة {ep}\nالجودة:", reply_markup=InlineKeyboardMarkup(btns))
     elif cb.data.startswith("get_vid_"):
         v_id = cb.data.replace("get_vid_", "")
         res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (v_id,))
@@ -225,15 +223,6 @@ async def receive_ep_num(client, message):
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الحلقة", url=f"https://t.me/{me.username}?start=choose_{v_id}")]])
     await client.send_photo(PUBLIC_POST_CHANNEL, p_id, caption=caption, reply_markup=markup)
     await message.reply_text("🚀 نُشرت بنجاح.")
-
-@app.on_message(filters.command("stats") & filters.private)
-async def get_stats(client, message):
-    if message.from_user.id != ADMIN_ID: return
-    top = db_query("SELECT title, ep_num, views FROM videos WHERE status='posted' ORDER BY views DESC LIMIT 10")
-    text = "📊 الأكثر مشاهدة:\n\n"
-    if top:
-        for i, r in enumerate(top, 1): text += f"{i}. {r[0]} ({r[1]}) -> {r[2]} مشاهدة\n"
-    await message.reply_text(text)
 
 if __name__ == "__main__":
     app.run()
