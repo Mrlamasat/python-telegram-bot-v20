@@ -1,4 +1,4 @@
-دimport os
+import os
 import psycopg2
 import logging
 import re
@@ -20,9 +20,7 @@ FORCE_SUB_CHANNEL = -1003894735143
 FORCE_SUB_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
-# تعريف المتغير بشكل آمن
-BOT_USERNAME = "YourBotUsername" 
+BOT_USERNAME = None  # سيتم تحديثه عند التشغيل
 
 # ===== وظائف مساعدة =====
 def normalize_text(text):
@@ -53,7 +51,6 @@ def db_query(query, params=(), fetch=True):
         logging.error(f"❌ Database Error: {e}")
         return None
 
-# جلب أزرار الحلقات
 async def get_episodes_markup(title, current_v_id):
     res = db_query("SELECT v_id, ep_num FROM videos WHERE title = %s AND status = 'posted' ORDER BY ep_num ASC", (title,))
     if not res: return []
@@ -64,20 +61,18 @@ async def get_episodes_markup(title, current_v_id):
         label = f"✅ {ep_num}" if str(v_id) == str(current_v_id) else f"{ep_num}"
         btn = InlineKeyboardButton(label, url=f"https://t.me/{BOT_USERNAME}?start={v_id}")
         row.append(btn)
-        if len(row) == 5: buttons.append(row); row = []
+        if len(row) == 5:
+            buttons.append(row)
+            row = []
     if row: buttons.append(row)
     return buttons
 
-# تحديث يوزرنيم البوت عند التشغيل
 @app.on_startup
 async def startup_handler(client, _):
     global BOT_USERNAME
-    try:
-        me = await client.get_me()
-        BOT_USERNAME = me.username
-        print(f"✅ البوت انطلق باسم: @{BOT_USERNAME}")
-    except Exception as e:
-        logging.error(f"❌ خطأ في startup: {e}")
+    me = await client.get_me()
+    BOT_USERNAME = me.username
+    print(f"✅ تم تشغيل البوت: @{BOT_USERNAME}")
 
 # ===== نظام البحث =====
 @app.on_message(filters.private & ~filters.command(["start"]))
@@ -103,7 +98,7 @@ async def cb_handler(client, cb):
             row.append(InlineKeyboardButton(f"حلقة {ep}", callback_data=f"sel_q_{title_part}_{ep}"))
             if len(row) == 3: buttons.append(row); row = []
         if row: buttons.append(row)
-        await cb.message.edit_text(f"📺 **اختر رقم الحلقة:**", reply_markup=InlineKeyboardMarkup(buttons))
+        await cb.message.edit_text("📺 **اختر رقم الحلقة:**", reply_markup=InlineKeyboardMarkup(buttons))
 
     elif cb.data.startswith("sel_q_"):
         data = cb.data.replace("sel_q_", "").rsplit("_", 1)
@@ -118,7 +113,7 @@ async def cb_handler(client, cb):
         if res: await send_video_final(client, cb.message.chat.id, cb.from_user.id, v_id, *res[0])
         await cb.answer()
 
-# ===== النشر والاستقبال =====
+# ===== الاستقبال والنشر =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document | filters.animation))
 async def receive_video(client, message):
     v_id = str(message.id)
@@ -141,7 +136,7 @@ async def receive_poster(client, message):
 async def set_quality(client, cb):
     _, q, v_id = cb.data.split("_", 2)
     db_query("UPDATE videos SET quality=%s, status='awaiting_ep' WHERE v_id=%s", (q, v_id), fetch=False)
-    await cb.message.edit_text(f"✅ الجودة: {q}. أرسل رقم الحلقة:")
+    await cb.message.edit_text(f"✅ تم اختيار {q}. أرسل رقم الحلقة:")
 
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.text & ~filters.command(["start"]))
 async def receive_ep_num(client, message):
@@ -154,6 +149,7 @@ async def receive_ep_num(client, message):
 
 async def publish_one_button(client, title, ep_num, p_id, dur):
     res = db_query("SELECT v_id FROM videos WHERE title=%s AND ep_num=%s LIMIT 1", (title, ep_num))
+    if not res: return
     v_id = res[0][0]
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("🎬 مشاهدة الحلقة", url=f"https://t.me/{BOT_USERNAME}?start=choose_{v_id}")]])
     cap = f"🎬 <b>{title}</b>\n📌 الحلقة: {ep_num}\n⏳ المدة: {dur}\n\n🍿 اضغط للمشاهدة 👇"
@@ -164,7 +160,6 @@ async def publish_one_button(client, title, ep_num, p_id, dur):
     msg = await client.send_photo(PUBLIC_POST_CHANNEL, p_id, caption=cap, reply_markup=markup)
     db_query("UPDATE videos SET post_msg_id=%s WHERE title=%s AND ep_num=%s", (msg.id, title, ep_num), fetch=False)
 
-# الإرسال النهائي
 async def send_video_final(client, chat_id, user_id, v_id, title, ep, q, dur):
     db_query("UPDATE videos SET views = COALESCE(views, 0) + 1 WHERE v_id = %s", (v_id,), fetch=False)
     ep_btns = await get_episodes_markup(title, v_id)
@@ -175,7 +170,7 @@ async def send_video_final(client, chat_id, user_id, v_id, title, ep, q, dur):
     if ep_btns: final_btns.extend(ep_btns)
     markup = InlineKeyboardMarkup(final_btns)
     try: await client.copy_message(chat_id, SOURCE_CHANNEL, int(v_id), caption=cap, reply_markup=markup)
-    except: pass
+    except Exception as e: logging.error(f"Copy error: {e}")
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_h(client, message):
