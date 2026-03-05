@@ -15,7 +15,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_ID = 7720165591
 
 SOURCE_CHANNEL = -1003547072209
-PUBLIC_POST_CHANNEL = -1003554018307
+PUBLIC_POST_CHANNEL = -1003554018307  # القناة الصحيحة التي حددتها
 FORCE_SUB_CHANNEL = -1003894735143     
 FORCE_SUB_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
 
@@ -43,7 +43,7 @@ def init_database():
         cur.close(); conn.close()
         return True
     except Exception as e:
-        logging.error(f"❌ Database Init Error: {e}")
+        logging.error(f"❌ DB Init Error: {e}")
         return False
 
 def db_query(query, params=(), fetch=True):
@@ -111,7 +111,7 @@ async def receive_video(client, message):
     d = media.duration if hasattr(media, 'duration') else 0
     dur = f"{d//3600:02d}:{(d%3600)//60:02d}:{d%60:02d}"
     db_query("INSERT INTO videos (v_id, status, duration, created_at) VALUES (%s, 'waiting', %s, CURRENT_TIMESTAMP) ON CONFLICT (v_id) DO UPDATE SET status='waiting'", (v_id, dur), fetch=False)
-    await message.reply_text("✅ تم استقبال الفيديو. أرسل البوستر الآن.")
+    await message.reply_text("✅ استلمت الفيديو. أرسل البوستر الآن.")
 
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.photo)
 async def receive_poster(client, message):
@@ -136,14 +136,16 @@ async def receive_ep_num(client, message):
     if not res: return
     v_id, title, p_id, q, dur = res[0]
     db_query("UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s", (message.text, v_id), fetch=False)
+    
     me = await client.get_me()
     cap = f"🎬 <b>{obfuscate_visual(escape(title))}</b>\n\n<b>الحلقة: [{message.text}]</b>"
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الحلقة", url=f"https://t.me/{me.username}?start=choose_{v_id}")]])
     try:
+        # النشر في القناة الصحيحة مع التأكيد على نوع المعرف كـ Integer
         await client.send_photo(chat_id=int(PUBLIC_POST_CHANNEL), photo=p_id, caption=cap, reply_markup=markup)
         await message.reply_text("🚀 تم النشر بنجاح.")
     except Exception as e:
-        await message.reply_text(f"❌ خطأ: {e}")
+        await message.reply_text(f"❌ خطأ في النشر: {e}")
 
 # ===== 3. البحث ونظام الحلقات التفاعلي =====
 @app.on_message(filters.private & filters.text & ~filters.command(["start", "stats"]))
@@ -204,7 +206,7 @@ async def start_handler(client, message):
             cap = f"<b>📺 المسلسل : {obfuscate_visual(t)}</b>\n<b>🎞️ حلقة : {ep}</b>\n<b>💿 جودة : {q}</b>"
             await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), caption=cap)
             return
-    await message.reply_text(f"👋 أهلاً بك يا محمد.", reply_markup=MAIN_MENU)
+    await message.reply_text(f"👋 أهلاً بك يا محمد في بوت المسلسلات.", reply_markup=MAIN_MENU)
 
 if __name__ == "__main__":
     if init_database():
