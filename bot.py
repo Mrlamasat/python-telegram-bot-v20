@@ -8,10 +8,9 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 
-# إعداد السجلات لمراقبة العمليات في Railway
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# ===== الإعدادات الأساسية =====
+# ===== الإعدادات =====
 API_ID = int(os.environ.get("API_ID", "24803515"))
 API_HASH = os.environ.get("API_HASH", "86414909a34199f18742f1b490f892cc")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8579897728:AAHrgUVKh0D45SMa0iHYI-DkbuWxeYm-rns")
@@ -22,7 +21,7 @@ TARGET_CHANNEL = -1003554018307      # قناة النشر النهائية
 
 app = Client("bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ===== إدارة اتصال قاعدة البيانات =====
+# ===== قاعدة البيانات =====
 db_pool = psycopg2.pool.SimpleConnectionPool(1, 10, DATABASE_URL, sslmode="require")
 
 def db_query(query, params=(), fetch=True):
@@ -31,8 +30,7 @@ def db_query(query, params=(), fetch=True):
         conn = db_pool.getconn()
         cur = conn.cursor()
         cur.execute(query, params)
-        if fetch: 
-            result = cur.fetchall()
+        if fetch: result = cur.fetchall()
         else:
             conn.commit()
             result = None
@@ -54,65 +52,63 @@ def init_db():
             status TEXT DEFAULT 'waiting'
         )
     """, fetch=False)
-    logging.info("✅ تم فحص قاعدة البيانات بنجاح.")
 
-# ===== معالجة الرفع (فيديو ثم بوستر) =====
+# ===== دالة تنشيط القنوات (حل مشكلة Peer Id) =====
+async def activate_channels():
+    try:
+        await app.get_chat(SOURCE_CHANNEL)
+        await app.get_chat(TARGET_CHANNEL)
+        logging.info("✅ تم تنشيط القنوات والتعرف عليها بنجاح.")
+    except Exception as e:
+        logging.error(f"⚠️ فشل تنشيط القنوات: {e}")
+
+# ===== معالجة الرفع =====
 
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document))
 async def on_video(client, message):
     v_id = str(message.id)
-    # حفظ الفيديو في حالة انتظار البوستر
     db_query("INSERT INTO videos (v_id, status) VALUES (%s, 'waiting') ON CONFLICT (v_id) DO UPDATE SET status='waiting'", (v_id,), fetch=False)
-    await message.reply_text(f"✅ تم استلام المرفق (ID: {v_id}).\nأرسل الآن **البوستر** كصورة مع كتابة اسم المسلسل في الوصف (Caption).")
+    await message.reply_text(f"✅ تم استلام الفيديو (ID: {v_id}).\nارسل البوستر الآن مع اسم المسلسل.")
 
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.photo)
 async def on_photo(client, message):
-    # جلب آخر فيديو ينتظر البوستر
     res = db_query("SELECT v_id FROM videos WHERE status='waiting' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 1")
-    if not res: 
-        return await message.reply_text("❌ لم أجد فيديو مسجل حالياً ينتظر بوستر. ارسل الفيديو أولاً.")
+    if not res: return
     
     v_id = res[0][0]
     title = message.caption or "مسلسل غير معروف"
-    
-    # تحديث بيانات الفيديو ليصبح منشوراً
     db_query("UPDATE videos SET title=%s, poster_id=%s, status='posted' WHERE v_id=%s", (title, message.photo.file_id, v_id), fetch=False)
     
-    # النشر في قناة الأعضاء
     me = await client.get_me()
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الآن", url=f"https://t.me/{me.username}?start={v_id}")]])
     
     try:
-        await client.send_photo(
-            chat_id=TARGET_CHANNEL, 
-            photo=message.photo.file_id, 
-            caption=f"🎬 **{title}**\n\nاضغط على الزر أدناه للمشاهدة مباشرة 👇", 
-            reply_markup=markup
-        )
-        await message.reply_text(f"🚀 تم النشر بنجاح في القناة المستهدفة.\nرابط المشاهدة: `https://t.me/{me.username}?start={v_id}`")
+        # استخدام الرقم مباشرة مع التأكد من التنشيط
+        await client.send_photo(chat_id=TARGET_CHANNEL, photo=message.photo.file_id, caption=f"🎬 **{title}**\n\nاضغط للمشاهدة 👇", reply_markup=markup)
+        await message.reply_text("🚀 تم النشر بنجاح.")
     except Exception as e:
-        await message.reply_text(f"❌ فشل النشر التلقائي. تأكد أن البوت مشرف في القناة {TARGET_CHANNEL}\nالخطأ: {e}")
-
-# ===== معالجة الروابط (Start) - بدون اشتراك إجباري =====
+        await message.reply_text(f"❌ خطأ في النشر: {e}")
 
 @app.on_message(filters.command("start") & filters.private)
 async def on_start(client, message):
     if len(message.command) < 2:
-        return await message.reply_text("أهلاً بك! 👋\nارسل الفيديوهات في القناة المصدر لنشرها.")
+        return await message.reply_text("أهلاً بك!")
 
     v_id = message.command[1]
-    
-    # إرسال الحلقة مباشرة (الذكاء في الجلب من المصدر حتى لو القاعدة فارغة)
     try:
-        await client.copy_message(
-            chat_id=message.chat.id, 
-            from_chat_id=SOURCE_CHANNEL, 
-            message_id=int(v_id), 
-            caption="🍿 **مشاهدة ممتعة نتمناها لكم!**"
-        )
+        # جلب الرسالة والتأكد أنها فيديو قبل النسخ
+        msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
+        if msg.empty:
+            return await message.reply_text("❌ هذه الحلقة لم تعد موجودة في القناة المصدر.")
+            
+        await client.copy_message(chat_id=message.chat.id, from_chat_id=SOURCE_CHANNEL, message_id=int(v_id), caption="🍿 مشاهدة ممتعة!")
     except Exception as e:
-        await message.reply_text("❌ نعتذر، هذه الحلقة لم تعد متوفرة في الأرشيف أو الرابط غير صحيح.")
+        await message.reply_text(f"❌ حدث خطأ: {e}")
 
+# تشغيل البوت مع التنشيط
 if __name__ == "__main__":
     init_db()
-    app.run()
+    app.start()
+    app.loop.run_until_complete(activate_channels())
+    logging.info("🤖 البوت يعمل الآن...")
+    app.loop.run_forever()
