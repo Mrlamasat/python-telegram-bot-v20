@@ -61,7 +61,7 @@ def db_query(query, params=(), fetch=True):
         logging.error(f"❌ DB Error: {e}")
         return None
 
-# ===== الدوال المساعدة =====
+# ===== الدوال المساعدة والبحث الذكي =====
 def normalize_text(text):
     if not text: return ""
     text = text.strip().lower()
@@ -98,11 +98,12 @@ async def get_stats(client, message):
     t_eps = res_total[0][0] if res_total else 0
     t_views = res_total[0][1] if res_total and res_total[0][1] else 0
     text = f"📊 **إحصائيات المنصة:**\n\n📽️ الحلقات: `{t_eps}`\n👁️ المشاهدات: `{t_views}`\n\n🔥 **الأكثر مشاهدة:**\n"
-    for i, r in enumerate(res_top or [], 1):
-        text += f"{i}. {r[0]} (ح {r[1]}) ← {r[2]} مشاهدة\n"
+    if res_top:
+        for i, r in enumerate(res_top, 1):
+            text += f"{i}. {r[0]} (ح {r[1]}) ← {r[2]} مشاهدة\n"
     await message.reply_text(text)
 
-# ===== 2. نظام الرفع (سورس) =====
+# ===== 2. نظام الرفع والنشر =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document | filters.animation))
 async def receive_video(client, message):
     v_id = str(message.id)
@@ -110,7 +111,7 @@ async def receive_video(client, message):
     d = media.duration if hasattr(media, 'duration') else 0
     dur = f"{d//3600:02d}:{(d%3600)//60:02d}:{d%60:02d}"
     db_query("INSERT INTO videos (v_id, status, duration, created_at) VALUES (%s, 'waiting', %s, CURRENT_TIMESTAMP) ON CONFLICT (v_id) DO UPDATE SET status='waiting'", (v_id, dur), fetch=False)
-    await message.reply_text("✅ استلمت الفيديو. أرسل البوستر.")
+    await message.reply_text("✅ تم استقبال الفيديو. أرسل البوستر الآن.")
 
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.photo)
 async def receive_poster(client, message):
@@ -138,19 +139,21 @@ async def receive_ep_num(client, message):
     me = await client.get_me()
     cap = f"🎬 <b>{obfuscate_visual(escape(title))}</b>\n\n<b>الحلقة: [{message.text}]</b>"
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الحلقة", url=f"https://t.me/{me.username}?start=choose_{v_id}")]])
-    await client.send_photo(PUBLIC_POST_CHANNEL, p_id, caption=cap, reply_markup=markup)
-    await message.reply_text("🚀 تم النشر بنجاح.")
+    try:
+        await client.send_photo(chat_id=int(PUBLIC_POST_CHANNEL), photo=p_id, caption=cap, reply_markup=markup)
+        await message.reply_text("🚀 تم النشر بنجاح.")
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ: {e}")
 
-# ===== 3. البحث والخاص =====
+# ===== 3. البحث ونظام الحلقات التفاعلي =====
 @app.on_message(filters.private & filters.text & ~filters.command(["start", "stats"]))
 async def search_handler(client, message):
     if message.text == "🔍 كيف أبحث عن مسلسل؟":
         await message.reply_text("🔎 اكتب اسم المسلسل مباشرة.")
         return
     if message.text == "✍️ طلب مسلسل جديد":
-        await message.reply_text("📥 أرسل اسم المسلسل وسنوفره لك قريباً.")
+        await message.reply_text("📥 أرسل اسم المسلسل وسنوفره لك.")
         return
-        
     query = normalize_text(message.text)
     if len(query) < 2: return
     res = db_query("SELECT DISTINCT title FROM videos WHERE status='posted'")
@@ -159,19 +162,33 @@ async def search_handler(client, message):
         btns = [[InlineKeyboardButton(f"🎬 {m}", callback_data=f"lst_{m[:40]}")] for m in list(dict.fromkeys(matches))[:10]]
         await message.reply_text(f"🔍 نتائج البحث عن '{message.text}':", reply_markup=InlineKeyboardMarkup(btns))
     else:
-        await message.reply_text("❌ لم أجد نتائج. تم إبلاغ الإدارة.")
+        await message.reply_text("❌ لم أجد نتائج.")
 
 @app.on_callback_query(filters.regex("^lst_"))
-async def list_eps(client, cb):
-    title = cb.data.replace("lst_", "")
-    res = db_query("SELECT v_id, ep_num FROM videos WHERE title LIKE %s AND status='posted' ORDER BY CAST(ep_num AS INTEGER) ASC", (f"{title}%",))
+async def list_eps_callback(client, cb):
+    title_key = cb.data.replace("lst_", "")
+    res = db_query("SELECT v_id, ep_num FROM videos WHERE title LIKE %s AND status='posted' ORDER BY CAST(ep_num AS INTEGER) ASC", (f"{title_key}%",))
+    if not res:
+        await cb.answer("❌ لا توجد حلقات", show_alert=True); return
     btns, row = [], []
-    bot_info = await client.get_me()
-    for vid, ep in (res or []):
-        row.append(InlineKeyboardButton(f"ح {ep}", url=f"https://t.me/{bot_info.username}?start=choose_{vid}"))
+    for vid, ep in res:
+        row.append(InlineKeyboardButton(f"حلقة {ep}", callback_data=f"get_{vid}"))
         if len(row) == 3: btns.append(row); row = []
     if row: btns.append(row)
-    await cb.message.edit_text(f"📺 حلقات {title}:", reply_markup=InlineKeyboardMarkup(btns))
+    await cb.message.edit_text(f"📺 حلقات مسلسل: **{title_key}**", reply_markup=InlineKeyboardMarkup(btns))
+
+@app.on_callback_query(filters.regex("^get_"))
+async def get_video_callback(client, cb):
+    v_id = cb.data.replace("get_", "")
+    res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (v_id,))
+    if res:
+        t, ep, q, dur = res[0]
+        if not await check_subscription(client, cb.from_user.id):
+            await cb.answer("⚠️ يجب الاشتراك أولاً!", show_alert=True); return
+        db_query("UPDATE videos SET views = COALESCE(views, 0) + 1 WHERE v_id = %s", (v_id,), fetch=False)
+        cap = f"<b>📺 المسلسل : {obfuscate_visual(t)}</b>\n<b>🎞️ حلقة : {ep}</b>\n<b>💿 جودة : {q}</b>\n<b>⏳ مدة : {dur}</b>"
+        await client.copy_message(cb.message.chat.id, SOURCE_CHANNEL, int(v_id), caption=cap)
+        await cb.answer("✅ تم الإرسال")
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
@@ -181,13 +198,13 @@ async def start_handler(client, message):
         if res:
             t, ep, q, dur = res[0]
             if not await check_subscription(client, message.from_user.id):
-                await message.reply_text("⚠️ يجب الاشتراك أولاً لمشاهدة الحلقة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 انضمام", url=FORCE_SUB_LINK)]]))
+                await message.reply_text("⚠️ اشترك أولاً.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 انضمام", url=FORCE_SUB_LINK)]]))
                 return
             db_query("UPDATE videos SET views = COALESCE(views, 0) + 1 WHERE v_id = %s", (v_id,), fetch=False)
-            cap = f"<b>📺 المسلسل : {obfuscate_visual(t)}</b>\n<b>🎞️ حلقة : {ep}</b>\n<b>💿 جودة : {q}</b>\n<b>⏳ مدة : {dur}</b>"
+            cap = f"<b>📺 المسلسل : {obfuscate_visual(t)}</b>\n<b>🎞️ حلقة : {ep}</b>\n<b>💿 جودة : {q}</b>"
             await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), caption=cap)
             return
-    await message.reply_text("👋 أهلاً بك! ابحث عن مسلسلك المفضل.", reply_markup=MAIN_MENU)
+    await message.reply_text(f"👋 أهلاً بك يا محمد.", reply_markup=MAIN_MENU)
 
 if __name__ == "__main__":
     if init_database():
