@@ -1,5 +1,4 @@
-import os, psycopg2, logging, re, asyncio, time
-from html import escape
+import os, psycopg2, logging, re, asyncio
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
@@ -9,7 +8,7 @@ API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
-ADMIN_ID = 7720165591
+ADMIN_ID = 7720165591 
 SOURCE_CHANNEL = -1003547072209
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -24,13 +23,83 @@ def db_query(query, params=(), fetch=True):
         conn.commit()
         return res
     except Exception as e:
-        logging.error(f"❌ خطأ قاعدة البيانات: {e}")
+        logging.error(f"❌ DB Error: {e}")
         return None
     finally:
         if conn: conn.close()
 
-def init_database():
-    # إنشاء الجدول بالهيكلة الصحيحة والمطلوبة في الـ Logs
+def extract_info(text):
+    if not text: return "مسلسل", 0
+    # البحث عن رقم الحلقة في أي نص (موجه أو كابشن)
+    ep_match = re.search(r'(?:الحلقة|حلقة|#|EP)\s*(\d+)', text, re.I)
+    ep = int(ep_match.group(1)) if ep_match else 0
+    # إذا لم يجد كلمة "حلقة"، يبحث عن أي رقم منفرد
+    if ep == 0:
+        nums = re.findall(r'\b(\d+)\b', text)
+        if nums: ep = int(nums[-1])
+    
+    title = re.sub(r'(?:الحلقة|حلقة|#|EP)\s*\d+.*', '', text, flags=re.I).strip()
+    return title or "مسلسل", ep
+
+@app.on_message(filters.command("fix_old_data") & filters.private)
+async def fix_old_data_cmd(client, message):
+    if message.from_user.id != ADMIN_ID: return
+    
+    m = await message.reply_text("⏳ جاري تحليل الرسائل الموجهة وربط الحلقات تلقائياً...")
+    
+    count = 0
+    all_msgs = []
+    
+    # 1. جلب تاريخ الشات بينك وبين البوت (الرسائل التي وجهتها)
+    async for msg in client.get_chat_history(message.chat.id, limit=3000):
+        if msg.forward_from_chat and msg.forward_from_chat.id == SOURCE_CHANNEL:
+            all_msgs.append(msg)
+    
+    # عكس القائمة لتبدأ من الأقدم إلى الأحدث (كما في القناة)
+    all_msgs.reverse()
+
+    # 2. معالجة الرسائل بنظام الربط الذكي
+    i = 0
+    while i < len(all_msgs):
+        msg = all_msgs[i]
+        
+        # إذا وجدنا فيديو، نبدأ بالبحث عن ملحقاته (رقم، بوستر) في الرسائل التالية له
+        if msg.video or msg.document or msg.animation:
+            v_id = str(msg.forward_from_message_id)
+            v_title, v_ep = extract_info(msg.caption)
+            poster_id = None
+            
+            # فحص الـ 5 رسائل التالية للفيديو بحثاً عن الرقم أو البوستر
+            for j in range(1, 6):
+                if (i + j) < len(all_msgs):
+                    next_msg = all_msgs[i + j]
+                    
+                    # إذا كانت صورة، نعتبرها بوستر
+                    if next_msg.photo:
+                        poster_id = next_msg.photo.file_id
+                        p_title, p_ep = extract_info(next_msg.caption)
+                        if v_ep == 0: v_ep = p_ep
+                        if v_title == "مسلسل": v_title = p_title
+                    
+                    # إذا كانت رسالة نصية (التي تحتوي على الرقم بعد اختيار الجودة)
+                    elif next_msg.text:
+                        _, t_ep = extract_info(next_msg.text)
+                        if v_ep == 0: v_ep = t_ep
+            
+            # حفظ في قاعدة البيانات
+            db_query("""
+                INSERT INTO videos (v_id, title, ep_num, poster_id, raw_caption)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (v_id) DO UPDATE SET 
+                ep_num=EXCLUDED.ep_num, poster_id=EXCLUDED.poster_id, title=EXCLUDED.title
+            """, (v_id, v_title, v_ep, poster_id, msg.caption), fetch=False)
+            count += 1
+        
+        i += 1
+
+    await m.edit_text(f"✅ تم الانتهاء!\n📹 تمت أرشفة وتصحيح {count} حلقة بنجاح.")
+
+if __name__ == "__main__":
     db_query("""
         CREATE TABLE IF NOT EXISTS videos (
             v_id TEXT PRIMARY KEY,
@@ -39,90 +108,8 @@ def init_database():
             video_quality TEXT DEFAULT 'HD',
             duration TEXT DEFAULT '00:00:00',
             poster_id TEXT,
-            poster_caption TEXT,
             raw_caption TEXT,
             views INTEGER DEFAULT 0
         )
     """, fetch=False)
-    logging.info("✅ تم فحص قاعدة البيانات.")
-
-# --- أوامر الأدمن ---
-
-@app.on_message(filters.command("cleardb") & filters.private)
-async def clear_database_cmd(client, message):
-    if message.from_user.id != ADMIN_ID: return
-    
-    # حذف الجدول نهائياً
-    db_query("DROP TABLE IF EXISTS videos CASCADE", fetch=False)
-    # إعادة إنشائه فوراً
-    init_database()
-    
-    await message.reply_text("🗑️ **تم مسح قاعدة البيانات بالكامل وإعادة بنائها بنجاح!**\nيمكنك الآن تشغيل /scan من جديد.")
-
-@app.on_message(filters.command("scan") & filters.private)
-async def scan_cmd(client, message):
-    if message.from_user.id != ADMIN_ID: return
-    m = await message.reply_text("🔍 جاري الأرشفة (فيديو ← صورة)...")
-    
-    count = 0
-    async for msg in client.get_chat_history(SOURCE_CHANNEL, limit=500):
-        if msg.video or msg.document or msg.animation:
-            v_id = str(msg.id)
-            
-            # استخراج البيانات من الفيديو
-            raw_cap = msg.caption or ""
-            ep_match = re.search(r'(?:الحلقة|حلقة|#)\s*(\d+)', raw_cap, re.I)
-            ep = int(ep_match.group(1)) if ep_match else 0
-            title = re.sub(r'(?:الحلقة|حلقة|#)\s*\d+.*', '', raw_cap, flags=re.I).strip() or "مسلسل"
-            
-            media = msg.video or msg.document or msg.animation
-            dur = media.duration if hasattr(media, 'duration') and media.duration else 0
-            duration = f"{dur//3600:02}:{(dur%3600)//60:02}:{dur%60:02}"
-            
-            # البحث عن البوستر بعد الفيديو مباشرة
-            poster_id, p_cap = None, ""
-            for i in range(1, 4):
-                try:
-                    nxt = await client.get_messages(SOURCE_CHANNEL, msg.id + i)
-                    if nxt.photo:
-                        poster_id = nxt.photo.file_id
-                        p_cap = nxt.caption or ""
-                        # تحسين الرقم والعنوان من البوستر
-                        if ep == 0:
-                            p_ep_match = re.search(r'(?:الحلقة|حلقة|#)\s*(\d+)', p_cap, re.I)
-                            ep = int(p_ep_match.group(1)) if p_ep_match else 0
-                        if title == "مسلسل" and p_cap:
-                            title = re.sub(r'(?:الحلقة|حلقة|#)\s*\d+.*', '', p_cap, flags=re.I).strip()
-                        break
-                except: continue
-
-            # الحفظ
-            db_query("""
-                INSERT INTO videos (v_id, title, ep_num, video_quality, duration, poster_id, poster_caption, raw_caption)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (v_id) DO UPDATE SET title=EXCLUDED.title, ep_num=EXCLUDED.ep_num, video_quality=EXCLUDED.video_quality
-            """, (v_id, title, ep, "HD", duration, poster_id, p_cap, raw_cap), fetch=False)
-            count += 1
-            await asyncio.sleep(0.4)
-
-    await m.edit_text(f"✅ تم أرشفة {count} حلقة بنجاح!")
-
-@app.on_message(filters.command("start") & filters.private)
-async def start_cmd(client, message):
-    if len(message.command) > 1:
-        v_id = str(message.command[1])
-        res = db_query("SELECT title, ep_num, video_quality, duration FROM videos WHERE v_id = %s", (v_id,))
-        
-        if res:
-            title, ep, q, dur = res[0]
-            cap = f"<b>📺 {title}</b>\n<b>🎞 الحلقة: {ep}</b>\n<b>💿 الجودة: {q}</b>\n<b>⏳ المدة: {dur}</b>"
-            await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), caption=cap)
-            db_query("UPDATE videos SET views = views + 1 WHERE v_id = %s", (v_id,), fetch=False)
-        else:
-            await message.reply_text("❌ الحلقة غير مؤرشفة، أرسل /scan لتحديث قاعدة البيانات.")
-    else:
-        await message.reply_text(f"مرحباً بك يا محمد! أرسل رابط الحلقة.")
-
-if __name__ == "__main__":
-    init_database()
     app.run()
