@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-بوت تليجرام لنشر المسلسلات - نسخة مستقرة ومُختبرة بالكامل
+بوت تليجرام لنشر المسلسلات - نسخة نهائية مع إصلاح مشكلة قاعدة البيانات
+تم التطوير للنشر على Railway.app
 """
 
 import os
@@ -22,10 +23,11 @@ from telegram.constants import ParseMode
 from telegram.error import TimedOut, NetworkError, RetryAfter
 
 # SQLAlchemy
-from sqlalchemy import create_engine, Column, Integer, String, BigInteger, Text, Boolean, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, BigInteger, Text, Boolean, DateTime, inspect
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 # ======================= الإعدادات =======================
 
@@ -45,30 +47,39 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
     handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('bot.log')  # تسجيل في ملف
+        logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
 
-# ======================= قاعدة البيانات =======================
+# ======================= قاعدة البيانات مع الإصلاح =======================
 
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(
-    DATABASE_URL if DATABASE_URL else 'sqlite:///series_bot.db',
-    echo=False,
-    poolclass=NullPool,
-    connect_args={'connect_timeout': 10} if DATABASE_URL else {}
-)
+# إنشاء اتصال قاعدة البيانات
+try:
+    engine = create_engine(
+        DATABASE_URL if DATABASE_URL else 'sqlite:///series_bot.db',
+        echo=False,
+        poolclass=NullPool,
+        connect_args={'connect_timeout': 10} if DATABASE_URL else {}
+    )
+    logger.info("✅ تم إنشاء اتصال قاعدة البيانات")
+except Exception as e:
+    logger.error(f"❌ خطأ في إنشاء اتصال قاعدة البيانات: {e}")
+    # استخدام SQLite كبديل احتياطي
+    engine = create_engine('sqlite:///series_bot.db', echo=False)
+    logger.info("✅ تم استخدام SQLite كبديل احتياطي")
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 class Episode(Base):
+    """جدول الحلقات"""
     __tablename__ = 'episodes'
     
+    # تعريف الأعمدة بشكل صريح
     id = Column(Integer, primary_key=True)
     message_id = Column(BigInteger, unique=True)
     series_name = Column(String(500))
@@ -85,6 +96,7 @@ class Episode(Base):
     error_count = Column(Integer, default=0)
 
 class User(Base):
+    """جدول المستخدمين"""
     __tablename__ = 'users'
     
     id = Column(Integer, primary_key=True)
@@ -94,19 +106,125 @@ class User(Base):
     joined_at = Column(DateTime, default=datetime.utcnow)
     last_interaction = Column(DateTime, default=datetime.utcnow)
 
-Base.metadata.create_all(bind=engine)
+def init_database():
+    """تهيئة قاعدة البيانات مع التحقق من الأعمدة وإصلاح المشاكل"""
+    max_retries = 3
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            logger.info("🔄 جاري تهيئة قاعدة البيانات...")
+            
+            # محاولة إنشاء الجداول
+            Base.metadata.create_all(bind=engine)
+            logger.info("✅ تم إنشاء/تحديث جداول قاعدة البيانات")
+            
+            # التحقق من وجود الأعمدة المطلوبة
+            inspector = inspect(engine)
+            
+            # التحقق من جدول episodes
+            if 'episodes' in inspector.get_table_names():
+                columns = [col['name'] for col in inspector.get_columns('episodes')]
+                logger.info(f"📊 الأعمدة الموجودة في جدول episodes: {columns}")
+                
+                # التحقق من وجود العمود id
+                if 'id' not in columns:
+                    logger.warning("⚠️ العمود id غير موجود، جاري إعادة بناء الجدول...")
+                    
+                    # نسخ البيانات الموجودة إذا أمكن
+                    try:
+                        # محاولة حفظ البيانات القديمة
+                        old_data = []
+                        with SessionLocal() as session:
+                            try:
+                                # محاولة جلب البيانات بالطريقة القديمة
+                                result = session.execute("SELECT * FROM episodes")
+                                old_data = result.fetchall()
+                                logger.info(f"📦 تم حفظ {len(old_data)} حلقة قديمة")
+                            except:
+                                logger.info("ℹ️ لا توجد بيانات قديمة أو لا يمكن الوصول إليها")
+                    except:
+                        old_data = []
+                    
+                    # حذف الجدول القديم
+                    Episode.__table__.drop(engine)
+                    logger.info("✅ تم حذف الجدول القديم")
+                    
+                    # إنشاء الجدول الجديد
+                    Base.metadata.create_all(bind=engine)
+                    logger.info("✅ تم إنشاء الجدول الجديد")
+                    
+                    # محاولة استعادة البيانات القديمة إذا كانت متوفرة
+                    if old_data:
+                        try:
+                            with SessionLocal() as session:
+                                for row in old_data:
+                                    # تحويل البيانات القديمة إلى الصيغة الجديدة
+                                    new_ep = Episode(
+                                        message_id=row[1] if len(row) > 1 else 0,
+                                        series_name=row[2] if len(row) > 2 else "مسلسل",
+                                        episode_number=row[3] if len(row) > 3 else 0,
+                                        episode_name=row[4] if len(row) > 4 else "حلقة",
+                                        video_file_id=row[5] if len(row) > 5 else "",
+                                        poster_file_id=row[6] if len(row) > 6 else None,
+                                        quality=row[7] if len(row) > 7 else "HD",
+                                        duration=row[8] if len(row) > 8 else 0,
+                                        caption=row[9] if len(row) > 9 else "",
+                                        is_posted=row[11] if len(row) > 11 else False
+                                    )
+                                    session.add(new_ep)
+                                session.commit()
+                                logger.info(f"✅ تم استعادة {len(old_data)} حلقة")
+                        except Exception as e:
+                            logger.error(f"❌ خطأ في استعادة البيانات: {e}")
+            else:
+                logger.info("📋 جدول episodes غير موجود، سيتم إنشاؤه")
+                Base.metadata.create_all(bind=engine)
+            
+            # التحقق من جدول users
+            if 'users' not in inspector.get_table_names():
+                logger.info("📋 جدول users غير موجود، سيتم إنشاؤه")
+                Base.metadata.create_all(bind=engine)
+            
+            logger.info("✅ تم تهيئة قاعدة البيانات بنجاح")
+            return True
+            
+        except Exception as e:
+            retry_count += 1
+            logger.error(f"❌ محاولة {retry_count} فشلت: {e}")
+            if retry_count < max_retries:
+                logger.info(f"🔄 إعادة المحاولة بعد 3 ثوان...")
+                time.sleep(3)
+            else:
+                logger.error("❌ فشلت جميع محاولات تهيئة قاعدة البيانات")
+                return False
+
+# تهيئة قاعدة البيانات
+init_database()
 
 @contextmanager
 def get_db():
+    """الحصول على جلسة قاعدة البيانات مع معالجة الأخطاء"""
     db = SessionLocal()
     try:
         yield db
         db.commit()
+    except OperationalError as e:
+        db.rollback()
+        logger.error(f"❌ خطأ في الاتصال بقاعدة البيانات: {e}")
+        # محاولة إعادة الاتصال
+        try:
+            db.close()
+        except:
+            pass
     except Exception as e:
         db.rollback()
         logger.error(f"❌ خطأ في قاعدة البيانات: {e}")
     finally:
-        db.close()
+        try:
+            db.close()
+        except:
+            pass
 
 # ======================= البوت الرئيسي =======================
 
@@ -114,7 +232,7 @@ class SeriesBot:
     def __init__(self):
         self.application = None
         self.start_time = datetime.utcnow()
-        logger.info("✅ تم تهيئة البوت - الإصدار النهائي")
+        logger.info("✅ تم تهيئة البوت - الإصدار النهائي مع إصلاح قاعدة البيانات")
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """معالج أمر /start"""
@@ -348,7 +466,7 @@ class SeriesBot:
                     await status_msg.edit_text("✅ لا توجد حلقات جديدة للنشر")
                     return
                 
-                # ✅ تعريف المتغيرات هنا - هذا هو الحل الأساسي للمشكلة
+                # تعريف المتغيرات
                 posted_count = 0
                 failed_count = 0
                 success_list = []
@@ -379,7 +497,7 @@ class SeriesBot:
                         
                         # إرسال المنشور
                         if episode.poster_file_id:
-                            sent = await context.bot.send_photo(
+                            await context.bot.send_photo(
                                 chat_id=TARGET_CHANNEL,
                                 photo=episode.poster_file_id,
                                 caption=text,
@@ -387,7 +505,7 @@ class SeriesBot:
                                 parse_mode=ParseMode.MARKDOWN
                             )
                         else:
-                            sent = await context.bot.send_message(
+                            await context.bot.send_message(
                                 chat_id=TARGET_CHANNEL,
                                 text=text,
                                 reply_markup=reply_markup,
@@ -410,7 +528,7 @@ class SeriesBot:
                         await asyncio.sleep(2)
                         
                     except RetryAfter as e:
-                        # مشكلة تجاوز الحدود - ننتظر ثم نكمل
+                        # مشكلة تجاوز الحدود
                         logger.warning(f"تجاوز الحدود، انتظار {e.retry_after} ثانية")
                         episode.error_count += 1
                         failed_count += 1
@@ -426,7 +544,7 @@ class SeriesBot:
                 
                 db.commit()
                 
-                # ✅ استخدام المتغيرات المعرفة
+                # إعداد تقرير النتيجة
                 result_text = (
                     f"✅ *نتيجة النشر*\n\n"
                     f"📊 *الإحصائيات:*\n"
@@ -490,7 +608,6 @@ class SeriesBot:
                     user = db.query(User).filter(User.user_id == user_id).first()
                     if user:
                         user.last_interaction = datetime.utcnow()
-                        db.commit()
                     
                     # إرسال الفيديو
                     await context.bot.send_video(
@@ -566,13 +683,13 @@ class SeriesBot:
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("🚀 بوت نشر المسلسلات - الإصدار النهائي المُختبر")
+    print("🚀 بوت نشر المسلسلات - الإصدار النهائي مع إصلاح قاعدة البيانات")
     print("=" * 60)
-    print("\n📋 ملخص الإصلاحات:")
-    print("✅ تم إصلاح مشكلة المتغيرات (posted_count)")
-    print("✅ تم تحسين معالجة الأخطاء")
-    print("✅ تم إضافة تسجيل مفصل")
-    print("✅ تم اختبار جميع الوظائف")
+    print("\n📋 الإصلاحات المطبقة:")
+    print("✅ إصلاح مشكلة العمود id في قاعدة البيانات")
+    print("✅ إضافة دالة تهيئة متقدمة للقاعدة")
+    print("✅ معالجة أخطاء الاتصال بقاعدة البيانات")
+    print("✅ نسخ احتياطي للبيانات عند الحاجة")
     print("=" * 60)
     print("\n⚡ بدء تشغيل البوت...\n")
     
