@@ -1,5 +1,6 @@
 import os, psycopg2, logging, re, asyncio
 from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 
 # --- الإعدادات ---
 API_ID = int(os.environ.get("API_ID"))
@@ -27,90 +28,77 @@ def db_query(query, params=(), fetch=True):
     finally:
         if conn: conn.close()
 
-# --- مصفاة العناوين الذكية (الإصدار المطور لعام 2026) ---
+# --- مصفاة العناوين الذكية ---
 def smart_clean_title(text):
-    if not text: return "مسلسل"
-    
-    # 1. قائمة الكلمات الترويجية والتقنية المطلوب حذفها "فقط" وليس حذف السطر كاملاً
-    garbage_patterns = [
-        r"الجودة\s*[:：]?\s*[^\n]*", 
-        r"المدة\s*[:：]?\s*[^\n]*",
-        r"سنة العرض\s*[:：]?\s*[^\n]*",
-        r"اضغط هنا للمشاهدة",
-        r"مشاهدة ممتعة",
-        r"دقيقة", r"HD", r"✨", r"⏱", r"📥", r"💿", r"⏳", r"🎞",
-        r"http\S+", r"www\S+", r"t\.me\/\S+"
-    ]
-    
-    temp_text = text
-    for pattern in garbage_patterns:
-        temp_text = re.sub(pattern, "", temp_text, flags=re.I)
+    if not text: return "مفقود ⚠️"
+    garbage_patterns = [r"الجودة.*", r"المدة.*", r"سنة العرض.*", r"مشاهدة ممتعة", r"✨", r"⏱", r"HD", r"📥"]
+    temp = text
+    for p in garbage_patterns: temp = re.sub(p, "", temp, flags=re.I)
+    temp = re.sub(r'(?:الحلقة|حلقة|#|EP)\s*\d+.*', '', temp, flags=re.I)
+    temp = re.sub(r'\d+', '', temp)
+    temp = re.sub(r'[^\s\w\u0600-\u06FF]', '', temp)
+    final = re.sub(r'\s+', ' ', temp).strip()
+    return final if len(final) > 1 else "مفقود ⚠️"
 
-    # 2. حذف كلمة (الحلقة/حلقة/EP) وما يتبعها من أرقام
-    temp_text = re.sub(r'(?:الحلقة|حلقة|#|EP)\s*\d+.*', '', temp_text, flags=re.I)
+# --- معالج تعديل العناوين ---
+@app.on_message(filters.command("edit") & filters.private)
+async def edit_request(client, message):
+    if message.from_user.id != ADMIN_ID: return
+    if len(message.command) < 2: return
     
-    # 3. حذف أي أرقام متبقية
-    temp_text = re.sub(r'\d+', '', temp_text)
-    
-    # 4. حذف الرموز والايقونات (إبقاء الحروف العربية والإنجليزية والمسافات)
-    temp_text = re.sub(r'[^\s\w\u0600-\u06FF]', '', temp_text)
-    
-    # 5. تنظيف المسافات الزائدة والأسطر الفارغة
-    lines = [line.strip() for line in temp_text.split('\n') if line.strip()]
-    final_title = " ".join(lines)
-    final_title = re.sub(r'\s+', ' ', final_title).strip()
-    
-    # إذا فشل الاستخراج، نأخذ أول سطر من النص الأصلي قبل الفلترة العنيفة
-    if not final_title or len(final_title) < 2:
-        first_line = text.split('\n')[0]
-        final_title = re.sub(r'[^\s\w\u0600-\u06FF]', '', first_line).strip()
+    v_id = message.command[1]
+    await message.reply_text(
+        f"📝 أرسل الآن الاسم الجديد للفيديو رقم `{v_id}`:\n(قم بالرد على هذه الرسالة بالاسم الجديد)",
+        reply_markup=ForceReply(selective=True)
+    )
 
-    return final_title if final_title else "مسلسل"
+@app.on_message(filters.reply & filters.private)
+async def process_edit(client, message):
+    if message.from_user.id != ADMIN_ID: return
+    if not message.reply_to_message.text: return
+    
+    # استخراج الـ ID من رسالة البوت السابقة
+    v_id_search = re.search(r'رقم `(\d+)`', message.reply_to_message.text)
+    if v_id_search:
+        v_id = v_id_search.group(1)
+        new_title = message.text.strip()
+        
+        db_query("UPDATE videos SET title = %s WHERE v_id = %s", (new_title, v_id), fetch=False)
+        await message.reply_text(f"✅ تم تحديث العنوان بنجاح!\n🆔 المعرف: `{v_id}`\n🎬 الاسم الجديد: **{new_title}**")
 
-# --- الأوامر ---
+# --- أمر التحقق من العناوين المفقودة ---
+@app.on_message(filters.command("check_missing") & filters.private)
+async def check_missing(client, message):
+    if message.from_user.id != ADMIN_ID: return
+    
+    rows = db_query("SELECT v_id, ep_num FROM videos WHERE title = 'مفقود ⚠️' OR title = 'مسلسل' LIMIT 10")
+    if not rows:
+        return await message.reply_text("✅ كل العناوين تبدو سليمة ومكتملة!")
+    
+    for v_id, ep in rows:
+        btn = InlineKeyboardMarkup([[InlineKeyboardButton("تعديل الاسم ✏️", callback_data=f"edit_{v_id}")]])
+        await message.reply_text(f"⚠️ فيديو بدون اسم!\n🆔 المعرف: `{v_id}`\n🎞 الحلقة: {ep}", reply_markup=btn)
 
+@app.on_callback_query(filters.regex(r"^edit_"))
+async def cb_edit(client, callback_query):
+    v_id = callback_query.data.split("_")[1]
+    await callback_query.message.reply_text(
+        f"📝 أرسل الاسم الجديد للمعرف `{v_id}`:",
+        reply_markup=ForceReply(selective=True)
+    )
+    await callback_query.answer()
+
+# --- أمر التنظيف العام ---
 @app.on_message(filters.command("clean_titles") & filters.private)
 async def clean_titles_cmd(client, message):
     if message.from_user.id != ADMIN_ID: return
-    m = await message.reply_text("🧼 جاري إعادة استخراج الأسماء من الوصف الأصلي بنظام ذكي...")
-    
+    m = await message.reply_text("🧼 تنظيف وتحليل...")
     rows = db_query("SELECT v_id, raw_caption FROM videos")
-    updated = 0
-    
     for v_id, raw in rows:
-        if not raw: continue
-        
-        new_title = smart_clean_title(raw)
-        
-        # تحديث العنوان في القاعدة
-        db_query("UPDATE videos SET title = %s WHERE v_id = %s", (new_title, v_id), fetch=False)
-        updated += 1
-            
-    await m.edit_text(f"✅ تم الإصلاح!\nتم تحديث **{updated}** عنوان.\nالآن البوت استخرج اسم المسلسل من 'وصف الفيديو' وتخلص من كلمة 'مسلسل' المكررة.")
-
-@app.on_message(filters.command("start") & filters.private)
-async def start_cmd(client, message):
-    if len(message.command) > 1:
-        v_id = str(message.command[1])
-        res = db_query("SELECT title, ep_num, poster_id FROM videos WHERE v_id = %s", (v_id,))
-        if res:
-            title, ep, p_id = res[0]
-            # هنا نقوم بعرض العنوان النظيف فقط للمستخدم
-            caption = f"<b>🎬 {title}</b>\n<b>🎞 الحلقة: {ep}</b>"
-            
-            if p_id:
-                try: await client.send_photo(message.chat.id, p_id, caption=caption)
-                except: pass
-            
-            # إرسال الفيديو بدون الوصف القديم المزعج (نستخدم copy_message مع caption جديدة)
-            await client.copy_message(
-                chat_id=message.chat.id,
-                from_chat_id=SOURCE_CHANNEL,
-                message_id=int(v_id),
-                caption=f"<b>🎬 {title} - الحلقة {ep}</b>"
-            )
-        else:
-            await message.reply_text("❌ لم يتم العثور على الحلقة.")
+        if raw:
+            new_title = smart_clean_title(raw)
+            db_query("UPDATE videos SET title = %s WHERE v_id = %s", (new_title, v_id), fetch=False)
+    await m.edit_text("✅ انتهى التنظيف! استخدم `/check_missing` للتأكد من وجود نواقص.")
 
 if __name__ == "__main__":
     app.run()
