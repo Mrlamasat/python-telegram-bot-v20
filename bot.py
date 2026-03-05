@@ -81,25 +81,55 @@ async def get_episodes_markup(title, current_v_id):
 async def auto_archive_logic(client, v_id_key):
     try:
         v_id_int = int(v_id_key)
-        # جلب الفيديو للتأكد من وجوده
-        msg = await client.get_messages(SOURCE_CHANNEL, v_id_int)
-        if not msg or msg.empty: return None
-
-        title, ep = "مسلسل مستعاد", 0
         
-        # البحث في الرسائل الـ 10 التي تلي الفيديو (الأحدث منه)
-        # نطلب الرسائل التي تبدأ من بعد الفيديو بـ 10 رسائل ونعود إليه
-        async for m in client.get_chat_history(SOURCE_CHANNEL, limit=10, offset_id=v_id_int + 10):
-            if m.id <= v_id_int: continue # لا نريد الفيديو نفسه بل ما بعده
+        # جلب الفيديو نفسه أولاً للتأكد من وجوده
+        msg = await client.get_messages(SOURCE_CHANNEL, v_id_int)
+        if not msg or msg.empty: 
+            return None
+
+        title = "مسلسل مستعاد"
+        ep = 0
+        
+        # البحث في الرسائل التالية (الـ 10 رسائل بعد الفيديو)
+        next_ids = [i for i in range(v_id_int + 1, v_id_int + 11)]
+        next_messages = await client.get_messages(SOURCE_CHANNEL, next_ids)
+        
+        for m in next_messages:
+            if not m or m.empty:
+                continue
                 
             if m.photo and m.caption:
+                # رسالة صورة مع كابشن - غالباً بوستر المسلسل
                 title = clean_series_title(m.caption)
-                if ep == 0: ep = extract_ep_num(m.caption)
-            elif m.text and m.text.isdigit():
-                ep = int(m.text)
-                # إذا وصلنا للرقم الصريح، فغالباً انتهت بيانات الحلقة
-                break
-
+                if ep == 0:
+                    ep = extract_ep_num(m.caption)
+            elif m.text:
+                # رسالة نصية - قد تحتوي على رقم الحلقة
+                if m.text.isdigit():
+                    ep = int(m.text)
+                    break
+                # قد تكون رسالة تحتوي على رقم الحلقة في نصها
+                elif "الحلقة" in m.text or "حلقة" in m.text:
+                    extracted_ep = extract_ep_num(m.text)
+                    if extracted_ep > 0:
+                        ep = extracted_ep
+                        break
+        
+        # إذا لم نجد رقم حلقة، نبحث في الرسائل السابقة
+        if ep == 0:
+            prev_ids = [i for i in range(v_id_int - 10, v_id_int)]
+            prev_messages = await client.get_messages(SOURCE_CHANNEL, prev_ids)
+            
+            for m in prev_messages:
+                if not m or m.empty:
+                    continue
+                    
+                if m.text and ("الحلقة" in m.text or "حلقة" in m.text):
+                    extracted_ep = extract_ep_num(m.text)
+                    if extracted_ep > 0:
+                        ep = extracted_ep
+                        break
+        
         # حفظ البيانات فوراً
         db_query("""
             INSERT INTO videos (v_id, title, ep_num, status) 
@@ -108,6 +138,7 @@ async def auto_archive_logic(client, v_id_key):
         """, (v_id_key, title, ep, title, ep), fetch=False)
         
         return (title, ep)
+        
     except Exception as e:
         logging.error(f"Archive Logic Error: {e}")
         return None
@@ -116,7 +147,7 @@ async def auto_archive_logic(client, v_id_key):
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
     if len(message.command) < 2:
-        return await message.reply_text(f"أهلاً بك يا محمد في بوت الحلقات.")
+        return await message.reply_text(f"أهلاً بك في بوت الحلقات.")
     
     v_id = message.command[1]
     res = db_query("SELECT title, ep_num FROM videos WHERE v_id=%s", (v_id,))
@@ -146,10 +177,19 @@ async def start_handler(client, message):
     try:
         await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), caption=cap, reply_markup=InlineKeyboardMarkup(btns))
         db_query("UPDATE videos SET views = COALESCE(views, 0) + 1 WHERE v_id = %s", (v_id,), fetch=False)
-    except:
+    except Exception as e:
+        logging.error(f"Copy message error: {e}")
         await message.reply_text("❌ الفيديو غير موجود حالياً في قناة السورس.")
 
 if __name__ == "__main__":
-    db_query("CREATE TABLE IF NOT EXISTS videos (v_id TEXT PRIMARY KEY, title TEXT, ep_num INTEGER, status TEXT, views INTEGER DEFAULT 0)", fetch=False)
+    db_query("""
+        CREATE TABLE IF NOT EXISTS videos (
+            v_id TEXT PRIMARY KEY, 
+            title TEXT, 
+            ep_num INTEGER, 
+            status TEXT, 
+            views INTEGER DEFAULT 0
+        )
+    """, fetch=False)
     logging.info("🚀 البوت يعمل الآن بنظام الأرشفة الذكية المصححة...")
     app.run()
