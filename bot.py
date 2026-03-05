@@ -111,12 +111,12 @@ async def auto_post_handler(client, message):
     except Exception as e:
         logging.error(f"❌ Auto-post failed: {e}")
 
-# ===== معالجة الـ Start وجلب الفيديوهات (الإصلاح الجذري للاشتراك) =====
+# ===== معالجة الـ Start وجلب الفيديوهات (الإصلاح الجذري) =====
 @app.on_message(filters.command("start") & filters.private)
 async def handle_start(client, message):
     user_id = message.from_user.id
     if len(message.command) < 2:
-        return await message.reply_text(f"مرحباً بك يا <b>{escape(message.from_user.first_name)}</b>! ابحث عن مسلسلك بكتابة اسمه..", parse_mode=ParseMode.HTML)
+        return await message.reply_text(f"مرحباً بك يا <b>{escape(message.from_user.first_name)}</b>!", parse_mode=ParseMode.HTML)
     
     v_id = message.command[1]
     
@@ -133,45 +133,35 @@ async def handle_start(client, message):
             # إذا فشل الفحص تقنياً، نمرر المستخدم لضمان تجربة سلسة
             pass
 
-    # 2. جلب الحلقة من المصدر وتحديث البيانات
+    # 2. جلب بيانات الحلقة من قاعدة البيانات فقط
     try:
-        source_chat = await client.get_chat(int(SOURCE_CHANNEL))
-        msg = await client.get_messages(source_chat.id, int(v_id))
-        
-        if msg and msg.caption:
-            title = clean_series_title(msg.caption)
-            ep_match = re.search(r'(\d+)', msg.caption)
-            ep = int(ep_match.group(1)) if ep_match else 1
-            db_query("INSERT INTO videos (v_id, title, ep_num, status) VALUES (%s, %s, %s, 'posted') ON CONFLICT (v_id) DO UPDATE SET title=%s, ep_num=%s", (v_id, title, ep, title, ep), fetch=False)
+        res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
+        if not res:
+            # إذا لم توجد البيانات في قاعدة البيانات (نادراً ما يحدث)، نحاول جلبها من المصدر كحل أخير
+            source_chat = await client.get_chat(int(SOURCE_CHANNEL))
+            msg = await client.get_messages(source_chat.id, int(v_id))
+            if msg and msg.caption:
+                title = clean_series_title(msg.caption)
+                ep_match = re.search(r'(\d+)', msg.caption)
+                ep = int(ep_match.group(1)) if ep_match else 1
+                # نقوم بتخزينها هذه المرة
+                db_query("INSERT INTO videos (v_id, title, ep_num, status) VALUES (%s, %s, %s, 'posted') ON CONFLICT (v_id) DO UPDATE SET title=%s, ep_num=%s", (v_id, title, ep, title, ep), fetch=False)
+            else:
+                return await message.reply_text("❌ لم نتمكن من العثور على هذه الحلقة في قاعدة البيانات.")
         else:
-            res = db_query("SELECT title, ep_num FROM videos WHERE v_id=%s", (v_id,))
-            title, ep = res[0] if res else ("مسلسل", 1)
-
+            title, ep = res[0]
+        
+        # 3. إنشاء الأزرار وإرسال الحلقة
         btns = await get_episodes_markup(title, v_id)
         cap = f"<b>📺 المسلسل : {obfuscate_visual(escape(title))}</b>\n<b>🎞️ حلقة : {ep}</b>"
         
+        # إرسال نسخة من الحلقة إلى المستخدم
+        source_chat = await client.get_chat(int(SOURCE_CHANNEL))
         await client.copy_message(message.chat.id, source_chat.id, int(v_id), caption=cap, reply_markup=InlineKeyboardMarkup(btns))
+    
     except Exception as e:
         logging.error(f"Error in start: {e}")
-        await message.reply_text("❌ لم نتمكن من جلب هذه الحلقة حالياً.")
-
-# ===== محرك البحث الذكي =====
-@app.on_message(filters.private & filters.text & ~filters.command(["start", "stats", "del"]))
-async def advanced_search(client, message):
-    raw_input = convert_ar_no(message.text)
-    query_norm = normalize_text(re.sub(r'\d+', '', raw_input))
-    all_titles_res = db_query("SELECT DISTINCT title FROM videos WHERE status='posted'")
-    if not all_titles_res: return
-    
-    all_titles = [r[0] for r in all_titles_res]
-    matches = [t for t in all_titles if query_norm in normalize_text(t)]
-
-    if matches:
-        title = matches[0]
-        btns = await get_episodes_markup(title, 0)
-        await message.reply_text(f"🔍 عثرنا على مسلسل **{title}**\nاختر الحلقة التي تريدها:", reply_markup=InlineKeyboardMarkup(btns))
-    else:
-        await message.reply_text("❌ لم يتم العثور على المسلسل.")
+        await message.reply_text("❌ حدث خطأ أثناء جلب الحلقة. يرجى المحاولة لاحقاً.")
 
 # ===== تشغيل البوت =====
 if __name__ == "__main__":
