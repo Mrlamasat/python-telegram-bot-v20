@@ -3,10 +3,12 @@ import psycopg2
 import logging
 import re
 import asyncio
+import time
 from html import escape
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
+from pyrogram.errors import FloodWait
 
 # ===== الإعدادات الأساسية =====
 API_ID = int(os.environ.get("API_ID"))
@@ -18,7 +20,7 @@ ADMIN_ID = 7720165591
 # ===== معرفات القنوات (محدثة) =====
 SOURCE_CHANNEL = -1003547072209
 FORCE_SUB_CHANNEL = -1003790915936
-FORCE_SUB_LINK = "https://t.me/+nLtMePUz6lw3YzBk"  # الرابط الجديد
+FORCE_SUB_LINK = "https://t.me/+nLtMePUz6lw3YzBk"
 PUBLIC_POST_CHANNEL = -1003678294148
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -328,7 +330,7 @@ async def receive_ep_num(client, message):
     
     await message.reply_text("✅ تم النشر في القناة")
 
-# ===== أمر المسح التلقائي =====
+# ===== أمر المسح التلقائي (مُحسّن) =====
 @app.on_message(filters.command("scan") & filters.private)
 async def scan_command(client, message):
     if message.from_user.id != ADMIN_ID:
@@ -340,48 +342,134 @@ async def scan_command(client, message):
         stats = {'videos': 0, 'posters': 0}
         poster_cache = {}
         
-        async for m in client.get_chat_history(SOURCE_CHANNEL, limit=5000):
-            if m.photo:
-                stats['posters'] += 1
-                title = clean_series_title(m.caption or "")
-                poster_cache[m.id] = {
-                    'title': title,
-                    'file_id': m.photo.file_id,
-                    'caption': m.caption or ""
-                }
-            
-            elif m.video or m.document:
-                stats['videos'] += 1
+        # مسح آخر 1000 رسالة فقط (بدلاً من 5000)
+        async for m in client.get_chat_history(SOURCE_CHANNEL, limit=1000):
+            try:
+                if m.photo:
+                    stats['posters'] += 1
+                    title = clean_series_title(m.caption or "")
+                    poster_cache[m.id] = {
+                        'title': title,
+                        'file_id': m.photo.file_id,
+                        'caption': m.caption or ""
+                    }
                 
-                # البحث عن البوستر
-                poster = None
-                for pid in sorted(poster_cache.keys(), reverse=True):
-                    if pid < m.id:
-                        poster = poster_cache[pid]
-                        break
-                
-                if poster:
-                    media = m.video or m.animation
-                    d = media.duration if media and hasattr(media, 'duration') else 0
-                    dur = f"{d//3600:02}:{(d%3600)//60:02}:{d%60:02}"
-                    ep = extract_ep_num(m.caption or "")
-                    q = extract_quality(m.caption or "")
+                elif m.video or m.document:
+                    stats['videos'] += 1
                     
-                    db_query("""
-                        INSERT INTO videos (v_id, title, ep_num, quality, duration, poster_id, poster_caption, status)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, 'posted')
-                        ON CONFLICT (v_id) DO UPDATE SET
-                            title=EXCLUDED.title, 
-                            ep_num=EXCLUDED.ep_num,
-                            quality=EXCLUDED.quality, 
-                            poster_id=EXCLUDED.poster_id,
-                            poster_caption=EXCLUDED.poster_caption
-                    """, (str(m.id), poster['title'], ep, q, dur, poster['file_id'], poster['caption'][:200]), fetch=False)
-            
-            await asyncio.sleep(0.1)
+                    # البحث عن البوستر
+                    poster = None
+                    for pid in sorted(poster_cache.keys(), reverse=True):
+                        if pid < m.id:
+                            poster = poster_cache[pid]
+                            break
+                    
+                    if poster:
+                        media = m.video or m.animation
+                        d = media.duration if media and hasattr(media, 'duration') else 0
+                        dur = f"{d//3600:02}:{(d%3600)//60:02}:{d%60:02}"
+                        ep = extract_ep_num(m.caption or "")
+                        q = extract_quality(m.caption or "")
+                        
+                        db_query("""
+                            INSERT INTO videos (v_id, title, ep_num, quality, duration, poster_id, poster_caption, status)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, 'posted')
+                            ON CONFLICT (v_id) DO UPDATE SET
+                                title=EXCLUDED.title, 
+                                ep_num=EXCLUDED.ep_num,
+                                quality=EXCLUDED.quality, 
+                                poster_id=EXCLUDED.poster_id,
+                                poster_caption=EXCLUDED.poster_caption
+                        """, (str(m.id), poster['title'], ep, q, dur, poster['file_id'], poster['caption'][:200]), fetch=False)
+                
+                # تأخير بسيط بين كل رسالة
+                await asyncio.sleep(0.5)
+                
+            except FloodWait as e:
+                wait_time = e.value
+                logging.warning(f"⚠️ FloodWait: {wait_time} ثانية")
+                await msg.edit_text(f"⚠️ انتظار {wait_time} ثانية...")
+                await asyncio.sleep(wait_time)
+            except Exception as e:
+                logging.error(f"❌ خطأ في معالجة رسالة: {e}")
+                continue
         
         await msg.edit_text(
             f"✅ <b>تم المسح بنجاح!</b>\n\n"
+            f"📹 فيديوهات: {stats['videos']}\n"
+            f"🖼️ بوسترات: {stats['posters']}",
+            parse_mode=ParseMode.HTML
+        )
+    
+    except FloodWait as e:
+        wait_time = e.value
+        await msg.edit_text(f"⚠️ تم تجاوز الحد المسموح. انتظر {wait_time} ثانية وحاول مجدداً.")
+    except Exception as e:
+        await msg.edit_text(f"❌ خطأ: {e}")
+
+# ===== أمر المسح البطيء (آمن) =====
+@app.on_message(filters.command("slowscan") & filters.private)
+async def slow_scan_command(client, message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    msg = await message.reply_text("🐌 جاري المسح البطيء (قد يستغرق وقتاً)...")
+    
+    try:
+        stats = {'videos': 0, 'posters': 0}
+        poster_cache = {}
+        
+        # مسح آخر 500 رسالة فقط مع تأخير كبير
+        async for m in client.get_chat_history(SOURCE_CHANNEL, limit=500):
+            try:
+                if m.photo:
+                    stats['posters'] += 1
+                    title = clean_series_title(m.caption or "")
+                    poster_cache[m.id] = {
+                        'title': title,
+                        'file_id': m.photo.file_id,
+                        'caption': m.caption or ""
+                    }
+                
+                elif m.video or m.document:
+                    stats['videos'] += 1
+                    
+                    # البحث عن البوستر
+                    poster = None
+                    for pid in sorted(poster_cache.keys(), reverse=True):
+                        if pid < m.id:
+                            poster = poster_cache[pid]
+                            break
+                    
+                    if poster:
+                        media = m.video or m.animation
+                        d = media.duration if media and hasattr(media, 'duration') else 0
+                        dur = f"{d//3600:02}:{(d%3600)//60:02}:{d%60:02}"
+                        ep = extract_ep_num(m.caption or "")
+                        q = extract_quality(m.caption or "")
+                        
+                        db_query("""
+                            INSERT INTO videos (v_id, title, ep_num, quality, duration, poster_id, poster_caption, status)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, 'posted')
+                            ON CONFLICT (v_id) DO UPDATE SET
+                                title=EXCLUDED.title, 
+                                ep_num=EXCLUDED.ep_num,
+                                quality=EXCLUDED.quality, 
+                                poster_id=EXCLUDED.poster_id,
+                                poster_caption=EXCLUDED.poster_caption
+                        """, (str(m.id), poster['title'], ep, q, dur, poster['file_id'], poster['caption'][:200]), fetch=False)
+                
+                # تأخير أطول (ثانيتين) بين كل رسالة
+                await asyncio.sleep(2)
+                
+            except FloodWait as e:
+                wait_time = e.value
+                await asyncio.sleep(wait_time)
+            except Exception as e:
+                continue
+        
+        await msg.edit_text(
+            f"✅ <b>تم المسح البطيء!</b>\n\n"
             f"📹 فيديوهات: {stats['videos']}\n"
             f"🖼️ بوسترات: {stats['posters']}",
             parse_mode=ParseMode.HTML
