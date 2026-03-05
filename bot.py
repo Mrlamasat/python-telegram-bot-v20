@@ -40,6 +40,7 @@ def db_query(query, params=(), fetch=True):
 
 # ===== محرك المعالجة الذكي =====
 def convert_ar_no(text):
+    if not text: return ""
     arabic_numbers = '٠١٢٣٤٥٦٧٨٩'
     english_numbers = '0123456789'
     translation_table = str.maketrans(arabic_numbers, english_numbers)
@@ -98,8 +99,10 @@ MAIN_MENU = ReplyKeyboardMarkup(
 # ===== 🛠️ محرك البحث والطلب المطور =====
 @app.on_message(filters.private & filters.text & ~filters.command(["start", "stats"]))
 async def advanced_search_handler(client, message):
+    if not message.text: return # حماية من الرسائل الفارغة
+    
     user_input = convert_ar_no(message.text)
-    user_mention = message.from_user.mention
+    user_mention = message.from_user.mention if message.from_user else "مستخدم"
 
     if user_input == "🔍 كيف أبحث عن مسلسل؟":
         return await message.reply_text("🔎 اكتب اسم المسلسل ورقم الحلقة مباشرة (مثال: كلاي ١٥) وسأجلبها لك فوراً!")
@@ -107,7 +110,7 @@ async def advanced_search_handler(client, message):
     if user_input == "✍️ طلب مسلسل جديد":
         return await message.reply_text("📥 أرسل اسم المسلسل الذي تريده:", reply_markup=ForceReply(selective=True))
 
-    is_request_reply = message.reply_to_message and "اسم المسلسل الذي تريده" in message.reply_to_message.text
+    is_request_reply = message.reply_to_message and "اسم المسلسل الذي تريده" in (message.reply_to_message.text or "")
     
     ep_match = re.search(r'\d+', user_input)
     target_ep = ep_match.group() if ep_match else None
@@ -149,6 +152,7 @@ async def advanced_search_handler(client, message):
     
     else:
         if is_request_reply:
+            # تخزين الطلب في جدول requests
             db_query("""
                 INSERT INTO requests (title_norm, title_raw, count) 
                 VALUES (%s, %s, 1) 
@@ -162,6 +166,7 @@ async def advanced_search_handler(client, message):
             await client.send_message(ADMIN_ID, f"🆕 **طلب مسلسل جديد:**\n👤 من: {user_mention}\n🎬 المسلسل: **{user_input}**\n👥 إجمالي الطلبات: {r_count}")
             return await message.reply_text("✅ هذا المسلسل غير متوفر حالياً، تم إرسال طلبك للإدارة لتوفيره.")
 
+        # نظام الاقتراحات
         all_norm_map = {normalize_text(t): t for t in all_titles}
         close_matches = difflib.get_close_matches(query_norm, list(all_norm_map.keys()), n=1, cutoff=0.4)
         if close_matches:
@@ -175,7 +180,7 @@ async def advanced_search_handler(client, message):
         await client.send_message(ADMIN_ID, f"⚠️ **بحث فاشل:**\n👤 من: {user_mention}\n🔍 الكلمة: `{user_input}`")
         await message.reply_text("❌ لم يتم العثور على المسلسل. تم إبلاغ الإدارة لتوفيره.")
 
-# ===== معالج الأزرار والإحصائيات =====
+# ===== معالجة الأزرار والإحصائيات =====
 @app.on_callback_query(filters.regex("^conf_|^rpt_|^req_new|^start_search"))
 async def callbacks_handler(client, cb):
     if cb.data.startswith("conf_"):
@@ -213,24 +218,27 @@ async def get_stats(client, message):
     for i, r in enumerate(top_r or [], 1): text += f"{i}. {r[0]} ← ({r[1]}) طلب\n"
     await message.reply_text(text)
 
-# (بقية دوال الرفع والنشر و Start كما هي في كودك الأصلي)
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
     if len(message.command) < 2:
         return await message.reply_text(f"أهلاً بك يا <b>{message.from_user.first_name}</b>!", reply_markup=MAIN_MENU)
+    
     v_id = message.command[1]
     res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (v_id,))
-    if not res: return
+    if not res: return await message.reply_text("❌ عذراً، هذا الملف غير متوفر حالياً.")
+    
     title, ep, q, dur = res[0]
     db_query("UPDATE videos SET views = COALESCE(views, 0) + 1 WHERE v_id = %s", (v_id,), fetch=False)
+    
     btns = await get_episodes_markup(title, v_id)
     is_sub = await check_subscription(client, message.from_user.id)
     cap = f"<b>📺 المسلسل : {obfuscate_visual(escape(title))}</b>\n<b>🎞️ حلقة : {ep}</b>\n<b>💿 جودة : {q}</b>"
     markup = InlineKeyboardMarkup(btns) if is_sub else InlineKeyboardMarkup([[InlineKeyboardButton("📥 انضمام", url=FORCE_SUB_LINK)]] + btns)
+    
     try:
         await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), caption=cap, reply_markup=markup)
     except Exception as e:
-        await message.reply_text("❌ حدث خطأ في جلب الفيديو.")
+        await message.reply_text("❌ حدث خطأ في جلب الفيديو، قد يكون الملف محذوفاً من القناة المصدر.")
 
 if __name__ == "__main__":
     app.run()
