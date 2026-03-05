@@ -40,7 +40,6 @@ def db_query(query, params=(), fetch=True):
 
 # ===== محرك المعالجة الذكي =====
 def convert_ar_no(text):
-    """تحويل الأرقام العربية إلى انجليزية"""
     arabic_numbers = '٠١٢٣٤٥٦٧٨٩'
     english_numbers = '0123456789'
     translation_table = str.maketrans(arabic_numbers, english_numbers)
@@ -78,8 +77,6 @@ async def get_episodes_markup(title, current_v_id):
         if len(row) == 5:
             buttons.append(row); row = []
     if row: buttons.append(row)
-    
-    # تم التعديل هنا لفتح البحث والطلب بـ ForceReply بدلاً من switch_inline
     buttons.append([
         InlineKeyboardButton("🔍 بحث عن مسلسل آخر", callback_data="start_search"), 
         InlineKeyboardButton("✍️ طلب مسلسل", callback_data="req_new")
@@ -93,16 +90,16 @@ async def check_subscription(client, user_id):
         return member.status not in ["left", "kicked"]
     except: return False
 
-# ===== الأزرار الرئيسية =====
 MAIN_MENU = ReplyKeyboardMarkup(
     [[KeyboardButton("🔍 كيف أبحث عن مسلسل؟")], [KeyboardButton("✍️ طلب مسلسل جديد")]],
     resize_keyboard=True
 )
 
-# ===== 🛠️ محرك البحث والتحليل الرقمي المطور =====
+# ===== 🛠️ محرك البحث المطور (البحث الجزئي والذكي) =====
 @app.on_message(filters.private & filters.text & ~filters.command(["start", "stats"]))
 async def advanced_search_handler(client, message):
-    user_input = convert_ar_no(message.text)
+    raw_input = message.text
+    user_input = convert_ar_no(raw_input)
     user_mention = message.from_user.mention
 
     if user_input == "🔍 كيف أبحث عن مسلسل؟":
@@ -115,29 +112,29 @@ async def advanced_search_handler(client, message):
         else:
             return await message.reply_text("📥 أرسل اسم المسلسل الذي تريده:", reply_markup=ForceReply(selective=True))
 
-    # معالجة الرد على زر "بحث عن مسلسل آخر"
-    if message.reply_to_message and "اسم المسلسل الذي تريد البحث عنه" in message.reply_to_message.text:
-        pass # سيكمل الكود عملية البحث بشكل طبيعي بالأسفل
-
+    # تحليل النص: استخراج الرقم والاسم
     ep_match = re.search(r'\d+', user_input)
     target_ep = ep_match.group() if ep_match else None
-    query = normalize_text(user_input)
+    clean_query = re.sub(r'\d+', '', user_input).strip()
+    query_norm = normalize_text(clean_query)
     
-    if len(query) < 2 and not target_ep: return
+    if len(query_norm) < 2 and not target_ep: return
 
+    # جلب جميع المسلسلات للمقارنة
     all_titles_res = db_query("SELECT DISTINCT title FROM videos WHERE status='posted'")
     if not all_titles_res: return await message.reply_text("❌ القاعدة فارغة حالياً.")
-
+    
     all_titles = [r[0] for r in all_titles_res]
-    normalized_map = {normalize_text(t): t for t in all_titles}
-    matches = [raw for norm, raw in normalized_map.items() if query in norm]
+
+    # 1. البحث الجزئي (مثال: كلاي موجود في علي كلاي)
+    matches = [t for t in all_titles if query_norm in normalize_text(t)]
 
     if matches:
-        title = matches[0]
+        title = matches[0] # الأولوية لأول تطابق جزئي
         if target_ep:
-            video_res = db_query("SELECT v_id, quality, duration FROM videos WHERE title=%s AND ep_num=%s AND status='posted'", (title, target_ep))
+            video_res = db_query("SELECT v_id, quality FROM videos WHERE title=%s AND ep_num=%s AND status='posted'", (title, target_ep))
             if video_res:
-                v_id, q, dur = video_res[0]
+                v_id, q = video_res[0]
                 db_query("UPDATE videos SET views = COALESCE(views, 0) + 1 WHERE v_id = %s", (str(v_id),), fetch=False)
                 if not await check_subscription(client, message.from_user.id):
                     cap = f"⚠️ **يجب الاشتراك لمشاهدة {title} حلقة {target_ep}**"
@@ -147,6 +144,7 @@ async def advanced_search_handler(client, message):
                 btns = await get_episodes_markup(title, v_id)
                 return await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), caption=cap, reply_markup=InlineKeyboardMarkup(btns))
 
+        # إذا وجد المسلسل ولم يجد الحلقة أو لم يحدد حلقة
         btns = []
         bot_info = await client.get_me()
         for m in list(dict.fromkeys(matches))[:10]:
@@ -154,39 +152,54 @@ async def advanced_search_handler(client, message):
             if first_ep:
                 btns.append([InlineKeyboardButton(f"🎬 {m}", url=f"https://t.me/{bot_info.username}?start={first_ep[0][0]}")])
         
-        await message.reply_text(f"🔍 نتائج البحث عن '{user_input}':", reply_markup=InlineKeyboardMarkup(btns))
+        await message.reply_text(f"🔍 نتائج البحث عن '{clean_query}':", reply_markup=InlineKeyboardMarkup(btns))
+    
     else:
-        close_matches = difflib.get_close_matches(query, list(normalized_map.keys()), n=1, cutoff=0.5)
+        # 2. نظام الاقتراحات عند عدم وجود تطابق جزئي
+        all_norm_titles = {normalize_text(t): t for t in all_titles}
+        close_matches = difflib.get_close_matches(query_norm, list(all_norm_titles.keys()), n=1, cutoff=0.4)
+        
         if close_matches:
-            suggested = normalized_map[close_matches[0]]
-            markup = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ نعم، أقصد {suggested}", callback_data=f"search_{close_matches[0]}")]])
+            suggested = all_norm_titles[close_matches[0]]
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"✅ نعم، أقصد {suggested}", callback_data=f"conf_{close_matches[0]}")],
+                [InlineKeyboardButton("❌ لا، ابلغ الإدارة", callback_data=f"rpt_{query_norm[:15]}")]
+            ])
             return await message.reply_text(f"❓ هل تقصد: **{suggested}**؟", reply_markup=markup)
 
+        # 3. فشل البحث تماماً
         await client.send_message(ADMIN_ID, f"⚠️ **بحث فاشل:**\n👤 من: {user_mention}\n🔍 الكلمة: `{user_input}`")
-        await message.reply_text("❌ لم يتم العثور على المسلسل. تأكد من الاسم.")
+        await message.reply_text("❌ لم يتم العثور على المسلسل. تم إبلاغ الإدارة بتوفيره.")
 
-@app.on_callback_query(filters.regex("^search_|^req_new|^start_search"))
+# ===== معالج الأزرار =====
+@app.on_callback_query(filters.regex("^conf_|^rpt_|^req_new|^start_search"))
 async def callbacks_handler(client, cb):
-    if cb.data == "req_new":
-        await cb.message.reply_text("📥 أرسل اسم المسلسل الذي تريده:", reply_markup=ForceReply(selective=True))
-    
-    elif cb.data == "start_search":
-        await cb.message.reply_text("🔎 **اكتب الآن اسم المسلسل الذي تريد البحث عنه:**", reply_markup=ForceReply(selective=True))
-    
-    elif cb.data.startswith("search_"):
-        q_norm = cb.data.replace("search_", "")
+    if cb.data.startswith("conf_"):
+        q_norm = cb.data.replace("conf_", "")
         all_titles_res = db_query("SELECT DISTINCT title FROM videos WHERE status='posted'")
-        normalized_map = {normalize_text(t): t for r in (all_titles_res or []) for t in r}
-        if q_norm in normalized_map:
-            title = normalized_map[q_norm]
+        all_norm_titles = {normalize_text(t): t for r in (all_titles_res or []) for t in r}
+        if q_norm in all_norm_titles:
+            title = all_norm_titles[q_norm]
             first_ep = db_query("SELECT v_id FROM videos WHERE title=%s AND status='posted' ORDER BY CAST(ep_num AS INTEGER) ASC LIMIT 1", (title,))
             if first_ep:
                 bot_info = await client.get_me()
                 btn = [[InlineKeyboardButton(f"🎬 {title}", url=f"https://t.me/{bot_info.username}?start={first_ep[0][0]}")]]
                 await cb.message.edit_text(f"✅ نتيجة البحث عن **{title}**:", reply_markup=InlineKeyboardMarkup(btn))
+
+    elif cb.data.startswith("rpt_"):
+        query_val = cb.data.replace("rpt_", "")
+        await client.send_message(ADMIN_ID, f"📢 **بلاغ بحث غير دقيق:**\n👤 المستخدم: {cb.from_user.mention}\n🔍 بحث عن: `{query_val}`")
+        await cb.message.edit_text("✅ تم تبليغ الإدارة بنجاح.")
+
+    elif cb.data == "req_new":
+        await cb.message.reply_text("📥 أرسل اسم المسلسل الذي تريده:", reply_markup=ForceReply(selective=True))
+    
+    elif cb.data == "start_search":
+        await cb.message.reply_text("🔎 **اكتب الآن اسم المسلسل الذي تريد البحث عنه:**", reply_markup=ForceReply(selective=True))
+    
     await cb.answer()
 
-# ===== أنظمة الرفع والنشر وعرض الحلقات ===== (نفس الأكواد السابقة لضمان الاستقرار)
+# ===== أنظمة الرفع والنشر (بقية الكود الأصلي) =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document | filters.animation))
 async def receive_video(client, message):
     v_id = str(message.id)
