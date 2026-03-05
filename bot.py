@@ -1,7 +1,7 @@
 import os, logging, re, asyncio
 from psycopg2 import pool
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.errors import FloodWait
 
 # --- الإعدادات ---
 API_ID = int(os.environ.get("API_ID", "0"))
@@ -19,92 +19,66 @@ def db_query(query, params=(), fetch=True):
     try:
         cur = conn.cursor()
         cur.execute(query, params)
-        if fetch:
-            return cur.fetchall()
+        if fetch: return cur.fetchall()
         conn.commit()
-    finally:
-        db_pool.putconn(conn)
+    finally: db_pool.putconn(conn)
 
-# --- 1. أمر مسح قاعدة البيانات بالكامل ---
 @app.on_message(filters.command("reset_db") & filters.user(ADMIN_ID))
 async def reset_db_cmd(client, message):
     db_query("DROP TABLE IF EXISTS videos", fetch=False)
-    # إعادة إنشاء الجدول نظيفاً
-    db_query("""
-        CREATE TABLE IF NOT EXISTS videos (
-            v_id TEXT PRIMARY KEY,
-            title TEXT,
-            poster_id TEXT,
-            ep_num INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'posted'
-        )
-    """, fetch=False)
-    await message.reply_text("🗑️ تم مسح قاعدة البيانات بالكامل وإعادة تجهيزها بنجاح!")
+    db_query("""CREATE TABLE IF NOT EXISTS videos (
+            v_id TEXT PRIMARY KEY, title TEXT, poster_id TEXT, ep_num INTEGER DEFAULT 0, status TEXT DEFAULT 'posted'
+        )""", fetch=False)
+    await message.reply_text("🗑️ تم تصفير القاعدة بنجاح!")
 
-# --- 2. أمر الأرشفة الذكية (الاعتماد على وصف الصورة والرقم التالي) ---
 @app.on_message(filters.command("sync_all") & filters.user(ADMIN_ID))
 async def sync_all_old(client, message):
-    if len(message.command) < 3:
-        return await message.reply("⚠️ أرسل: `/sync_all 1 3025`")
+    if len(message.command) < 3: return await message.reply("`/sync_all 1 3025`")
     
-    start_id, end_id = int(message.command[1]), int(message.command[2])
-    m = await message.reply("🚀 بدأت عملية الأرشفة الكبرى... جاري تحليل التسلسل (فيديو -> صورة -> رقم)")
+    start_id = int(message.command[1])
+    end_id = int(message.command[2])
+    m = await message.reply("🚀 جاري الأرشفة... (تم تقليل السجلات لتفادي التعليق)")
     
     count = 0
-    for msg_id in range(start_id, end_id + 1):
+    # جلب الرسائل على دفعات (أفضل للأداء)
+    for i in range(start_id, end_id + 1, 100):
+        ids = list(range(i, min(i + 100, end_id + 1)))
         try:
-            msg = await client.get_messages(SOURCE_CHANNEL, msg_id)
-            # إذا وجدنا فيديو (بداية السلسلة)
-            if msg and (msg.video or msg.document):
-                v_id = str(msg.id)
-                series_title = "غير مسمى"
-                ep_num = 0
-                poster_id = None
-                
-                # أ- البحث عن البوستر (الرسالة التالية مباشرة)
-                poster_msg = await client.get_messages(SOURCE_CHANNEL, msg_id + 1)
-                if poster_msg.photo:
-                    poster_id = poster_msg.photo.file_id
-                    if poster_msg.caption:
-                        series_title = poster_msg.caption.strip() # الاسم من وصف الصورة
-                
-                # ب- البحث عن رقم الحلقة (الرسالة التي تلي البوستر)
-                ep_msg = await client.get_messages(SOURCE_CHANNEL, msg_id + 2)
-                if ep_msg.text:
-                    nums = re.findall(r'\d+', ep_msg.text)
-                    if nums:
-                        ep_num = int(nums[0]) # أول رقم يجده بعد الصورة
+            messages = await client.get_messages(SOURCE_CHANNEL, ids)
+            for j, msg in enumerate(messages):
+                if msg and (msg.video or msg.document):
+                    v_id = str(msg.id)
+                    title, poster_id, ep_num = "غير مسمى", None, 0
+                    
+                    # فحص الرسائل التالية (الصورة والرقم)
+                    try:
+                        # جلب 5 رسائل تالية للتأكد من وجود البوستر والرقم
+                        next_msgs = await client.get_messages(SOURCE_CHANNEL, list(range(msg.id + 1, msg.id + 4)))
+                        for n_m in next_msgs:
+                            if n_m.photo:
+                                poster_id = n_m.photo.file_id
+                                if n_m.caption: title = n_m.caption.strip()
+                            elif n_m.text and ep_num == 0:
+                                nums = re.findall(r'\d+', n_m.text)
+                                if nums: ep_num = int(nums[0])
+                    except: pass
 
-                # ج- حفظ البيانات في القاعدة
-                db_query("""
-                    INSERT INTO videos (v_id, title, poster_id, ep_num, status) 
-                    VALUES (%s, %s, %s, %s, 'posted')
-                    ON CONFLICT (v_id) DO UPDATE SET 
-                    title=EXCLUDED.title, poster_id=EXCLUDED.poster_id, ep_num=EXCLUDED.ep_num
-                """, (v_id, series_title, poster_id, ep_num), fetch=False)
-                count += 1
-
-            if msg_id % 50 == 0:
-                await m.edit(f"⏳ معالجة الرسالة: {msg_id}\n✅ مؤرشف بنجاح: {count}\n🎬 آخر مسلسل: {series_title}")
-                await asyncio.sleep(1) # لتفادي الحظر من تليجرام
+                    db_query("""INSERT INTO videos (v_id, title, poster_id, ep_num, status) 
+                                VALUES (%s, %s, %s, %s, 'posted')
+                                ON CONFLICT (v_id) DO UPDATE SET title=EXCLUDED.title, ep_num=EXCLUDED.ep_num""",
+                             (v_id, title, poster_id, ep_num), fetch=False)
+                    count += 1
+            
+            await m.edit(f"⏳ معالجة: {i}\n✅ تم أرشفة: {count}")
+            await asyncio.sleep(2) # تأخير بسيط لتفادي Rate limit تليجرام
+            
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
         except Exception as e:
-            logging.error(f"Error at {msg_id}: {e}")
+            logging.error(f"Error: {e}")
             continue
-    
-    await m.edit(f"✅ اكتملت الأرشفة!\nتم رفع {count} حلقة بنجاح بالاعتماد على وصف الصور والأرقام التالية لها.")
 
-# --- نظام التشغيل للمشتركين ---
-@app.on_message(filters.command("start") & filters.private)
-async def start_handler(client, message):
-    if len(message.command) > 1:
-        v_id = message.command[1]
-        res = db_query("SELECT title, ep_num FROM videos WHERE v_id=%s", (v_id,))
-        if res:
-            title, ep = res[0]
-            cap = f"<b>📺 المسلسل: {title}</b>\n<b>🎞️ الحلقة: {ep}</b>\n\n🍿 مشاهدة ممتعة!"
-            await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), caption=cap)
-    else:
-        await message.reply("مرحباً بك يا محمد! استخدم `/reset_db` ثم `/sync_all` للأرشفة.")
+    await m.edit(f"✅ انتهى! مؤرشف: {count}")
 
 if __name__ == "__main__":
     app.run()
