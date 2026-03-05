@@ -1,131 +1,189 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import os
+import psycopg2
+import psycopg2.pool
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from telegram.constants import ParseMode
-from sqlalchemy import create_engine, Column, Integer, String, BigInteger, Boolean
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+import re
+from html import escape
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.enums import ParseMode
 
-# --- الإعدادات ---
-BOT_TOKEN = "8579897728:AAHrgUVKh0D45SMa0iHYI-DkbuWxeYm-rns"
-SOURCE_CHANNEL = -1003547072209  # القناة المصدر (المخزن)
-TARGET_CHANNEL = -1003554018307  # قناة النشر العامة
-DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
+# إعدادات التسجيل
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# --- قاعدة البيانات ---
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine)
-Base = declarative_base()
+# ===== الإعدادات الأساسية (تأكد من وضعها في Railway Variables) =====
+API_ID = int(os.environ.get("API_ID", "24803515"))
+API_HASH = os.environ.get("API_HASH", "86414909a34199f18742f1b490f892cc")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8579897728:AAHrgUVKh0D45SMa0iHYI-DkbuWxeYm-rns")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway")
+ADMIN_ID = 7720165591
 
-class Episode(Base):
-    __tablename__ = 'smart_archive'
-    id = Column(Integer, primary_key=True)
-    message_id = Column(BigInteger, unique=True) # رقم الرسالة في القناة المصدر
-    video_id = Column(String(500))
-    series_name = Column(String(500), default="أرشيف قديم")
-    episode_number = Column(Integer, default=0)
+SOURCE_CHANNEL = -1003547072209
+PUBLIC_POST_CHANNEL = -1003554018307
+FORCE_SUB_CHANNEL = -1003894735143
+FORCE_SUB_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
 
-Base.metadata.create_all(bind=engine)
-logging.basicConfig(level=logging.INFO)
+app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- منطق الذكاء والأرشفة ---
+# ===== إدارة قاعدة البيانات =====
+db_pool = psycopg2.pool.SimpleConnectionPool(1, 20, DATABASE_URL, sslmode="require")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    args = context.args
+def db_query(query, params=(), fetch=True):
+    conn = None
+    try:
+        conn = db_pool.getconn()
+        cur = conn.cursor()
+        cur.execute(query, params)
+        if fetch:
+            result = cur.fetchall()
+        else:
+            conn.commit()
+            result = None
+        cur.close()
+        return result
+    except Exception as e:
+        logging.error(f"❌ Database Error: {e}")
+        if conn: conn.rollback()
+        return None
+    finally:
+        if conn: db_pool.putconn(conn)
 
-    if not args:
-        await update.message.reply_text("🎬 أهلاً بك! أنا بوت الأرشفة الذكي. ارفع أي فيديو لأقوم بنشره وأرشفته.")
+def init_db():
+    db_query("""
+        CREATE TABLE IF NOT EXISTS videos (
+            v_id TEXT PRIMARY KEY,
+            title TEXT,
+            ep_num INTEGER,
+            poster_id TEXT,
+            quality TEXT,
+            duration TEXT,
+            status TEXT DEFAULT 'waiting',
+            views INTEGER DEFAULT 0
+        )
+    """, fetch=False)
+    logging.info("✅ تم تهيئة قاعدة البيانات بنجاح.")
+
+# ===== نظام الجلب الذكي والأرشفة =====
+
+async def get_or_archive_video(v_id):
+    """دالة تبحث في القاعدة، وإذا لم تجد الفيديو تجلبه من القناة المصدر وتؤرشفه"""
+    # البحث في القاعدة أولاً
+    res = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id=%s", (v_id,))
+    
+    if res:
+        return res[0]
+    
+    # إذا لم يوجد (رابط قديم)، نحاول جلب المعلومات من القناة المصدر
+    try:
+        msg = await app.get_messages(SOURCE_CHANNEL, int(v_id))
+        if msg and (msg.video or msg.document):
+            # استخراج البيانات من الكابشن (الوصف)
+            caption = msg.caption or "مسلسل غير معروف"
+            title = re.sub(r'(الحلقة|حلقة)?\s*\d+', '', caption).strip()
+            ep_match = re.search(r'(\d+)', caption)
+            ep = int(ep_match.group(1)) if ep_match else 0
+            dur = "00:00:00"
+            if msg.video:
+                d = msg.video.duration
+                dur = f"{d // 3600:02}:{(d % 3600) // 60:02}:{d % 60:02}"
+            
+            # أرشفة فورية في قاعدة البيانات
+            db_query(
+                "INSERT INTO videos (v_id, title, ep_num, quality, duration, status) VALUES (%s, %s, %s, %s, %s, %s)",
+                (v_id, title, ep, "HD", dur, "posted"), fetch=False
+            )
+            logging.info(f"📦 تم أرشفة حلقة قديمة تلقائياً: {v_id}")
+            return (title, ep, "HD", dur)
+    except Exception as e:
+        logging.error(f"❌ فشل جلب الحلقة القديمة {v_id}: {e}")
+    
+    return None
+
+# ===== معالج الأوامر =====
+
+@app.on_message(filters.command("start") & filters.private)
+async def start_handler(client, message):
+    if len(message.command) < 2:
+        await message.reply_text(f"أهلاً بك يا <b>{escape(message.from_user.first_name)}</b>! 👋\nارسل فيديو في قناة المصدر لنشره.")
         return
 
-    # معالجة الضغط على رابط (t.me/bot?start=watch_123)
-    if args[0].startswith("watch_"):
-        msg_id_str = args[0].replace("watch_", "")
-        if not msg_id_str.isdigit(): return
-        
-        target_msg_id = int(msg_id_str)
-        db = SessionLocal()
-        
-        # 1. البحث في الأرشيف الجديد (قاعدة البيانات)
-        episode = db.query(Episode).filter(Episode.message_id == target_msg_id).first()
-        
-        if episode:
-            # تم العثور عليها في الأرشيف - إرسال سريع
-            await context.bot.send_video(
-                chat_id=user_id,
-                video=episode.video_id,
-                caption=f"✅ تم جلبها من الأرشيف الذكي\n🎬 {episode.series_name} - حلقة {episode.episode_number}"
-            )
-        else:
-            # 2. لم يتم العثور عليها (رابط قديم) - جلب مباشر من المصدر + أرشفة فورية
-            try:
-                # جلب (نسخ) الرسالة من القناة المصدر
-                copied_msg = await context.bot.copy_message(
-                    chat_id=user_id,
-                    from_chat_id=SOURCE_CHANNEL,
-                    message_id=target_msg_id
-                )
-                
-                # التحقق إذا كانت الرسالة تحتوي على فيديو لأرشفته
-                if copied_msg and (await context.bot.get_message(user_id, copied_msg.message_id)).video:
-                    video_file_id = (await context.bot.get_message(user_id, copied_msg.message_id)).video.file_id
-                    
-                    # أرشفة ذكية الآن لكي لا يضطر البوت لجلبها من المصدر مرة أخرى
-                    new_archive = Episode(
-                        message_id=target_msg_id,
-                        video_id=video_file_id
-                    )
-                    db.add(new_archive)
-                    db.commit()
-                    logging.info(f"📦 تمت أرشفة الحلقة {target_msg_id} تلقائياً عند طلب المستخدم.")
-            
-            except Exception as e:
-                await update.message.reply_text("❌ نعتذر، هذه الحلقة قديمة جداً ولم تعد موجودة في القناة المصدر.")
-        
-        db.close()
-
-# --- وظيفة الرفع والنشر الجديد ---
-
-async def handle_new_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.video: return
+    v_id = message.command[1]
+    user_id = message.from_user.id
     
-    video = update.message.video
-    # استخدام رقم الرسالة في القناة المصدر كـ ID دائم
-    source_msg_id = update.message.forward_from_message_id or update.message.message_id
+    # التحقق من الاشتراك الإجباري
+    try:
+        member = await client.get_chat_member(FORCE_SUB_CHANNEL, user_id)
+        if member.status in ["left", "kicked"]: raise Exception()
+    except:
+        return await message.reply_text(
+            "⚠️ **يجب عليك الاشتراك في القناة أولاً لمشاهدة الحلقة!**",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 اضغط هنا للاشتراك", url=FORCE_SUB_LINK)]])
+        )
+
+    # الجلب الذكي
+    video_data = await get_or_archive_video(v_id)
     
-    db = SessionLocal()
-    # أرشفة
-    new_ep = Episode(
-        message_id=source_msg_id,
-        video_id=video.file_id
+    if video_data:
+        title, ep, q, dur = video_data
+        cap = (
+            f"<b>📺 المسلسل : {escape(title)}</b>\n"
+            f"<b>🎞️ رقم الحلقة : {ep}</b>\n"
+            f"<b>💿 الجودة : {q}</b>\n"
+            f"<b>⏳ المدة : {dur}</b>\n\n"
+            f"🍿 <b>مشاهدة ممتعة!</b>"
+        )
+        
+        # إرسال الفيديو من القناة المصدر
+        await client.copy_message(
+            chat_id=message.chat.id,
+            from_chat_id=SOURCE_CHANNEL,
+            message_id=int(v_id),
+            caption=cap,
+            parse_mode=ParseMode.HTML
+        )
+        # تحديث المشاهدات
+        db_query("UPDATE videos SET views = views + 1 WHERE v_id = %s", (v_id,), fetch=False)
+    else:
+        await message.reply_text("❌ عذراً، هذه الحلقة غير موجودة حالياً.")
+
+# ===== استقبال ونشر الفيديو الجديد (نفس منطقك السابق مع تحسين) =====
+
+@app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document))
+async def receive_video(client, message):
+    v_id = str(message.id)
+    media = message.video or message.document
+    d = getattr(media, 'duration', 0) if media else 0
+    dur = f"{d // 3600:02}:{(d % 3600) // 60:02}:{d % 60:02}"
+    
+    db_query(
+        "INSERT INTO videos (v_id, status, duration) VALUES (%s, 'waiting', %s) ON CONFLICT (v_id) DO UPDATE SET status='waiting'",
+        (v_id, dur), fetch=False
     )
-    db.add(new_ep)
-    db.commit()
+    await message.reply_text(f"✅ تم استلام الفيديو. أرسل البوستر الآن.")
+
+@app.on_message(filters.chat(SOURCE_CHANNEL) & filters.photo)
+async def receive_poster(client, message):
+    res = db_query("SELECT v_id FROM videos WHERE status='waiting' ORDER BY v_id DESC LIMIT 1")
+    if not res: return
+    v_id = res[0][0]
     
-    # رابط المشاهدة الذكي
-    bot_username = (await context.bot.get_me()).username
-    watch_link = f"https://t.me/{bot_username}?start=watch_{source_msg_id}"
+    title = re.sub(r'(الحلقة|حلقة)?\s*\d+', '', message.caption or "مسلسل").strip()
+    db_query("UPDATE videos SET title=%s, poster_id=%s, status='posted' WHERE v_id=%s", (title, message.photo.file_id, v_id), fetch=False)
     
-    # نشر في قناة الأعضاء
-    keyboard = [[InlineKeyboardButton("▶️ مشاهدة الحلقة", url=watch_link)]]
-    await context.bot.send_message(
-        chat_id=TARGET_CHANNEL,
-        text=f"🎬 حلقة جديدة جاهزة للمشاهدة!\n\nاضغط على الزر أدناه 👇",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    # نشر مباشر في القناة العامة
+    bot = await client.get_me()
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الحلقة", url=f"https://t.me/{bot.username}?start={v_id}")]])
+    
+    await client.send_photo(
+        chat_id=PUBLIC_POST_CHANNEL,
+        photo=message.photo.file_id,
+        caption=f"🎬 <b>{title}</b>\n\nاضغط على الزر أدناه للمشاهدة 👇",
+        reply_markup=markup,
+        parse_mode=ParseMode.HTML
     )
-    
-    await update.message.reply_text(f"✅ تمت الأرشفة والنشر بنجاح.\nرابط المشاهدة: {watch_link}")
-    db.close()
+    await message.reply_text("🚀 تم النشر والأرشفة بنجاح.")
 
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.VIDEO, handle_new_upload))
-    app.run_polling()
-
+# تشغيل
 if __name__ == "__main__":
-    main()
+    init_db()
+    app.run()
