@@ -67,7 +67,7 @@ def normalize_text(text):
 
 def clean_series_title(text):
     if not text: return "مسلسل"
-    text = re.sub(r'https?://\S+', '', text) # إزالة الروابط
+    text = re.sub(r'https?://\S+', '', text) 
     return re.sub(r'(الحلقة|حلقة)?\s*\d+', '', text).strip()
 
 def obfuscate_visual(text):
@@ -90,21 +90,17 @@ async def get_episodes_markup(title, current_v_id):
     if row: buttons.append(row)
     return buttons
 
-# ===== نظام النشر التلقائي الذكي (من المصدر للنشر) =====
+# ===== نظام النشر التلقائي الذكي =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document | filters.animation))
 async def auto_post_handler(client, message):
     v_id = str(message.id)
     caption = message.caption or ""
-    
-    # استخراج رقم الحلقة والاسم الحقيقي
     title = clean_series_title(caption)
     ep_match = re.search(r'(\d+)', caption)
     real_ep = int(ep_match.group(1)) if ep_match else 1
     
-    # حفظ الحلقة في القاعدة
     db_query("INSERT INTO videos (v_id, title, ep_num, status) VALUES (%s, %s, %s, 'posted') ON CONFLICT (v_id) DO UPDATE SET title=%s, ep_num=%s", (v_id, title, real_ep, title, real_ep), fetch=False)
     
-    # إرسال المنشور لقناة النشر
     me = await client.get_me()
     safe_t = obfuscate_visual(escape(title))
     pub_text = f"🎬 <b>{safe_t}</b>\n\n📌 <b>الحلقة رقم: [ {real_ep} ]</b>\n\n👇 اضغط هنا للمشاهدة فوراً"
@@ -115,16 +111,30 @@ async def auto_post_handler(client, message):
     except Exception as e:
         logging.error(f"❌ Auto-post failed: {e}")
 
-# ===== معالجة الـ Start وجلب الفيديوهات =====
+# ===== معالجة الـ Start وجلب الفيديوهات (الإصلاح الجذري للاشتراك) =====
 @app.on_message(filters.command("start") & filters.private)
 async def handle_start(client, message):
+    user_id = message.from_user.id
     if len(message.command) < 2:
         return await message.reply_text(f"مرحباً بك يا <b>{escape(message.from_user.first_name)}</b>! ابحث عن مسلسلك بكتابة اسمه..", parse_mode=ParseMode.HTML)
     
     v_id = message.command[1]
     
+    # 1. فحص الاشتراك الإجباري (استثناء الأدمن ومعالجة الأخطاء)
+    if user_id != ADMIN_ID:
+        try:
+            user_status = await client.get_chat_member(int(FORCE_SUB_CHANNEL), user_id)
+            if user_status.status in ["left", "kicked"]:
+                return await message.reply_text(
+                    "⚠️ **يجب الانضمام لقناتنا لمشاهدة الحلقة:**",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 اضغط هنا للانضمام", url=FORCE_SUB_LINK)]])
+                )
+        except Exception:
+            # إذا فشل الفحص تقنياً، نمرر المستخدم لضمان تجربة سلسة
+            pass
+
+    # 2. جلب الحلقة من المصدر وتحديث البيانات
     try:
-        # حل مشكلة Peer ID بالتعرف على القناة أولاً
         source_chat = await client.get_chat(int(SOURCE_CHANNEL))
         msg = await client.get_messages(source_chat.id, int(v_id))
         
@@ -132,7 +142,6 @@ async def handle_start(client, message):
             title = clean_series_title(msg.caption)
             ep_match = re.search(r'(\d+)', msg.caption)
             ep = int(ep_match.group(1)) if ep_match else 1
-            # تحديث قاعدة البيانات عند كل ضغطة لضمان دقة الأرقام
             db_query("INSERT INTO videos (v_id, title, ep_num, status) VALUES (%s, %s, %s, 'posted') ON CONFLICT (v_id) DO UPDATE SET title=%s, ep_num=%s", (v_id, title, ep, title, ep), fetch=False)
         else:
             res = db_query("SELECT title, ep_num FROM videos WHERE v_id=%s", (v_id,))
@@ -141,20 +150,13 @@ async def handle_start(client, message):
         btns = await get_episodes_markup(title, v_id)
         cap = f"<b>📺 المسلسل : {obfuscate_visual(escape(title))}</b>\n<b>🎞️ حلقة : {ep}</b>"
         
-        # فحص الاشتراك
-        try:
-            sub = await client.get_chat_member(FORCE_SUB_CHANNEL, message.from_user.id)
-            if sub.status in ["left", "kicked"]: raise Exception()
-        except:
-            return await message.reply_text("⚠️ يجب الانضمام للقناة لمشاهدة الحلقة 👇", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 انضمام", url=FORCE_SUB_LINK)]]))
-
         await client.copy_message(message.chat.id, source_chat.id, int(v_id), caption=cap, reply_markup=InlineKeyboardMarkup(btns))
     except Exception as e:
         logging.error(f"Error in start: {e}")
-        await message.reply_text("❌ لم يتم العثور على الحلقة في المصدر.")
+        await message.reply_text("❌ لم نتمكن من جلب هذه الحلقة حالياً.")
 
 # ===== محرك البحث الذكي =====
-@app.on_message(filters.private & filters.text & ~filters.command(["start", "stats", "del", "import_all"]))
+@app.on_message(filters.private & filters.text & ~filters.command(["start", "stats", "del"]))
 async def advanced_search(client, message):
     raw_input = convert_ar_no(message.text)
     query_norm = normalize_text(re.sub(r'\d+', '', raw_input))
@@ -169,7 +171,7 @@ async def advanced_search(client, message):
         btns = await get_episodes_markup(title, 0)
         await message.reply_text(f"🔍 عثرنا على مسلسل **{title}**\nاختر الحلقة التي تريدها:", reply_markup=InlineKeyboardMarkup(btns))
     else:
-        await message.reply_text("❌ لم يتم العثور على المسلسل. تأكد من كتابة الاسم بشكل صحيح.")
+        await message.reply_text("❌ لم يتم العثور على المسلسل.")
 
 # ===== تشغيل البوت =====
 if __name__ == "__main__":
