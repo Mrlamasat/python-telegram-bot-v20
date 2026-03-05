@@ -4,7 +4,7 @@ import logging
 import re
 from html import escape
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ForceReply
 from pyrogram.enums import ParseMode
 
 # ===== الإعدادات الأساسية =====
@@ -37,7 +37,7 @@ def db_query(query, params=(), fetch=True):
         logging.error(f"❌ Database Error: {e}")
         return None
 
-# ===== الدوال المساعدة (البحث والزخرفة) =====
+# ===== الدوال المساعدة =====
 def normalize_text(text):
     if not text: return ""
     text = text.strip().lower()
@@ -83,20 +83,30 @@ MAIN_MENU = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# ===== معالجة البحث الذكي في الخاص =====
+# ===== معالجة البحث والطلبات (مع الإشعارات) =====
 @app.on_message(filters.private & filters.text & ~filters.command(["start", "stats"]))
 async def search_handler(client, message):
+    user_mention = message.from_user.mention
+    user_id = message.from_user.id
+
     if message.text == "🔍 كيف أبحث عن مسلسل؟":
-        await message.reply_text("🔎 اكتب اسم المسلسل مباشرة (مثال: الكينج).")
+        await message.reply_text("🔎 اكتب اسم المسلسل مباشرة (مثال: الكينج) وسأعرض لك النتائج المتوفرة.")
         return
+
+    # نظام طلب مسلسل جديد
     if message.text == "✍️ طلب مسلسل جديد":
-        await message.reply_text("📥 أرسل اسم المسلسل وسنوفره لك قريباً.")
+        await message.reply_text("📥 أرسل اسم المسلسل الذي تريده الآن (سيتم إرساله للإدارة مباشرة):", reply_markup=ForceReply(selective=True))
+        return
+
+    # استقبال الرد على طلب المسلسل أو البحث الفاشل
+    if message.reply_to_message and "أرسل اسم المسلسل" in message.reply_to_message.text:
+        await client.send_message(ADMIN_ID, f"🆕 **طلب مسلسل جديد:**\n\n👤 من: {user_mention}\n🆔 الآيدي: `{user_id}`\n🎬 المسلسل: **{message.text}**")
+        await message.reply_text("✅ تم إرسال طلبك للإدارة، سنوفره لك في أقرب وقت.")
         return
         
     query = normalize_text(message.text)
     if len(query) < 2: return
     
-    # جلب أسماء المسلسلات الفريدة
     res = db_query("SELECT DISTINCT title FROM videos WHERE status='posted'")
     matches = [t[0] for t in (res or []) if query in normalize_text(t[0])]
     
@@ -104,16 +114,17 @@ async def search_handler(client, message):
         btns = []
         bot_info = await client.get_me()
         for m in list(dict.fromkeys(matches))[:10]:
-            # جلب أول حلقة من المسلسل لتكون وجهة زر البحث
-            first_ep = db_query("SELECT v_id FROM videos WHERE title=%s AND status='posted' LIMIT 1", (m,))
+            first_ep = db_query("SELECT v_id FROM videos WHERE title=%s AND status='posted' ORDER BY CAST(ep_num AS INTEGER) ASC LIMIT 1", (m,))
             if first_ep:
                 btns.append([InlineKeyboardButton(f"🎬 {m}", url=f"https://t.me/{bot_info.username}?start={first_ep[0][0]}")])
         
         await message.reply_text(f"🔍 نتائج البحث عن '{message.text}':", reply_markup=InlineKeyboardMarkup(btns))
     else:
-        await message.reply_text("❌ لم يتم العثور على نتائج.")
+        # إشعار الإدارة بالبحث الفاشل
+        await client.send_message(ADMIN_ID, f"⚠️ **بحث فاشل (غير متوفر):**\n\n👤 من: {user_mention}\n🔍 الكلمة: `{message.text}`")
+        await message.reply_text("❌ لم يتم العثور على نتائج.\nتم إبلاغ الإدارة بطلبك وسنحاول توفيره قريباً.")
 
-# ===== استقبال الفيديو والبوستر (نفس كودك الشغال) =====
+# ===== استقبال الفيديو والبوستر والنشر (نفس نظامك الشغال) =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document | filters.animation))
 async def receive_video(client, message):
     v_id = str(message.id)
@@ -155,9 +166,9 @@ async def receive_ep_num(client, message):
         await client.send_photo(chat_id=int(PUBLIC_POST_CHANNEL), photo=p_id, caption=caption, reply_markup=markup)
         await message.reply_text("🚀 تم النشر بنجاح.")
     except Exception as e:
-        await message.reply_text(f"❌ خطأ: {e}")
+        await message.reply_text(f"❌ خطأ في النشر: {e}")
 
-# ===== نظام إرسال الفيديو النهائي =====
+# ===== نظام إرسال الفيديو النهائي للمستخدم =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
     if len(message.command) < 2:
@@ -195,8 +206,8 @@ async def start_handler(client, message):
 @app.on_message(filters.command("stats") & filters.private)
 async def get_stats(client, message):
     if message.from_user.id != ADMIN_ID: return
-    top = db_query("SELECT title, ep_num, views FROM videos WHERE status='posted' ORDER BY views DESC LIMIT 5")
-    text = "📊 <b>تقرير الأداء:</b>\n\n"
+    top = db_query("SELECT title, ep_num, views FROM videos WHERE status='posted' ORDER BY views DESC LIMIT 10")
+    text = "📊 <b>تقرير الأداء (الأكثر مشاهدة):</b>\n\n"
     for i, r in enumerate(top or [], 1):
         text += f"{i}. {r[0]} (ح {r[1]}) ← {r[2]} مشاهدة\n"
     await message.reply_text(text)
