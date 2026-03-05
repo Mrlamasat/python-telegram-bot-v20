@@ -6,7 +6,7 @@ import re
 import asyncio
 from html import escape
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.enums import ParseMode
 
 # إعداد السجلات
@@ -63,18 +63,50 @@ def extract_ep_num(text):
     match = re.search(r'(?:الحلقة|حلقة|#)?\s*(\d+)', text)
     return int(match.group(1)) if match else 0
 
-async def get_episodes_markup(title, current_v_id):
+async def get_episodes_markup(title, current_v_id, page=0):
+    """الحصول على أزرار الحلقات مع أزرار التنقل"""
     res = db_query("SELECT v_id, ep_num FROM videos WHERE title = %s AND status = 'posted' ORDER BY ep_num ASC", (title,))
-    if not res: return []
+    if not res: 
+        return []
+    
     btns, row, seen = [], [], set()
     me = await app.get_me()
+    
+    # تجهيز جميع الأزرار
+    all_buttons = []
     for v_id, ep_num in res:
         if ep_num in seen: continue
         seen.add(ep_num)
         label = f"✅ {ep_num}" if str(v_id) == str(current_v_id) else f"{ep_num}"
-        row.append(InlineKeyboardButton(label, url=f"https://t.me/{me.username}?start={v_id}"))
-        if len(row) == 5: btns.append(row); row = []
-    if row: btns.append(row)
+        # استخدام callback_data بدلاً من url للتنقل داخل البوت
+        all_buttons.append(InlineKeyboardButton(label, callback_data=f"ep_{v_id}"))
+    
+    # عرض 8 أزرار فقط في كل مرة (صفين، كل صف 4 أزرار)
+    items_per_page = 8
+    total_pages = (len(all_buttons) + items_per_page - 1) // items_per_page
+    
+    # الحصول على أزرار الصفحة الحالية
+    start_idx = page * items_per_page
+    end_idx = min(start_idx + items_per_page, len(all_buttons))
+    current_buttons = all_buttons[start_idx:end_idx]
+    
+    # تقسيم الأزرار إلى صفوف (4 أزرار في كل صف)
+    for i in range(0, len(current_buttons), 4):
+        row_buttons = current_buttons[i:i+4]
+        btns.append(row_buttons)
+    
+    # إضافة أزرار التنقل بين الصفحات
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("◀️ السابق", callback_data=f"page_{title}_{page-1}_{current_v_id}"))
+    if len(all_buttons) > items_per_page:
+        nav_buttons.append(InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="info"))
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton("التالي ▶️", callback_data=f"page_{title}_{page+1}_{current_v_id}"))
+    
+    if nav_buttons:
+        btns.append(nav_buttons)
+    
     return btns
 
 # ===== محرك الأرشفة التلقائية (On-Click) المصحح =====
@@ -143,6 +175,63 @@ async def auto_archive_logic(client, v_id_key):
         logging.error(f"Archive Logic Error: {e}")
         return None
 
+# ===== معالج الضغط على الأزرار =====
+@app.on_callback_query()
+async def handle_callback(client: Client, query: CallbackQuery):
+    data = query.data
+    
+    if data.startswith("ep_"):
+        # المستخدم ضغط على رقم حلقة
+        v_id = data.replace("ep_", "")
+        
+        # جلب بيانات الحلقة
+        res = db_query("SELECT title, ep_num FROM videos WHERE v_id=%s", (v_id,))
+        if not res:
+            await query.answer("❌ هذه الحلقة غير متوفرة", show_alert=True)
+            return
+        
+        title, ep = res[0]
+        
+        # تجهيز الأزرار
+        btns = await get_episodes_markup(title, v_id)
+        
+        # تجميل الاسم
+        safe_title = " . ".join(list(title))
+        cap = f"📺 <b>{safe_title}</b>\n🎞️ <b>الحلقة: {ep}</b>"
+        
+        try:
+            # تعديل الرسالة الحالية إلى الفيديو الجديد
+            await query.message.delete()
+            await client.copy_message(
+                query.message.chat.id, 
+                SOURCE_CHANNEL, 
+                int(v_id), 
+                caption=cap, 
+                reply_markup=InlineKeyboardMarkup(btns)
+            )
+            db_query("UPDATE videos SET views = COALESCE(views, 0) + 1 WHERE v_id = %s", (v_id,), fetch=False)
+            await query.answer()
+        except Exception as e:
+            logging.error(f"Copy message error: {e}")
+            await query.answer("❌ الفيديو غير متوفر حالياً", show_alert=True)
+    
+    elif data.startswith("page_"):
+        # التنقل بين صفحات الحلقات
+        parts = data.split("_")
+        title = parts[1]
+        page = int(parts[2])
+        current_v_id = parts[3]
+        
+        # تجهيز الأزرار للصفحة الجديدة
+        btns = await get_episodes_markup(title, current_v_id, page)
+        
+        # تعديل الأزرار فقط بدون تغيير المحتوى
+        await query.message.edit_reply_markup(InlineKeyboardMarkup(btns))
+        await query.answer()
+    
+    elif data == "info":
+        await query.answer("استخدم الأزرار للتنقل بين الحلقات", show_alert=False)
+
 # ===== Start Handler =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
@@ -169,13 +258,21 @@ async def start_handler(client, message):
                 return await message.reply_text("⚠️ اشترك لمشاهدة الحلقة 👇", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 انضمام", url=FORCE_SUB_LINK)]]))
         except: pass
 
-    btns = await get_episodes_markup(title, v_id)
+    # الحصول على أزرار الحلقات (الصفحة الأولى)
+    btns = await get_episodes_markup(title, v_id, page=0)
+    
     # تجميل الاسم (توزيع الحروف)
     safe_title = " . ".join(list(title))
     cap = f"📺 <b>{safe_title}</b>\n🎞️ <b>الحلقة: {ep}</b>"
     
     try:
-        await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), caption=cap, reply_markup=InlineKeyboardMarkup(btns))
+        await client.copy_message(
+            message.chat.id, 
+            SOURCE_CHANNEL, 
+            int(v_id), 
+            caption=cap, 
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
         db_query("UPDATE videos SET views = COALESCE(views, 0) + 1 WHERE v_id = %s", (v_id,), fetch=False)
     except Exception as e:
         logging.error(f"Copy message error: {e}")
@@ -191,5 +288,5 @@ if __name__ == "__main__":
             views INTEGER DEFAULT 0
         )
     """, fetch=False)
-    logging.info("🚀 البوت يعمل الآن بنظام الأرشفة الذكية المصححة...")
+    logging.info("🚀 البوت يعمل الآن مع أزرار الحلقات تحت الفيديو...")
     app.run()
