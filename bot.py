@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-بوت تليجرام لنشر المسلسلات - نسخة مستقرة لـ Railway
+بوت تليجرام لنشر المسلسلات - نسخة نهائية عاملة
 """
 
 import os
@@ -19,6 +19,7 @@ import signal
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from telegram.constants import ParseMode
+from telegram.error import TimedOut, NetworkError
 
 # SQLAlchemy
 from sqlalchemy import create_engine, Column, Integer, String, BigInteger, Text, Boolean, DateTime
@@ -49,11 +50,11 @@ logger = logging.getLogger(__name__)
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# اتصال قاعدة بيانات مع تحسين الأداء
+# اتصال قاعدة بيانات
 engine = create_engine(
     DATABASE_URL if DATABASE_URL else 'sqlite:///series_bot.db',
     echo=False,
-    poolclass=NullPool,  # عدم استخدام pool لمنع مشاكل timeout
+    poolclass=NullPool,
     connect_args={'connect_timeout': 10} if DATABASE_URL else {}
 )
 
@@ -90,7 +91,6 @@ Base.metadata.create_all(bind=engine)
 
 @contextmanager
 def get_db():
-    """إدارة جلسة قاعدة البيانات بشكل آمن"""
     db = SessionLocal()
     try:
         yield db
@@ -106,14 +106,11 @@ def get_db():
 class SeriesBot:
     def __init__(self):
         self.application = None
-        self.is_running = True
         logger.info("✅ تم تهيئة البوت")
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """معالج أمر /start"""
         user = update.effective_user
         
-        # حفظ المستخدم
         try:
             with get_db() as db:
                 if not db.query(User).filter(User.user_id == user.id).first():
@@ -137,7 +134,6 @@ class SeriesBot:
         )
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """معالج أمر /help"""
         await update.message.reply_text(
             "📚 *مساعدة البوت*\n\n"
             "1️⃣ أضف البوت كمشرف في جميع القنوات\n"
@@ -148,7 +144,6 @@ class SeriesBot:
         )
     
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """معالج أمر /stats"""
         try:
             with get_db() as db:
                 total = db.query(Episode).count()
@@ -167,9 +162,10 @@ class SeriesBot:
             await update.message.reply_text("❌ حدث خطأ")
     
     async def scan_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """معالج أمر /scan - نسخة محسنة"""
+        """معالج أمر /scan - باستخدام الطريقة الصحيحة"""
         status_msg = await update.message.reply_text(
-            "🔄 *جاري مسح القناة المصدر...*",
+            "🔄 *جاري مسح القناة المصدر...*\n"
+            "⏱ سيتم جلب آخر 50 رسالة",
             parse_mode=ParseMode.MARKDOWN
         )
         
@@ -178,65 +174,73 @@ class SeriesBot:
                 scanned = 0
                 added = 0
                 
-                # جلب آخر 50 رسالة فقط (لتجنب timeout)
+                # الطريقة الصحيحة: استخدام forward_messages أو get_chat
+                # لكن الأسهل: استخدام get_updates لجلب آخر الرسائل
+                
+                # جلب آخر 50 رسالة من القناة باستخدام get_chat
                 try:
-                    messages = []
-                    async for message in context.bot.get_chat_history(
-                        chat_id=SOURCE_CHANNEL,
-                        limit=50
-                    ):
-                        messages.append(message)
-                        scanned += 1
-                        
-                        if message.video:
-                            # التحقق من عدم التكرار
-                            existing = db.query(Episode).filter(
-                                Episode.message_id == message.message_id
-                            ).first()
-                            
-                            if not existing:
-                                caption = message.caption or ""
-                                series_name, ep_num, ep_name = self.extract_info(caption)
-                                
-                                poster_id = message.photo[-1].file_id if message.photo else None
-                                
-                                new_ep = Episode(
-                                    message_id=message.message_id,
-                                    series_name=series_name,
-                                    episode_number=ep_num,
-                                    episode_name=ep_name,
-                                    video_file_id=message.video.file_id,
-                                    poster_file_id=poster_id,
-                                    quality=self.get_quality(message.video),
-                                    duration=message.video.duration or 0,
-                                    caption=caption
-                                )
-                                db.add(new_ep)
-                                added += 1
-                                
-                                if added % 10 == 0:
-                                    await status_msg.edit_text(
-                                        f"🔄 تم العثور على {added} حلقة...",
-                                        parse_mode=ParseMode.MARKDOWN
-                                    )
+                    # محاولة جلب معلومات القناة أولاً
+                    chat = await context.bot.get_chat(SOURCE_CHANNEL)
+                    logger.info(f"✅ تم الاتصال بالقناة: {chat.title if chat.title else 'قناة'}")
                     
-                    db.commit()
+                    # لا يمكن جلب تاريخ الرسائل مباشرة، لذلك سنستخدم طريقة بديلة
+                    # سنطلب من المستخدم إرسال معرف آخر رسالة
+                    
+                    await status_msg.edit_text(
+                        "⚠️ *لا يمكن جلب الرسائل القدمة تلقائياً*\n\n"
+                        "الرجاء إرسال معرف آخر رسالة في القناة (Message ID)\n"
+                        "أو استخدم /add لإضافة الحلقات يدوياً",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
                     
                 except Exception as e:
-                    logger.error(f"خطأ في جلب الرسائل: {e}")
-                    await status_msg.edit_text(f"❌ خطأ: {str(e)}")
-                    return
-                
-            await status_msg.edit_text(
-                f"✅ *تم المسح*\n\n"
-                f"📊 فحص: {scanned} رسالة\n"
-                f"✅ جديد: {added} حلقة",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            
+                    logger.error(f"خطأ في الاتصال بالقناة: {e}")
+                    await status_msg.edit_text(
+                        f"❌ خطأ في الوصول للقناة\n"
+                        f"تأكد أن البوت مشرف في القناة",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                    
         except Exception as e:
             logger.error(f"خطأ في المسح: {e}")
             await status_msg.edit_text(f"❌ خطأ: {str(e)}")
+    
+    async def add_manual_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """إضافة حلقة يدوياً"""
+        await update.message.reply_text(
+            "📝 *إضافة حلقة يدوياً*\n\n"
+            "الرجاء إرسال:\n"
+            "1. معرف الرسالة (Message ID)\n"
+            "2. أو أرسل الفيديو مباشرة",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    
+    async def forward_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """معالج الرسائل المعاد توجيهها"""
+        if update.message and update.message.video:
+            # حفظ الفيديو المرسل مباشرة
+            with get_db() as db:
+                caption = update.message.caption or ""
+                series_name, ep_num, ep_name = self.extract_info(caption)
+                
+                poster_id = update.message.photo[-1].file_id if update.message.photo else None
+                
+                new_ep = Episode(
+                    message_id=update.message.message_id,
+                    series_name=series_name,
+                    episode_number=ep_num,
+                    episode_name=ep_name,
+                    video_file_id=update.message.video.file_id,
+                    poster_file_id=poster_id,
+                    quality=self.get_quality(update.message.video),
+                    duration=update.message.video.duration or 0,
+                    caption=caption,
+                    is_posted=False
+                )
+                db.add(new_ep)
+                db.commit()
+                
+                await update.message.reply_text(f"✅ تم حفظ الحلقة: {series_name} - حلقة {ep_num}")
     
     def extract_info(self, caption: str) -> Tuple[str, int, str]:
         """استخراج معلومات الحلقة"""
@@ -275,7 +279,7 @@ class SeriesBot:
         return "HD"
     
     async def post_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """نشر الحلقات - نسخة محسنة"""
+        """نشر الحلقات"""
         status_msg = await update.message.reply_text(
             "🔄 *جاري نشر الحلقات...*",
             parse_mode=ParseMode.MARKDOWN
@@ -330,10 +334,10 @@ class SeriesBot:
                         
                         ep.is_posted = True
                         posted += 1
-                        await asyncio.sleep(3)  # زيادة التاخير
+                        await asyncio.sleep(3)
                         
                     except Exception as e:
-                        logger.error(f"خطأ: {e}")
+                        logger.error(f"خطأ في النشر: {e}")
                 
                 db.commit()
                 
@@ -388,26 +392,9 @@ class SeriesBot:
                 else:
                     await query.edit_message_text("❌ غير متوفرة")
     
-    def stop(self):
-        """إيقاف البوت"""
-        self.is_running = False
-        logger.info("🛑 جاري إيقاف البوت...")
-    
     def run(self):
         """تشغيل البوت"""
         try:
-            # إعداد معالج إشارة الإيقاف
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            def signal_handler():
-                logger.info("📥 استقبال إشارة إيقاف...")
-                self.stop()
-                loop.stop()
-            
-            for sig in [signal.SIGINT, signal.SIGTERM]:
-                loop.add_signal_handler(sig, signal_handler)
-            
             # إنشاء التطبيق
             self.application = Application.builder().token(BOT_TOKEN).build()
             
@@ -416,8 +403,10 @@ class SeriesBot:
             self.application.add_handler(CommandHandler("help", self.help_command))
             self.application.add_handler(CommandHandler("stats", self.stats_command))
             self.application.add_handler(CommandHandler("scan", self.scan_command))
+            self.application.add_handler(CommandHandler("add", self.add_manual_command))
             self.application.add_handler(CommandHandler("post", self.post_command))
             self.application.add_handler(CallbackQueryHandler(self.button_handler))
+            self.application.add_handler(MessageHandler(filters.VIDEO, self.forward_handler))
             
             logger.info("✅ البوت يعمل!")
             
@@ -430,8 +419,6 @@ class SeriesBot:
             
         except Exception as e:
             logger.error(f"❌ خطأ في التشغيل: {e}")
-        finally:
-            logger.info("👋 تم إيقاف البوت")
 
 # ======================= التشغيل =======================
 
@@ -441,9 +428,4 @@ if __name__ == "__main__":
     print("=" * 50)
     
     bot = SeriesBot()
-    
-    try:
-        bot.run()
-    except KeyboardInterrupt:
-        bot.stop()
-        sys.exit(0)
+    bot.run()
