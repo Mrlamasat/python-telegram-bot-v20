@@ -5,7 +5,7 @@ import re
 from html import escape
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
-from pyrogram.enums import ParseMode
+from pyrogram.enums import ParseMode, ChatMemberStatus
 
 # ===== الإعدادات الأساسية =====
 API_ID = int(os.environ.get("API_ID"))
@@ -15,8 +15,8 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_ID = 7720165591
 
 SOURCE_CHANNEL = -1003547072209
-PUBLIC_POST_CHANNEL = -1003554018307  # القناة الصحيحة التي حددتها
-FORCE_SUB_CHANNEL = -1003894735143     
+PUBLIC_POST_CHANNEL = -1003554018307  # قناة النشر العامة
+FORCE_SUB_CHANNEL = -1003894735143     # قناة الاشتراك الإجباري
 FORCE_SUB_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -61,7 +61,7 @@ def db_query(query, params=(), fetch=True):
         logging.error(f"❌ DB Error: {e}")
         return None
 
-# ===== الدوال المساعدة والبحث الذكي =====
+# ===== الدوال المساعدة والتحقق الذكي =====
 def normalize_text(text):
     if not text: return ""
     text = text.strip().lower()
@@ -79,10 +79,18 @@ def clean_series_title(text):
     return re.sub(r'(الحلقة|حلقة)?\s*\d+', '', text).strip()
 
 async def check_subscription(client, user_id):
+    # السماح للمطور دائماً
+    if user_id == ADMIN_ID:
+        return True
     try:
         member = await client.get_chat_member(FORCE_SUB_CHANNEL, user_id)
-        return member.status not in ["left", "kicked"]
-    except: return False
+        if member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+            return True
+        return False
+    except Exception as e:
+        logging.error(f"Sub Check Error: {e}")
+        # إذا حدث خطأ في البوت أو القناة نفتح الوصول مؤقتاً لضمان تجربة المستخدم
+        return False
 
 MAIN_MENU = ReplyKeyboardMarkup(
     [[KeyboardButton("🔍 كيف أبحث عن مسلسل؟")], [KeyboardButton("✍️ طلب مسلسل جديد")]],
@@ -103,7 +111,7 @@ async def get_stats(client, message):
             text += f"{i}. {r[0]} (ح {r[1]}) ← {r[2]} مشاهدة\n"
     await message.reply_text(text)
 
-# ===== 2. نظام الرفع والنشر =====
+# ===== 2. نظام الرفع والنشر المصلح =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document | filters.animation))
 async def receive_video(client, message):
     v_id = str(message.id)
@@ -141,9 +149,8 @@ async def receive_ep_num(client, message):
     cap = f"🎬 <b>{obfuscate_visual(escape(title))}</b>\n\n<b>الحلقة: [{message.text}]</b>"
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الحلقة", url=f"https://t.me/{me.username}?start=choose_{v_id}")]])
     try:
-        # النشر في القناة الصحيحة مع التأكيد على نوع المعرف كـ Integer
         await client.send_photo(chat_id=int(PUBLIC_POST_CHANNEL), photo=p_id, caption=cap, reply_markup=markup)
-        await message.reply_text("🚀 تم النشر بنجاح.")
+        await message.reply_text("🚀 تم النشر بنجاح في القناة العامة.")
     except Exception as e:
         await message.reply_text(f"❌ خطأ في النشر: {e}")
 
@@ -186,11 +193,11 @@ async def get_video_callback(client, cb):
     if res:
         t, ep, q, dur = res[0]
         if not await check_subscription(client, cb.from_user.id):
-            await cb.answer("⚠️ يجب الاشتراك أولاً!", show_alert=True); return
+            await cb.answer("⚠️ يجب الاشتراك في القناة أولاً!", show_alert=True); return
         db_query("UPDATE videos SET views = COALESCE(views, 0) + 1 WHERE v_id = %s", (v_id,), fetch=False)
         cap = f"<b>📺 المسلسل : {obfuscate_visual(t)}</b>\n<b>🎞️ حلقة : {ep}</b>\n<b>💿 جودة : {q}</b>\n<b>⏳ مدة : {dur}</b>"
         await client.copy_message(cb.message.chat.id, SOURCE_CHANNEL, int(v_id), caption=cap)
-        await cb.answer("✅ تم الإرسال")
+        await cb.answer("✅ تم إرسال الحلقة")
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
@@ -200,7 +207,7 @@ async def start_handler(client, message):
         if res:
             t, ep, q, dur = res[0]
             if not await check_subscription(client, message.from_user.id):
-                await message.reply_text("⚠️ اشترك أولاً.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 انضمام", url=FORCE_SUB_LINK)]]))
+                await message.reply_text("⚠️ الاشتراك في القناة إلزامي لمشاهدة الحلقة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 انضمام الآن", url=FORCE_SUB_LINK)]]))
                 return
             db_query("UPDATE videos SET views = COALESCE(views, 0) + 1 WHERE v_id = %s", (v_id,), fetch=False)
             cap = f"<b>📺 المسلسل : {obfuscate_visual(t)}</b>\n<b>🎞️ حلقة : {ep}</b>\n<b>💿 جودة : {q}</b>"
