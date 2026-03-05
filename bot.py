@@ -3,7 +3,7 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 
-# --- الإعدادات (تأكد من ضبطها في Railway) ---
+# --- إعدادات البيئة ---
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -13,7 +13,7 @@ SOURCE_CHANNEL = -1003547072209
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- إدارة قاعدة البيانات ---
+# --- نظام قاعدة البيانات ---
 def db_query(query, params=(), fetch=True):
     conn = None
     try:
@@ -24,7 +24,7 @@ def db_query(query, params=(), fetch=True):
         conn.commit()
         return res
     except Exception as e:
-        logging.error(f"❌ خطأ قاعدة البيانات: {e}")
+        logging.error(f"❌ DB ERROR: {e}")
         return None
     finally:
         if conn: conn.close()
@@ -41,116 +41,107 @@ def init_db():
         )
     """, fetch=False)
 
-# --- أدوات الاستخراج والتنظيف ---
-def extract_info(text):
-    if not text: return "مسلسل", 0
-    # تنظيف النص من معلومات الجودة قبل الاستخراج
-    clean_text = re.sub(r'(الجودة|المدة|✨|⏱|HD|📥|💿|⏳|🎞|دقيقة).*', '', text, flags=re.I).strip()
+# --- دوائر التنظيف والاستخراج (تعديل الأرقام والرموز) ---
+def clean_title_only(text):
+    if not text: return "مسلسل"
     
-    ep_match = re.search(r'(?:الحلقة|حلقة|#|EP)\s*(\d+)', text, re.I)
-    ep = int(ep_match.group(1)) if ep_match else 0
-    if ep == 0:
-        nums = re.findall(r'\b(\d+)\b', text)
-        if nums: ep = int(nums[-1])
-        
-    title = re.sub(r'(?:الحلقة|حلقة|#|EP)\s*\d+.*', '', clean_text, flags=re.I).strip(" :-|")
-    return title or "مسلسل", ep
+    # 1. حذف نصوص الجودة والوقت
+    garbage = [r"الجودة\s*[:：]?", r"المدة\s*[:：]?", r"دقيقة", r"HD", r"📥", r"💿", r"⏳", r"🎞"]
+    for word in garbage:
+        text = re.sub(word, "", text, flags=re.I)
+    
+    # 2. حذف كلمة (الحلقة/حلقة) وما يليها تماماً
+    text = re.sub(r'(?:الحلقة|حلقة|#|EP).*', '', text, flags=re.I)
+    
+    # 3. حذف جميع الأرقام من العنوان
+    text = re.sub(r'\d+', '', text)
+    
+    # 4. حذف الرموز التعبيرية (Emojis) والايقونات والزخارف
+    # نبقي فقط على الحروف العربية والإنجليزية والمسافات
+    text = re.sub(r'[^\s\w\u0600-\u06FF]', '', text)
+    
+    # 5. تنظيف المسافات الزائدة
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    return text if text else "مسلسل"
 
-# --- الأوامر الأساسية ---
+def extract_episode(text):
+    if not text: return 0
+    ep_match = re.search(r'(?:الحلقة|حلقة|#|EP)\s*(\d+)', text, re.I)
+    if ep_match: return int(ep_match.group(1))
+    nums = re.findall(r'\b(\d+)\b', text)
+    return int(nums[-1]) if nums else 0
+
+# --- أوامر البوت ---
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     if len(message.command) > 1:
         v_id = str(message.command[1])
         res = db_query("SELECT title, ep_num, poster_id FROM videos WHERE v_id = %s", (v_id,))
-        
         if res:
             title, ep, p_id = res[0]
             caption = f"<b>📺 {title}</b>\n<b>🎞 الحلقة: {ep}</b>"
-            
-            # إرسال البوستر إذا وجد
             if p_id:
                 try: await client.send_photo(message.chat.id, p_id, caption=caption)
                 except: pass
-            
-            # إرسال الفيديو الأصلي
             await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id))
             db_query("UPDATE videos SET views = views + 1 WHERE v_id = %s", (v_id,), fetch=False)
         else:
-            await message.reply_text("❌ هذه الحلقة غير مؤرشفة حالياً.")
+            await message.reply_text("❌ الحلقة غير موجودة.")
     else:
-        await message.reply_text(f"مرحباً بك يا محمد! البوت يحتوي حالياً على حلقات مؤرشفة وجاهزة.")
-
-# --- أوامر الإدارة والأرشفة ---
+        await message.reply_text("مرحباً بك يا محمد! البوت جاهز للعمل.")
 
 @app.on_message(filters.command("fix_old_data") & filters.private)
 async def fix_old_data_cmd(client, message):
     if message.from_user.id != ADMIN_ID: return
-    if len(message.command) < 3:
-        return await message.reply_text("⚠️ استخدم: `/fix_old_data 1 3025`")
-
+    if len(message.command) < 3: return await message.reply_text("`/fix_old_data 1 3025`")
+    
     start_id, end_id = int(message.command[1]), int(message.command[2])
-    status_msg = await message.reply_text("🚀 جاري الأرشفة الشاملة...")
+    m = await message.reply_text("🚀 جاري الأرشفة والفلترة...")
     
     count = 0
     for msg_id in range(start_id, end_id + 1):
         try:
             msg = await client.get_messages(SOURCE_CHANNEL, msg_id)
-            if not msg or msg.empty: continue
-            
-            if msg.video or msg.document or msg.animation:
-                v_title, v_ep = extract_info(msg.caption)
+            if msg and (msg.video or msg.document or msg.animation):
+                v_ep = extract_episode(msg.caption)
+                v_title = clean_title_only(msg.caption)
                 poster_id = None
                 
-                # البحث في الرسائل الـ 3 التالية (للبوستر أو الرقم)
-                for next_id in range(msg_id + 1, msg_id + 4):
+                # البحث عن ملحقات
+                for n_id in range(msg_id + 1, msg_id + 4):
                     try:
-                        n_msg = await client.get_messages(SOURCE_CHANNEL, next_id)
-                        if n_msg.photo:
-                            poster_id = n_msg.photo.file_id
-                            break
-                        elif n_msg.text:
-                            _, t_ep = extract_info(n_msg.text)
-                            if v_ep == 0: v_ep = t_ep
+                        n_msg = await client.get_messages(SOURCE_CHANNEL, n_id)
+                        if n_msg.photo: poster_id = n_msg.photo.file_id; break
+                        elif n_msg.text and v_ep == 0: v_ep = extract_episode(n_msg.text)
                     except: continue
 
                 db_query("""
                     INSERT INTO videos (v_id, title, ep_num, poster_id, raw_caption)
                     VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (v_id) DO UPDATE SET ep_num=EXCLUDED.ep_num, poster_id=EXCLUDED.poster_id
+                    ON CONFLICT (v_id) DO UPDATE SET 
+                    title=EXCLUDED.title, ep_num=EXCLUDED.ep_num, poster_id=EXCLUDED.poster_id
                 """, (str(msg_id), v_title, v_ep, poster_id, msg.caption or ""), fetch=False)
                 count += 1
-            
-            if msg_id % 50 == 0:
-                await status_msg.edit_text(f"⏳ معالجة... وصلنا لـ {msg_id}\nالمؤرشف: {count}")
-                await asyncio.sleep(1)
+            if msg_id % 100 == 0: await m.edit_text(f"⏳ وصلنا لـ {msg_id}\n✅ أرشفنا: {count}")
         except: continue
-
-    await status_msg.edit_text(f"✅ اكتملت المهمة! مؤرشف: {count}")
+    await m.edit_text(f"✅ انتهى! تم أرشفة وتصفية {count} حلقة.")
 
 @app.on_message(filters.command("clean_titles") & filters.private)
 async def clean_titles_cmd(client, message):
     if message.from_user.id != ADMIN_ID: return
-    m = await message.reply_text("🧼 جاري تنظيف العناوين من نصوص الجودة والوقت...")
-    
-    rows = db_query("SELECT v_id, title FROM videos")
+    m = await message.reply_text("🧼 جاري تنقية الأسماء من الأرقام والرموز...")
+    rows = db_query("SELECT v_id, title, raw_caption FROM videos")
     updated = 0
-    for v_id, title in rows:
-        # حذف نصوص الجودة والوقت والرموز
-        new_title = re.sub(r'(الجودة|المدة|✨|⏱|HD|📥|💿|⏳|🎞|دقيقة).*', '', title, flags=re.I).strip(" :-|")
+    for v_id, title, raw in rows:
+        # نستخدم raw_caption لإعادة استخراج الاسم بنظافة إذا كان العنوان القديم مشوهاً
+        new_title = clean_title_only(raw if raw else title)
         if new_title != title:
             db_query("UPDATE videos SET title = %s WHERE v_id = %s", (new_title, v_id), fetch=False)
             updated += 1
-    await m.edit_text(f"✅ تم تنظيف {updated} عنوان بنجاح!")
-
-@app.on_message(filters.command("setep") & filters.private)
-async def set_ep(client, message):
-    if message.from_user.id != ADMIN_ID: return
-    if len(message.command) < 3: return
-    db_query("UPDATE videos SET ep_num = %s WHERE v_id = %s", (message.command[2], message.command[1]), fetch=False)
-    await message.reply_text("✅ تم التعديل.")
+    await m.edit_text(f"✅ تم تنقية {updated} عنوان بنجاح!")
 
 if __name__ == "__main__":
     init_db()
-    print("✅ البوت يعمل الآن...")
     app.run()
