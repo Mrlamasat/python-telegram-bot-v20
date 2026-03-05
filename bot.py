@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-بوت تليجرام لنشر المسلسلات - نسخة نهائية مع جميع الإصلاحات
+بوت تليجرام لنشر المسلسلات - نسخة نهائية كاملة
+تم التطوير للنشر على Railway.app
 """
 
 import os
@@ -15,7 +16,7 @@ from typing import Optional, Tuple, List
 from contextlib import contextmanager
 import signal
 
-# المكتبات المطلوبة - تم إضافة جميع الاستيرادات
+# المكتبات المطلوبة
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from telegram.constants import ParseMode
@@ -29,12 +30,15 @@ from sqlalchemy.pool import NullPool
 
 # ======================= الإعدادات =======================
 
+# توكن البوت - ضع التوكن الخاص بك هنا
 BOT_TOKEN = os.getenv('BOT_TOKEN', '8579897728:AAF_jh9HnSNdHfkVhrjVeeagsQmYh6Jfo')
 
-SOURCE_CHANNEL = -1003547072209
-TARGET_CHANNEL = -1003554018307
-FORCE_CHANNEL = -1003894735143
+# معرفات القنوات (أرقام وليس نصوص)
+SOURCE_CHANNEL = -1003547072209      # القناة المصدر (فيها الحلقات)
+TARGET_CHANNEL = -1003554018307      # قناة النشر النهائية
+FORCE_CHANNEL = -1003894735143       # قناة الاشتراك الإجباري
 
+# رابط قاعدة البيانات - Railway يوفر متغير DATABASE_URL تلقائياً
 DATABASE_URL = os.getenv('DATABASE_URL', '')
 
 # إعداد التسجيل
@@ -47,10 +51,11 @@ logger = logging.getLogger(__name__)
 
 # ======================= قاعدة البيانات =======================
 
+# تعديل رابط PostgreSQL ليعمل مع SQLAlchemy
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# اتصال قاعدة بيانات
+# إنشاء اتصال قاعدة البيانات
 engine = create_engine(
     DATABASE_URL if DATABASE_URL else 'sqlite:///series_bot.db',
     echo=False,
@@ -62,6 +67,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 class Episode(Base):
+    """جدول الحلقات"""
     __tablename__ = 'episodes'
     
     id = Column(Integer, primary_key=True)
@@ -78,6 +84,7 @@ class Episode(Base):
     is_posted = Column(Boolean, default=False)
 
 class User(Base):
+    """جدول المستخدمين"""
     __tablename__ = 'users'
     
     id = Column(Integer, primary_key=True)
@@ -86,11 +93,12 @@ class User(Base):
     first_name = Column(String(255))
     joined_at = Column(DateTime, default=datetime.utcnow)
 
-# إنشاء الجداول
+# إنشاء الجداول في قاعدة البيانات
 Base.metadata.create_all(bind=engine)
 
 @contextmanager
 def get_db():
+    """الحصول على جلسة قاعدة البيانات"""
     db = SessionLocal()
     try:
         yield db
@@ -104,13 +112,17 @@ def get_db():
 # ======================= البوت الرئيسي =======================
 
 class SeriesBot:
+    """البوت الرئيسي لنشر المسلسلات"""
+    
     def __init__(self):
         self.application = None
         logger.info("✅ تم تهيئة البوت")
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """معالج أمر /start"""
         user = update.effective_user
         
+        # حفظ المستخدم في قاعدة البيانات
         try:
             with get_db() as db:
                 if not db.query(User).filter(User.user_id == user.id).first():
@@ -122,83 +134,115 @@ class SeriesBot:
         except:
             pass
         
+        # رسالة الترحيب
+        welcome_text = (
+            f"🎬 *مرحباً بك {user.first_name or 'مستخدم'}!*\n\n"
+            "أهلاً في بوت نشر المسلسلات\n\n"
+            "*الأوامر المتاحة:*\n"
+            "📤 /post - نشر الحلقات في القناة\n"
+            "📊 /stats - عرض الإحصائيات\n"
+            "❓ /help - عرض المساعدة\n\n"
+            "*لإضافة حلقات جديدة:*\n"
+            "• أعد توجيه أي فيديو إلى البوت\n"
+            "• البوت سيحفظه تلقائياً"
+        )
+        
         await update.message.reply_text(
-            f"🎬 *مرحباً {user.first_name or 'مستخدم'}!*\n\n"
-            "أهلاً في بوت المسلسلات\n\n"
-            "*الأوامر:*\n"
-            "📤 /post - نشر الحلقات\n"
-            "📊 /stats - الإحصائيات\n"
-            "❓ /help - المساعدة\n\n"
-            "*لإضافة حلقات:*\n"
-            "• أعد توجيه الفيديو إلى البوت",
+            welcome_text,
             parse_mode=ParseMode.MARKDOWN
         )
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text(
+        """معالج أمر /help"""
+        help_text = (
             "📚 *مساعدة البوت*\n\n"
-            "*كيفية الإضافة:*\n"
+            "*كيفية إضافة الحلقات:*\n"
             "1️⃣ اذهب إلى القناة المصدر\n"
             "2️⃣ أعد توجيه أي فيديو إلى البوت\n"
-            "3️⃣ البوت سيحفظه تلقائياً\n\n"
-            "*كيفية النشر:*\n"
-            "• استخدم /post لنشر الحلقات\n\n"
-            "*ملاحظة:* الاشتراك مطلوب للمشاهدة",
+            "3️⃣ البوت سيحفظه تلقائياً في قاعدة البيانات\n\n"
+            "*كيفية نشر الحلقات:*\n"
+            "• استخدم /post لنشر الحلقات في القناة المستهدفة\n"
+            "• البوت ينشر 3 حلقات في كل مرة\n\n"
+            "*كيفية المشاهدة:*\n"
+            "1️⃣ يضغط المستخدم على زر المشاهدة\n"
+            "2️⃣ يتحقق البوت من الاشتراك في القناة الإجبارية\n"
+            "3️⃣ يتم إرسال الفيديو مباشرة للمستخدم\n\n"
+            "*ملاحظات مهمة:*\n"
+            "• البوت يحتاج صلاحيات مشرف في جميع القنوات\n"
+            "• قاعدة البيانات تحفظ جميع الحلقات\n"
+            "• البوت يعمل 24/7 على Railway"
+        )
+        
+        await update.message.reply_text(
+            help_text,
             parse_mode=ParseMode.MARKDOWN
         )
     
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """معالج أمر /stats"""
         try:
             with get_db() as db:
-                total = db.query(Episode).count()
-                posted = db.query(Episode).filter(Episode.is_posted == True).count()
-                users = db.query(User).count()
+                total_episodes = db.query(Episode).count()
+                posted_episodes = db.query(Episode).filter(Episode.is_posted == True).count()
+                pending_episodes = total_episodes - posted_episodes
+                total_users = db.query(User).count()
+                
+                # إحصائيات إضافية
+                series_count = db.query(Episode.series_name).distinct().count()
+            
+            stats_text = (
+                "📊 *إحصائيات البوت*\n\n"
+                f"📹 *إجمالي الحلقات:* {total_episodes}\n"
+                f"✅ *منشورة:* {posted_episodes}\n"
+                f"⏳ *متبقية:* {pending_episodes}\n"
+                f"🎭 *عدد المسلسلات:* {series_count}\n"
+                f"👥 *المستخدمين:* {total_users}\n\n"
+                f"⚡ *الحالة:* البوت يعمل بكفاءة"
+            )
             
             await update.message.reply_text(
-                f"📊 *الإحصائيات*\n\n"
-                f"📹 إجمالي الحلقات: {total}\n"
-                f"✅ منشورة: {posted}\n"
-                f"⏳ متبقية: {total - posted}\n"
-                f"👥 المستخدمين: {users}",
+                stats_text,
                 parse_mode=ParseMode.MARKDOWN
             )
         except Exception as e:
-            await update.message.reply_text("❌ حدث خطأ")
+            logger.error(f"خطأ في الإحصائيات: {e}")
+            await update.message.reply_text("❌ حدث خطأ في جلب الإحصائيات")
     
     async def handle_forwarded_video(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """معالج الفيديوهات المعاد توجيهها"""
+        """معالج الفيديوهات المعاد توجيهها - إضافة الحلقات يدوياً"""
         message = update.message
         
+        # التحقق من وجود فيديو
         if not message.video:
-            await message.reply_text("❌ هذا ليس فيديو")
+            await message.reply_text("❌ هذا ليس فيديو. الرجاء إعادة توجيه فيديو فقط.")
             return
         
         try:
             with get_db() as db:
-                # التحقق من عدم التكرار
+                # التحقق من عدم وجود الحلقة مسبقاً
                 existing = db.query(Episode).filter(
                     Episode.message_id == message.message_id
                 ).first()
                 
                 if existing:
-                    await message.reply_text("✅ هذه الحلقة موجودة مسبقاً")
+                    await message.reply_text("✅ هذه الحلقة موجودة مسبقاً في قاعدة البيانات")
                     return
                 
-                # استخراج المعلومات
+                # استخراج المعلومات من التسمية التوضيحية
                 caption = message.caption or ""
-                series_name, ep_num, ep_name = self.extract_info(caption)
+                series_name, episode_number, episode_name = self.extract_info(caption)
                 
-                # البحث عن صورة مصغرة
+                # البحث عن صورة مصغرة (البوستر)
                 poster_id = None
                 if message.photo:
                     poster_id = message.photo[-1].file_id
                 
-                # حفظ الحلقة
-                new_ep = Episode(
+                # حفظ الحلقة في قاعدة البيانات
+                new_episode = Episode(
                     message_id=message.message_id,
                     series_name=series_name,
-                    episode_number=ep_num,
-                    episode_name=ep_name,
+                    episode_number=episode_number,
+                    episode_name=episode_name,
                     video_file_id=message.video.file_id,
                     poster_file_id=poster_id,
                     quality=self.get_quality(message.video),
@@ -206,20 +250,29 @@ class SeriesBot:
                     caption=caption,
                     is_posted=False
                 )
-                db.add(new_ep)
+                db.add(new_episode)
                 db.commit()
                 
+                # رسالة تأكيد
+                minutes = message.video.duration // 60 if message.video.duration else 0
+                seconds = message.video.duration % 60 if message.video.duration else 0
+                
                 await message.reply_text(
-                    f"✅ *تم حفظ الحلقة*\n\n"
-                    f"🎬 {series_name}\n"
-                    f"📺 حلقة {ep_num}\n"
-                    f"⚡ {self.get_quality(message.video)}",
+                    f"✅ *تم حفظ الحلقة بنجاح!*\n\n"
+                    f"🎬 *المسلسل:* {series_name}\n"
+                    f"📺 *رقم الحلقة:* {episode_number}\n"
+                    f"📝 *اسم الحلقة:* {episode_name}\n"
+                    f"⏱ *المدة:* {minutes}:{seconds:02d}\n"
+                    f"⚡ *الجودة:* {self.get_quality(message.video)}\n\n"
+                    f"استخدم /post لنشر الحلقة في القناة",
                     parse_mode=ParseMode.MARKDOWN
                 )
                 
+                logger.info(f"✅ تم حفظ حلقة جديدة: {series_name} - حلقة {episode_number}")
+                
         except Exception as e:
             logger.error(f"خطأ في حفظ الفيديو: {e}")
-            await message.reply_text("❌ حدث خطأ في حفظ الفيديو")
+            await message.reply_text("❌ حدث خطأ في حفظ الفيديو. الرجاء المحاولة مرة أخرى.")
     
     def extract_info(self, caption: str) -> Tuple[str, int, str]:
         """استخراج معلومات الحلقة من النص"""
@@ -229,7 +282,7 @@ class SeriesBot:
         # تنظيف النص
         caption = caption.strip()
         
-        # أنماط البحث
+        # أنماط مختلفة للبحث
         patterns = [
             # النمط: اسم المسلسل - الحلقة 10 - اسم الحلقة
             r'(.+?)[\s\-_]+(?:الحلقة|episode|ح)[\s\-_#]*(\d+)[\s\-_]+(.+)',
@@ -239,6 +292,8 @@ class SeriesBot:
             r'(.+?)[\s\-_]+(?:الحلقة|episode|ح)[\s\-_#]*(\d+)',
             # النمط: اسم المسلسل #10
             r'(.+?)[\s\-_]*#(\d+)',
+            # النمط: أي نص به رقم
+            r'^([^\d]+)(\d+)(.*)$'
         ]
         
         for pattern in patterns:
@@ -248,20 +303,19 @@ class SeriesBot:
                 series = groups[0].strip()
                 
                 try:
-                    ep_num = int(groups[1])
+                    episode_number = int(groups[1])
                 except (ValueError, IndexError):
-                    ep_num = 0
+                    episode_number = 0
                 
-                ep_name = groups[2].strip() if len(groups) > 2 else f"الحلقة {ep_num}"
+                episode_name = groups[2].strip() if len(groups) > 2 else f"الحلقة {episode_number}"
                 
                 # تنظيف النتائج
                 series = re.sub(r'[\-_#]', ' ', series).strip()
                 series = re.sub(r'\s+', ' ', series)
                 
-                return series, ep_num, ep_name
+                return series, episode_number, episode_name
         
-        # إذا لم يتم العثور على نمط
-        # محاولة استخراج رقم من النص
+        # إذا لم يتم العثور على نمط، نبحث عن أرقام في النص
         numbers = re.findall(r'\d+', caption)
         if numbers:
             return caption, int(numbers[0]), caption
@@ -282,9 +336,9 @@ class SeriesBot:
         return "HD"
     
     async def post_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """نشر الحلقات في القناة المستهدفة"""
+        """معالج أمر /post - نشر الحلقات في القناة المستهدفة"""
         status_msg = await update.message.reply_text(
-            "🔄 *جاري نشر الحلقات...*",
+            "🔄 *جاري نشر الحلقات...*\n⏱ قد يستغرق هذا بضع لحظات",
             parse_mode=ParseMode.MARKDOWN
         )
         
@@ -317,15 +371,29 @@ class SeriesBot:
                             f"👇 اضغط على الزر للمشاهدة"
                         )
                         
-                        # إنشاء زر المشاهدة
-                        keyboard = [[
-                            InlineKeyboardButton("▶️ مشاهدة الحلقة", callback_data=f"watch_{episode.id}")
-                        ]]
+                        # إنشاء أزرار التفاعل
+                        keyboard = [
+                            [InlineKeyboardButton("▶️ مشاهدة الحلقة", callback_data=f"watch_{episode.id}")],
+                            [InlineKeyboardButton("📢 قناة المسلسلات", url=f"https://t.me/+PyUeOtPN1fs0NDA0")]
+                        ]
                         
-                        # إضافة رابط القناة
-                        keyboard.append([
-                            InlineKeyboardButton("📢 قناة المسلسلات", url=f"https://t.me/+PyUeOtPN1fs0NDA0")
-                        ])
+                        # إضافة حلقات مشابهة (اختياري)
+                        similar = db.query(Episode).filter(
+                            Episode.series_name == episode.series_name,
+                            Episode.id != episode.id,
+                            Episode.is_posted == True
+                        ).order_by(Episode.episode_number).limit(5).all()
+                        
+                        if similar:
+                            sim_buttons = []
+                            for sim in similar:
+                                sim_buttons.append(
+                                    InlineKeyboardButton(f"📺 {sim.episode_number}", callback_data=f"watch_{sim.id}")
+                                )
+                            
+                            # تقسيم الأزرار إلى صفوف من 3
+                            for i in range(0, len(sim_buttons), 3):
+                                keyboard.append(sim_buttons[i:i+3])
                         
                         reply_markup = InlineKeyboardMarkup(keyboard)
                         
@@ -350,7 +418,14 @@ class SeriesBot:
                         episode.is_posted = True
                         posted += 1
                         
-                        # تأخير بين المنشورات
+                        # تحديث رسالة الحالة
+                        await status_msg.edit_text(
+                            f"🔄 *جاري النشر...*\n\n"
+                            f"✅ تم نشر: {posted} حلقة",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                        
+                        # تأخير بين المنشورات لتجنب تجاوز الحدود
                         await asyncio.sleep(2)
                         
                     except Exception as e:
@@ -359,19 +434,25 @@ class SeriesBot:
                 
                 db.commit()
                 
-            await status_msg.edit_text(
-                f"✅ *تم النشر*\n\n"
-                f"✅ تم النشر: {posted}\n"
-                f"❌ فشل: {failed}",
-                parse_mode=ParseMode.MARKDOWN
+            # رسالة النتيجة النهائية
+            result_text = (
+                f"✅ *تم النشر بنجاح!*\n\n"
+                f"📊 *النتيجة:*\n"
+                f"✅ تم نشر: {posted} حلقة\n"
+                f"❌ فشل: {failed} حلقة"
             )
+            
+            if failed > 0:
+                result_text += "\n\n⚠️ بعض الحلقات فشلت في النشر. راجع السجلات للمزيد من التفاصيل."
+            
+            await status_msg.edit_text(result_text, parse_mode=ParseMode.MARKDOWN)
             
         except Exception as e:
             logger.error(f"خطأ في النشر: {e}")
-            await status_msg.edit_text(f"❌ خطأ: {str(e)[:50]}")
+            await status_msg.edit_text(f"❌ حدث خطأ في النشر: {str(e)[:100]}")
     
     async def check_subscription(self, user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-        """التحقق من اشتراك المستخدم"""
+        """التحقق من اشتراك المستخدم في القناة الإجبارية"""
         try:
             member = await context.bot.get_chat_member(
                 chat_id=FORCE_CHANNEL,
@@ -379,7 +460,7 @@ class SeriesBot:
             )
             return member.status in ['member', 'administrator', 'creator']
         except Exception as e:
-            logger.error(f"خطأ في التحقق: {e}")
+            logger.error(f"خطأ في التحقق من الاشتراك: {e}")
             return False
     
     async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -388,23 +469,27 @@ class SeriesBot:
         await query.answer()
         
         user_id = query.from_user.id
+        data = query.data
         
-        # التحقق من الاشتراك
-        if not await self.check_subscription(user_id, context):
+        # التحقق من الاشتراك الإجباري
+        is_subscribed = await self.check_subscription(user_id, context)
+        
+        if not is_subscribed:
+            # عرض زر الاشتراك
             keyboard = [[
                 InlineKeyboardButton("🔔 اشترك في القناة", url=f"https://t.me/+7AC_HNR8QFI5OWY0")
             ]]
             await query.edit_message_text(
                 "⚠️ *عذراً، يجب الاشتراك في القناة أولاً*\n\n"
-                "للتمكن من مشاهدة الحلقات، يرجى الاشتراك ثم الضغط على الزر مجدداً.",
+                "للتمكن من مشاهدة الحلقات، يرجى الاشتراك في القناة ثم الضغط على الزر مجدداً.",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode=ParseMode.MARKDOWN
             )
             return
         
-        # معالجة طلب المشاهدة
-        if query.data.startswith("watch_"):
-            episode_id = int(query.data.split("_")[1])
+        # معالجة البيانات
+        if data.startswith("watch_"):
+            episode_id = int(data.split("_")[1])
             
             with get_db() as db:
                 episode = db.query(Episode).filter(Episode.id == episode_id).first()
@@ -422,11 +507,12 @@ class SeriesBot:
                     await query.edit_message_text(
                         f"✅ *تم إرسال الحلقة*\n\n"
                         f"🎬 {episode.series_name}\n"
-                        f"📺 الحلقة {episode.episode_number}",
+                        f"📺 الحلقة {episode.episode_number}\n"
+                        f"⚡ {episode.quality}",
                         parse_mode=ParseMode.MARKDOWN
                     )
                 else:
-                    await query.edit_message_text("❌ عذراً، الحلقة غير متوفرة")
+                    await query.edit_message_text("❌ عذراً، لم نتمكن من العثور على الحلقة")
     
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """معالج الأخطاء"""
@@ -463,11 +549,13 @@ class SeriesBot:
             # معالج الأخطاء
             self.application.add_error_handler(self.error_handler)
             
+            # رسالة بدء التشغيل
             logger.info("✅ البوت يعمل بنجاح!")
-            logger.info(f"📊 قناة النشر: {TARGET_CHANNEL}")
+            logger.info(f"📊 القناة المصدر: {SOURCE_CHANNEL}")
+            logger.info(f"📤 قناة النشر: {TARGET_CHANNEL}")
             logger.info(f"🔔 قناة الاشتراك: {FORCE_CHANNEL}")
             
-            # تشغيل البوت
+            # بدء البوت
             self.application.run_polling(
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=True,
@@ -475,19 +563,22 @@ class SeriesBot:
             )
             
         except Exception as e:
-            logger.error(f"❌ خطأ في التشغيل: {e}")
+            logger.error(f"❌ فشل تشغيل البوت: {e}")
             raise e
 
-# ======================= التشغيل =======================
+# ======================= نقطة البداية =======================
 
 if __name__ == "__main__":
-    print("=" * 50)
-    print("🚀 بوت نشر المسلسلات - جاهز للتشغيل")
-    print("=" * 50)
+    print("=" * 60)
+    print("🚀 بوت نشر المسلسلات - النسخة النهائية")
+    print("=" * 60)
     print("📌 طريقة الاستخدام:")
     print("1️⃣ أعد توجيه أي فيديو إلى البوت")
     print("2️⃣ استخدم /post لنشر الحلقات")
-    print("=" * 50)
+    print("3️⃣ استخدم /stats للإحصائيات")
+    print("4️⃣ استخدم /help للمساعدة")
+    print("=" * 60)
     
+    # إنشاء وتشغيل البوت
     bot = SeriesBot()
     bot.run()
