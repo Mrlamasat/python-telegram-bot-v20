@@ -55,10 +55,8 @@ def obfuscate_visual(text):
 
 def extract_info(caption):
     if not caption: return "مسلسل غير معروف", "1"
-    # استخراج أول رقم يظهر في الوصف ليكون رقم الحلقة
     ep_match = re.search(r'(\d+)', convert_ar_no(caption))
     ep_num = ep_match.group(1) if ep_match else "1"
-    # تنظيف العنوان من كلمة حلقة ورقمها
     title = re.sub(r'(الحلقة|حلقة)?\s*\d+', '', caption).strip()
     return title, ep_num
 
@@ -78,7 +76,7 @@ async def get_episodes_markup(title, current_v_id):
     buttons.append([InlineKeyboardButton("🔍 بحث آخر", callback_data="start_search")])
     return buttons
 
-# ===== 4. معالج الأوامر (له الأولوية القصوى) =====
+# ===== 4. معالج الأوامر (الأولوية القصوى) =====
 @app.on_message(filters.command(["start", "clear", "del", "stats"]))
 async def commands_handler(client, message):
     cmd = message.command[0]
@@ -98,42 +96,45 @@ async def commands_handler(client, message):
         
         v_id = message.command[1]
         try:
-            # تحديث ذكي من المصدر
             source_msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
-            if not source_msg or source_msg.empty:
-                return await message.reply_text("❌ الملف غير موجود.")
+            if not source_msg or source_msg.empty or not (source_msg.video or source_msg.document):
+                return await message.reply_text("❌ الملف غير موجود أو فارغ في المصدر.")
             
             title, ep = extract_info(source_msg.caption)
             db_query("""INSERT INTO videos (v_id, title, ep_num, status, views) VALUES (%s, %s, %s, 'posted', 1)
                         ON CONFLICT (v_id) DO UPDATE SET title=EXCLUDED.title, ep_num=EXCLUDED.ep_num, views=videos.views+1""", 
                      (v_id, title, ep), fetch=False)
-        except:
+        except Exception as e:
             res = db_query("SELECT title, ep_num FROM videos WHERE v_id=%s", (v_id,))
-            if not res: return await message.reply_text("❌ خطأ في جلب البيانات.")
+            if not res: return await message.reply_text(f"❌ خطأ: {e}")
             title, ep = res[0]
 
-        # عرض الحلقة
-        member = await client.get_chat_member(FORCE_SUB_CHANNEL, message.from_user.id)
-        if member.status in ["left", "kicked"] and message.from_user.id != ADMIN_ID:
-            return await message.reply_text("⚠️ اشترك أولاً لمشاهدة الحلقة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 انضمام", url=FORCE_SUB_LINK)]]))
+        # فحص الاشتراك
+        try:
+            member = await client.get_chat_member(FORCE_SUB_CHANNEL, message.from_user.id)
+            if member.status in ["left", "kicked"] and message.from_user.id != ADMIN_ID:
+                return await message.reply_text("⚠️ اشترك أولاً لمشاهدة الحلقة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 انضمام", url=FORCE_SUB_LINK)]]))
+        except: pass
         
         btns = await get_episodes_markup(title, v_id)
         await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), 
                                  caption=f"<b>📺 {obfuscate_visual(title)}</b>\n<b>🎞️ حلقة رقم: {ep}</b>", 
                                  reply_markup=InlineKeyboardMarkup(btns))
 
-# ===== 5. معالج البحث (يعمل فقط إذا لم يكن النص أمراً) =====
-@app.on_message(filters.private & filters.text)
+# ===== 5. معالج البحث (تم تعديل الفلتر ليتجاهل الأوامر) =====
+@app.on_message(filters.private & filters.text & ~filters.command(["start", "clear", "del", "stats"]))
 async def search_handler(client, message):
-    if message.text.startswith("/"): return # تجاهل الأوامر هنا
+    # حماية إضافية: إذا بدأ النص بـ / ننهي الدالة فوراً
+    if message.text.startswith("/"): return 
     
     query = normalize_text(message.text)
+    if not query: return
+    
     all_titles = [r[0] for r in db_query("SELECT DISTINCT title FROM videos WHERE status='posted'") or []]
     matches = [t for t in all_titles if query in normalize_text(t)]
 
     if matches:
         title = matches[0]
-        # جلب أول حلقة لهذا المسلسل لعرضها كمدخل للمسلسل
         res = db_query("SELECT v_id FROM videos WHERE title=%s ORDER BY CAST(ep_num AS INTEGER) ASC LIMIT 1", (title,))
         bot = await client.get_me()
         markup = InlineKeyboardMarkup([[InlineKeyboardButton(f"🎬 عرض {title}", url=f"https://t.me/{bot.username}?start={res[0][0] or ''}")]])
@@ -141,21 +142,12 @@ async def search_handler(client, message):
     else:
         await message.reply_text("❌ لم يتم العثور على نتائج. تأكد من كتابة الاسم صحيحاً.")
 
-# ===== 6. نظام النشر الكلاسيكي (كما هو مع تحسينات) =====
+# ===== 6. نظام الاستلام من المصدر =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document))
 async def auto_receive(client, message):
     v_id = str(message.id)
     db_query("INSERT INTO videos (v_id, status) VALUES (%s, 'waiting') ON CONFLICT (v_id) DO NOTHING", (v_id,), fetch=False)
-    await message.reply_text(f"✅ استلمت الفيديو {v_id}. أرسل البوستر الآن.")
-
-@app.on_message(filters.chat(SOURCE_CHANNEL) & filters.photo)
-async def auto_poster(client, message):
-    res = db_query("SELECT v_id FROM videos WHERE status='waiting' ORDER BY v_id DESC LIMIT 1")
-    if not res: return
-    v_id = res[0][0]
-    title, _ = extract_info(message.caption)
-    db_query("UPDATE videos SET title=%s, poster_id=%s, status='posted' WHERE v_id=%s", (title, message.photo.file_id, v_id), fetch=False)
-    await message.reply_text(f"✅ تم الربط بـ: {title}. سيتم التحديث تلقائياً عند طلب الحلقة.")
+    await message.reply_text(f"✅ تم استلام الفيديو آيدي: {v_id}")
 
 if __name__ == "__main__":
     app.run()
