@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-بوت تليجرام لنشر المسلسلات - نسخة Railway
+بوت تليجرام لنشر المسلسلات - نسخة Railway (مصححة)
 """
 
 import os
@@ -25,11 +25,11 @@ from telegram.constants import ParseMode
 # SQLAlchemy لقاعدة البيانات
 from sqlalchemy import create_engine, Column, Integer, String, BigInteger, Text, Boolean, DateTime
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy.orm import sessionmaker
 
 # ======================= الإعدادات =======================
 
-# توكن البوت - يفضل وضعه في متغير بيئي
+# توكن البوت
 BOT_TOKEN = os.getenv('BOT_TOKEN', '8579897728:AAF_jh9HnSNdHfkVhrjVeeagsQmYh6Jfo')
 
 # معرفات القنوات
@@ -37,16 +37,14 @@ SOURCE_CHANNEL = -1003547072209      # القناة المصدر
 TARGET_CHANNEL = -1003554018307      # قناة النشر
 FORCE_CHANNEL = -1003894735143       # قناة الاشتراك الإجباري
 
-# رابط قاعدة البيانات من Railway
+# رابط قاعدة البيانات
 DATABASE_URL = os.getenv('DATABASE_URL', '')
 
 # إعداد التسجيل
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
 
@@ -60,20 +58,13 @@ if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
 engine = create_engine(
     DATABASE_URL if DATABASE_URL else 'sqlite:///series_bot.db',
     echo=False,
-    pool_pre_ping=True,
-    pool_recycle=3600
+    pool_pre_ping=True
 )
 
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine
-)
-
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 class Episode(Base):
-    """جدول الحلقات"""
     __tablename__ = 'episodes'
     
     id = Column(Integer, primary_key=True, index=True)
@@ -88,10 +79,8 @@ class Episode(Base):
     caption = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     is_posted = Column(Boolean, default=False)
-    posted_message_id = Column(BigInteger, nullable=True)
 
 class User(Base):
-    """جدول المستخدمين"""
     __tablename__ = 'users'
     
     id = Column(Integer, primary_key=True, index=True)
@@ -99,14 +88,12 @@ class User(Base):
     username = Column(String(255), nullable=True)
     first_name = Column(String(255))
     joined_at = Column(DateTime, default=datetime.utcnow)
-    last_used = Column(DateTime, default=datetime.utcnow)
 
 # إنشاء الجداول
 Base.metadata.create_all(bind=engine)
 
 @contextmanager
 def get_db():
-    """الحصول على جلسة قاعدة البيانات"""
     db = SessionLocal()
     try:
         yield db
@@ -126,84 +113,63 @@ class SeriesBot:
         logger.info("✅ تم تهيئة البوت")
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """معالج أمر /start"""
         user = update.effective_user
         
         try:
             with get_db() as db:
-                existing_user = db.query(User).filter(User.user_id == user.id).first()
-                if not existing_user:
-                    new_user = User(
+                if not db.query(User).filter(User.user_id == user.id).first():
+                    db.add(User(
                         user_id=user.id,
                         username=user.username,
                         first_name=user.first_name or "مستخدم"
-                    )
-                    db.add(new_user)
-                    logger.info(f"👤 مستخدم جديد: {user.id}")
+                    ))
         except Exception as e:
             logger.error(f"خطأ في حفظ المستخدم: {e}")
         
-        welcome_text = (
+        await update.message.reply_text(
             f"🎬 *مرحباً بك {user.first_name or 'مستخدم'}!*\n\n"
             "أهلاً في بوت نشر المسلسلات\n\n"
-            "*الأوامر المتاحة:*\n"
+            "*الأوامر:*\n"
             "🔍 /scan - مسح القناة المصدر\n"
-            "📤 /post - نشر الحلقات الجديدة\n"
-            "📊 /stats - عرض الإحصائيات\n"
-            "❓ /help - المساعدة\n\n"
-            "✨ استمتع بالمشاهدة"
-        )
-        
-        await update.message.reply_text(
-            welcome_text,
+            "📤 /post - نشر الحلقات\n"
+            "📊 /stats - الإحصائيات\n"
+            "❓ /help - المساعدة",
             parse_mode=ParseMode.MARKDOWN
         )
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """معالج أمر /help"""
-        help_text = (
+        await update.message.reply_text(
             "📚 *مساعدة البوت*\n\n"
-            "*كيفية الاستخدام:*\n"
             "1️⃣ أضف البوت كمشرف في جميع القنوات\n"
             "2️⃣ استخدم /scan لمسح القناة المصدر\n"
             "3️⃣ استخدم /post لنشر الحلقات\n\n"
-            "*ملاحظات:*\n"
-            "• يجب الاشتراك في القناة الإجبارية للمشاهدة\n"
-            "• البوت يعمل تلقائياً على الساعة"
-        )
-        
-        await update.message.reply_text(
-            help_text,
+            "• يجب الاشتراك في القناة الإجبارية للمشاهدة",
             parse_mode=ParseMode.MARKDOWN
         )
     
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """معالج أمر /stats"""
         try:
             with get_db() as db:
                 total = db.query(Episode).count()
                 posted = db.query(Episode).filter(Episode.is_posted == True).count()
                 users = db.query(User).count()
-                series = db.query(Episode.series_name).distinct().count()
             
-            stats_text = (
-                "📊 *الإحصائيات*\n\n"
+            await update.message.reply_text(
+                f"📊 *الإحصائيات*\n\n"
                 f"📹 الحلقات: {total}\n"
                 f"✅ منشورة: {posted}\n"
                 f"⏳ متبقية: {total - posted}\n"
-                f"🎭 مسلسلات: {series}\n"
-                f"👥 المستخدمين: {users}"
+                f"👥 المستخدمين: {users}",
+                parse_mode=ParseMode.MARKDOWN
             )
-            
-            await update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
         except Exception as e:
             logger.error(f"خطأ في الإحصائيات: {e}")
-            await update.message.reply_text("❌ حدث خطأ في جلب الإحصائيات")
+            await update.message.reply_text("❌ حدث خطأ")
     
     async def scan_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """معالج أمر /scan"""
+        """معالج أمر /scan - استخدام الطريقة الصحيحة لجلب الرسائل"""
         status_msg = await update.message.reply_text(
-            "🔄 *جاري مسح القناة المصدر...*\n\n⏱ قد يستغرق هذا بضع دقائق",
+            "🔄 *جاري مسح القناة المصدر...*\n⏱ قد يستغرق هذا بضع دقائق",
             parse_mode=ParseMode.MARKDOWN
         )
         
@@ -211,57 +177,68 @@ class SeriesBot:
             with get_db() as db:
                 scanned = 0
                 added = 0
-                offset = 0
+                last_message_id = 0
                 
-                while True:
-                    try:
-                        messages = await context.bot.get_chat_history(
-                            chat_id=SOURCE_CHANNEL,
-                            limit=100,
-                            offset_id=offset
-                        )
-                    except Exception as e:
-                        logger.error(f"خطأ في جلب الرسائل: {e}")
-                        await status_msg.edit_text(f"❌ خطأ في الوصول للقناة: {str(e)}")
-                        return
+                # جلب آخر 100 رسالة من القناة
+                try:
+                    # الطريقة الصحيحة: استخدام get_chat مع تحديد آخر الرسائل
+                    messages = []
+                    async for message in context.bot.get_chat_history(
+                        chat_id=SOURCE_CHANNEL,
+                        limit=100
+                    ):
+                        messages.append(message)
                     
-                    if not messages:
-                        break
+                except AttributeError:
+                    # طريقة بديلة إذا لم تعمل get_chat_history
+                    updates = await context.bot.get_updates(
+                        allowed_updates=['message'],
+                        limit=100
+                    )
+                    messages = [u.message for u in updates if u.message and u.message.chat.id == SOURCE_CHANNEL]
+                
+                for message in messages:
+                    scanned += 1
                     
-                    for message in messages:
-                        scanned += 1
+                    if message and message.video:
+                        # التحقق من عدم التكرار
+                        existing = db.query(Episode).filter(
+                            Episode.message_id == message.message_id
+                        ).first()
                         
-                        if message.video:
-                            existing = db.query(Episode).filter(
-                                Episode.message_id == message.message_id
-                            ).first()
+                        if not existing:
+                            # استخراج المعلومات
+                            caption = message.caption or ""
+                            series_name, ep_num, ep_name = self.extract_info(caption)
                             
-                            if not existing:
-                                series_name, ep_num, ep_name = self.extract_info(
-                                    message.caption or ""
+                            # البحث عن الصورة
+                            poster_id = None
+                            if message.photo:
+                                poster_id = message.photo[-1].file_id
+                            
+                            # إنشاء حلقة جديدة
+                            new_ep = Episode(
+                                message_id=message.message_id,
+                                series_name=series_name,
+                                episode_number=ep_num,
+                                episode_name=ep_name,
+                                video_file_id=message.video.file_id,
+                                poster_file_id=poster_id,
+                                quality=self.get_quality(message.video),
+                                duration=message.video.duration or 0,
+                                caption=caption
+                            )
+                            db.add(new_ep)
+                            added += 1
+                            
+                            # تحديث الحالة كل 10 حلقات
+                            if added % 10 == 0:
+                                await status_msg.edit_text(
+                                    f"🔄 *جاري المسح...*\n"
+                                    f"📊 تم فحص: {scanned}\n"
+                                    f"✅ تم العثور: {added}",
+                                    parse_mode=ParseMode.MARKDOWN
                                 )
-                                
-                                poster_id = None
-                                if message.photo:
-                                    poster_id = message.photo[-1].file_id
-                                
-                                new_ep = Episode(
-                                    message_id=message.message_id,
-                                    series_name=series_name,
-                                    episode_number=ep_num,
-                                    episode_name=ep_name,
-                                    video_file_id=message.video.file_id,
-                                    poster_file_id=poster_id,
-                                    quality=self.get_quality(message.video),
-                                    duration=message.video.duration or 0,
-                                    caption=message.caption or ""
-                                )
-                                db.add(new_ep)
-                                added += 1
-                        
-                        offset = message.message_id
-                    
-                    await asyncio.sleep(1)
                 
                 db.commit()
                 
@@ -274,14 +251,17 @@ class SeriesBot:
             
         except Exception as e:
             logger.error(f"خطأ في المسح: {e}")
-            await status_msg.edit_text(f"❌ حدث خطأ: {str(e)}")
+            await status_msg.edit_text(
+                f"❌ خطأ: {str(e)[:100]}",
+                parse_mode=ParseMode.MARKDOWN
+            )
     
     def extract_info(self, caption: str) -> Tuple[str, int, str]:
         """استخراج معلومات الحلقة"""
         if not caption:
             return "مسلسل", 0, "حلقة"
         
-        # أنماط بسيطة للبحث
+        # أنماط للبحث
         patterns = [
             r'(.+?)[\s\-_]+(\d+)[\s\-_]+(.+)',
             r'(.+?)[\s\-_]+الحلقة[\s\-_]*(\d+)',
@@ -314,7 +294,7 @@ class SeriesBot:
         return "HD"
     
     async def post_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """معالج أمر /post"""
+        """نشر الحلقات"""
         status_msg = await update.message.reply_text(
             "🔄 *جاري نشر الحلقات...*",
             parse_mode=ParseMode.MARKDOWN
@@ -334,6 +314,7 @@ class SeriesBot:
                 
                 for ep in episodes:
                     try:
+                        # تحضير النص
                         minutes = ep.duration // 60
                         seconds = ep.duration % 60
                         
@@ -350,21 +331,20 @@ class SeriesBot:
                             InlineKeyboardButton("▶️ مشاهدة", callback_data=f"watch_{ep.id}")
                         ]]
                         
-                        reply = InlineKeyboardMarkup(keyboard)
-                        
+                        # إرسال مع أو بدون صورة
                         if ep.poster_file_id:
                             await context.bot.send_photo(
                                 chat_id=TARGET_CHANNEL,
                                 photo=ep.poster_file_id,
                                 caption=text,
-                                reply_markup=reply,
+                                reply_markup=InlineKeyboardMarkup(keyboard),
                                 parse_mode=ParseMode.MARKDOWN
                             )
                         else:
                             await context.bot.send_message(
                                 chat_id=TARGET_CHANNEL,
                                 text=text,
-                                reply_markup=reply,
+                                reply_markup=InlineKeyboardMarkup(keyboard),
                                 parse_mode=ParseMode.MARKDOWN
                             )
                         
@@ -383,7 +363,7 @@ class SeriesBot:
             logger.error(f"خطأ في النشر: {e}")
             await status_msg.edit_text(f"❌ خطأ: {str(e)}")
     
-    async def check_sub(self, user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    async def check_subscription(self, user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
         """التحقق من الاشتراك"""
         try:
             member = await context.bot.get_chat_member(
@@ -391,7 +371,8 @@ class SeriesBot:
                 user_id=user_id
             )
             return member.status in ['member', 'administrator', 'creator']
-        except:
+        except Exception as e:
+            logger.error(f"خطأ في التحقق: {e}")
             return False
     
     async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -401,19 +382,20 @@ class SeriesBot:
         
         user_id = query.from_user.id
         
-        if not await self.check_sub(user_id, context):
+        # التحقق من الاشتراك
+        if not await self.check_subscription(user_id, context):
             keyboard = [[
                 InlineKeyboardButton("🔔 اشترك", url="https://t.me/+7AC_HNR8QFI5OWY0")
             ]]
             await query.edit_message_text(
-                "⚠️ اشترك أولاً",
+                "⚠️ يجب الاشتراك أولاً",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return
         
-        data = query.data
-        if data.startswith("watch_"):
-            ep_id = int(data.split("_")[1])
+        # معالجة طلب المشاهدة
+        if query.data.startswith("watch_"):
+            ep_id = int(query.data.split("_")[1])
             
             with get_db() as db:
                 ep = db.query(Episode).filter(Episode.id == ep_id).first()
@@ -425,13 +407,11 @@ class SeriesBot:
                         caption=f"🎬 {ep.series_name} - حلقة {ep.episode_number}",
                         supports_streaming=True
                     )
-                    
                     await query.edit_message_text("✅ تم الإرسال")
                 else:
-                    await query.edit_message_text("❌ غير متوفرة")
+                    await query.edit_message_text("❌ الحلقة غير متوفرة")
     
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """معالج الأخطاء"""
         logger.error(f"خطأ: {context.error}")
     
     def run(self):
@@ -449,10 +429,6 @@ class SeriesBot:
             self.application.add_error_handler(self.error_handler)
             
             logger.info("✅ البوت يعمل!")
-            logger.info(f"📊 SOURCE: {SOURCE_CHANNEL}")
-            logger.info(f"📤 TARGET: {TARGET_CHANNEL}")
-            logger.info(f"🔔 FORCE: {FORCE_CHANNEL}")
-            
             self.application.run_polling(allowed_updates=Update.ALL_TYPES)
             
         except Exception as e:
