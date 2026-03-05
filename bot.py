@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-بوت تليجرام لنشر المسلسلات - نسخة نهائية مع إصلاح مشكلة قاعدة البيانات
+بوت تليجرام لنشر المسلسلات - النسخة النهائية مع حل جميع المشاكل
 تم التطوير للنشر على Railway.app
 """
 
@@ -11,6 +11,7 @@ import sys
 import logging
 import asyncio
 import re
+import time
 from datetime import datetime
 from typing import Optional, Tuple, List, Dict
 from contextlib import contextmanager
@@ -212,7 +213,6 @@ def get_db():
     except OperationalError as e:
         db.rollback()
         logger.error(f"❌ خطأ في الاتصال بقاعدة البيانات: {e}")
-        # محاولة إعادة الاتصال
         try:
             db.close()
         except:
@@ -232,7 +232,7 @@ class SeriesBot:
     def __init__(self):
         self.application = None
         self.start_time = datetime.utcnow()
-        logger.info("✅ تم تهيئة البوت - الإصدار النهائي مع إصلاح قاعدة البيانات")
+        logger.info("✅ تم تهيئة البوت - الإصدار النهائي مع جميع الإصلاحات")
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """معالج أمر /start"""
@@ -326,7 +326,7 @@ class SeriesBot:
             await update.message.reply_text("❌ حدث خطأ في جلب الإحصائيات")
     
     async def handle_forwarded_video(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """معالج الفيديوهات المعاد توجيهها"""
+        """معالج الفيديوهات المعاد توجيهها - نسخة محسنة"""
         message = update.message
         
         if not message.video:
@@ -344,9 +344,9 @@ class SeriesBot:
                     await message.reply_text("✅ هذه الحلقة موجودة مسبقاً في قاعدة البيانات")
                     return
                 
-                # استخراج المعلومات
+                # استخراج المعلومات بشكل محسن
                 caption = message.caption or ""
-                series_name, ep_num, ep_name = self.extract_info(caption)
+                series_name, episode_number, episode_name = self.extract_info_enhanced(caption)
                 
                 # البحث عن الصورة المصغرة
                 poster_id = None
@@ -357,8 +357,8 @@ class SeriesBot:
                 new_ep = Episode(
                     message_id=message.message_id,
                     series_name=series_name,
-                    episode_number=ep_num,
-                    episode_name=ep_name,
+                    episode_number=episode_number,
+                    episode_name=episode_name,
                     video_file_id=message.video.file_id,
                     poster_file_id=poster_id,
                     quality=self.get_quality(message.video),
@@ -376,63 +376,160 @@ class SeriesBot:
                 await message.reply_text(
                     f"✅ *تم حفظ الحلقة بنجاح!*\n\n"
                     f"🎬 *المسلسل:* {series_name}\n"
-                    f"📺 *رقم الحلقة:* {ep_num}\n"
-                    f"📝 *الاسم:* {ep_name}\n"
+                    f"📺 *رقم الحلقة:* {episode_number}\n"
+                    f"📝 *الاسم:* {episode_name}\n"
                     f"⏱ *المدة:* {minutes}:{seconds:02d}\n"
                     f"⚡ *الجودة:* {self.get_quality(message.video)}\n\n"
                     f"استخدم /post لنشر الحلقة",
                     parse_mode=ParseMode.MARKDOWN
                 )
                 
-                logger.info(f"✅ تم حفظ حلقة: {series_name} - حلقة {ep_num}")
+                logger.info(f"✅ تم حفظ حلقة: {series_name} - حلقة {episode_number}")
                 
         except Exception as e:
             logger.error(f"خطأ في حفظ الفيديو: {e}")
             await message.reply_text("❌ حدث خطأ في حفظ الفيديو")
     
-    def extract_info(self, caption: str) -> Tuple[str, int, str]:
-        """استخراج معلومات الحلقة - نسخة محسنة"""
+    def extract_info_enhanced(self, caption: str) -> Tuple[str, int, str]:
+        """
+        دالة محسنة لاستخراج معلومات الحلقة
+        تدعم جميع الصيغ العربية والإنجليزية
+        """
         if not caption:
             return "مسلسل", 0, "حلقة"
         
+        # تنظيف النص
         caption = caption.strip()
+        original_caption = caption
+        logger.info(f"📝 معالجة النص: {caption}")
         
-        # أنماط بحث متعددة
+        # قائمة بكل الأنماط الممكنة
         patterns = [
-            # نمط: اسم المسلسل - الحلقة 10 - اسم الحلقة
-            r'(.+?)[\s\-_]+(?:الحلقة|episode|ح)[\s\-_#]*(\d+)[\s\-_]+(.+)',
-            # نمط: اسم المسلسل - 10 - اسم الحلقة
-            r'(.+?)[\s\-_]+(\d+)[\s\-_]+(.+)',
-            # نمط: اسم المسلسل - الحلقة 10
-            r'(.+?)[\s\-_]+(?:الحلقة|episode|ح)[\s\-_#]*(\d+)',
-            # نمط: اسم المسلسل #10
-            r'(.+?)[\s\-_]*#(\d+)',
+            # النمط: اسم المسلسل - الحلقة 10 - اسم الحلقة
+            {
+                'pattern': r'(.+?)[\s\-_]+(?:الحلقة|episode|حلقة|Ep)[\s\-_#]*(\d+)[\s\-_]+(.+)',
+                'description': 'اسم - الحلقة رقم - اسم'
+            },
+            # النمط: اسم المسلسل - 10 - اسم الحلقة
+            {
+                'pattern': r'(.+?)[\s\-_]+(\d+)[\s\-_]+(.+)',
+                'description': 'اسم - رقم - اسم'
+            },
+            # النمط: الحلقة 10 - اسم المسلسل - اسم الحلقة
+            {
+                'pattern': r'(?:الحلقة|episode|حلقة|Ep)[\s\-_#]*(\d+)[\s\-_]+(.+?)[\s\-_]+(.+)',
+                'description': 'الحلقة رقم - اسم - اسم'
+            },
+            # النمط: اسم المسلسل - الحلقة 10
+            {
+                'pattern': r'(.+?)[\s\-_]+(?:الحلقة|episode|حلقة|Ep)[\s\-_#]*(\d+)',
+                'description': 'اسم - الحلقة رقم'
+            },
+            # النمط: الحلقة 10 - اسم المسلسل
+            {
+                'pattern': r'(?:الحلقة|episode|حلقة|Ep)[\s\-_#]*(\d+)[\s\-_]+(.+)',
+                'description': 'الحلقة رقم - اسم'
+            },
+            # النمط: اسم المسلسل 10
+            {
+                'pattern': r'(.+?)[\s\-_]*(\d+)',
+                'description': 'اسم رقم'
+            },
+            # النمط: اسم المسلسل #10
+            {
+                'pattern': r'(.+?)[\s\-_]*#(\d+)',
+                'description': 'اسم #رقم'
+            },
         ]
         
-        for pattern in patterns:
+        # تجربة كل الأنماط
+        for pattern_info in patterns:
+            pattern = pattern_info['pattern']
             match = re.search(pattern, caption, re.IGNORECASE)
             if match:
                 groups = match.groups()
-                series = groups[0].strip()
+                logger.info(f"✅ تم العثور على نمط: {pattern_info['description']}")
+                logger.info(f"📊 المجموعات: {groups}")
                 
-                try:
-                    ep_num = int(groups[1])
-                except (ValueError, IndexError):
+                if len(groups) == 3:
+                    # ثلاث مجموعات: اسم، رقم، اسم
+                    series = groups[0].strip()
+                    try:
+                        ep_num = int(groups[1])
+                    except:
+                        ep_num = 0
+                    ep_name = groups[2].strip()
+                    
+                elif len(groups) == 2:
+                    # مجموعتين: يمكن أن تكون (اسم + رقم) أو (رقم + اسم)
+                    first, second = groups
+                    
+                    # التحقق مما إذا كان الأول رقماً
+                    if first.isdigit():
+                        ep_num = int(first)
+                        # البحث عن اسم المسلسل في النص الكامل
+                        series = re.sub(r'\d+', '', caption).strip()
+                        series = re.sub(r'[\-_#]', ' ', series).strip()
+                        series = re.sub(r'\s+', ' ', series)
+                        ep_name = second.strip() if second else f"الحلقة {ep_num}"
+                    
+                    # التحقق مما إذا كان الثاني رقماً
+                    elif second.isdigit():
+                        ep_num = int(second)
+                        series = first.strip()
+                        ep_name = f"الحلقة {ep_num}"
+                    
+                    else:
+                        # إذا لم يكن أي منهما رقماً، نبحث عن أرقام في النص
+                        series = first.strip() + " " + second.strip()
+                        numbers = re.findall(r'\d+', series)
+                        if numbers:
+                            ep_num = int(numbers[0])
+                            # إزالة الرقم من النص
+                            series = re.sub(r'\d+', '', series).strip()
+                            series = re.sub(r'[\-_#]', ' ', series).strip()
+                            series = re.sub(r'\s+', ' ', series)
+                            ep_name = series
+                        else:
+                            ep_num = 0
+                            ep_name = series
+                else:
+                    # حالات أخرى نادرة
+                    series = groups[0].strip() if groups else caption
                     ep_num = 0
-                
-                ep_name = groups[2].strip() if len(groups) > 2 else f"حلقة {ep_num}"
+                    ep_name = series
                 
                 # تنظيف النتائج
                 series = re.sub(r'[\-_#]', ' ', series).strip()
                 series = re.sub(r'\s+', ' ', series)
+                series = re.sub(r'(الحلقة|episode|حلقة|Ep)$', '', series, flags=re.IGNORECASE).strip()
                 
+                ep_name = re.sub(r'[\-_#]', ' ', ep_name).strip()
+                ep_name = re.sub(r'\s+', ' ', ep_name)
+                
+                # إذا كان اسم الحلقة فارغاً، نضع اسماً افتراضياً
+                if not ep_name or ep_name.isspace():
+                    ep_name = f"الحلقة {ep_num}"
+                
+                logger.info(f"🎯 النتيجة النهائية: المسلسل='{series}', رقم={ep_num}, اسم='{ep_name}'")
                 return series, ep_num, ep_name
         
-        # إذا لم يتم العثور على نمط، نبحث عن أرقام
+        # إذا لم يتم العثور على نمط، نبحث عن أي أرقام في النص
         numbers = re.findall(r'\d+', caption)
         if numbers:
-            return caption, int(numbers[0]), caption
+            ep_num = int(numbers[0])
+            # نزيل الرقم من النص للحصول على اسم المسلسل
+            series = re.sub(r'\d+', '', caption).strip()
+            series = re.sub(r'[\-_#]', ' ', series).strip()
+            series = re.sub(r'\s+', ' ', series)
+            if not series:
+                series = "مسلسل"
+            
+            logger.info(f"🔢 تم العثور على رقم {ep_num} في النص")
+            return series, ep_num, f"الحلقة {ep_num}"
         
+        # إذا لم نجد أي شيء، نستخدم النص كاملاً
+        logger.info(f"⚠️ لم يتم العثور على نمط، استخدام النص كاملاً: {caption}")
         return caption, 0, caption
     
     def get_quality(self, video) -> str:
@@ -683,13 +780,15 @@ class SeriesBot:
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("🚀 بوت نشر المسلسلات - الإصدار النهائي مع إصلاح قاعدة البيانات")
+    print("🚀 بوت نشر المسلسلات - الإصدار النهائي مع جميع الإصلاحات")
     print("=" * 60)
     print("\n📋 الإصلاحات المطبقة:")
-    print("✅ إصلاح مشكلة العمود id في قاعدة البيانات")
-    print("✅ إضافة دالة تهيئة متقدمة للقاعدة")
-    print("✅ معالجة أخطاء الاتصال بقاعدة البيانات")
-    print("✅ نسخ احتياطي للبيانات عند الحاجة")
+    print("✅ 1. إصلاح مشكلة العمود id في قاعدة البيانات")
+    print("✅ 2. تحسين استخراج أرقام الحلقات من النصوص")
+    print("✅ 3. دعم جميع الصيغ العربية والإنجليزية")
+    print("✅ 4. معالجة أخطاء الاتصال بقاعدة البيانات")
+    print("✅ 5. إضافة نسخ احتياطي للبيانات")
+    print("✅ 6. تحسين التسجيل والمتابعة")
     print("=" * 60)
     print("\n⚡ بدء تشغيل البوت...\n")
     
