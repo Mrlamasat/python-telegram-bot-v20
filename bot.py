@@ -15,11 +15,11 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_ID = 7720165591
 
-# ===== معرفات القنوات =====
+# ===== معرفات القنوات (محدثة) =====
 SOURCE_CHANNEL = -1003547072209
-FORCE_SUB_CHANNEL = -1003554018307
-FORCE_SUB_LINK = "https://t.me/+PyUeOtPN1fs0NDA0"
-PUBLIC_POST_CHANNEL = "@ramadan2206"
+FORCE_SUB_CHANNEL = -1003790915936
+FORCE_SUB_LINK = "https://t.me/+nLtMePUz6lw3YzBk"  # الرابط الجديد
+PUBLIC_POST_CHANNEL = -1003678294148
 
 app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -117,6 +117,9 @@ async def get_episodes_markup(video_id, current_v_id):
     buttons, row = [], []
     bot_info = await app.get_me()
     
+    # ترتيب الحلقات تصاعدياً
+    episodes.sort(key=lambda x: x[1])
+    
     for v_id, ep_num in episodes:
         # علامة على الحلقة الحالية
         label = f"📍 {ep_num}" if str(v_id) == str(current_v_id) else f"{ep_num}"
@@ -141,7 +144,8 @@ async def check_subscription(client, user_id):
     try:
         member = await client.get_chat_member(FORCE_SUB_CHANNEL, user_id)
         return member.status not in ["left", "kicked"]
-    except: 
+    except Exception as e:
+        logging.error(f"❌ Subscription check error: {e}")
         return False
 
 # ===== إرسال الفيديو النهائي للمستخدم =====
@@ -176,9 +180,14 @@ async def send_video_final(client, chat_id, user_id, v_id):
 
     if not is_subscribed:
         cap += "\n\n⚠️ <b>انضم للقناة لمتابعة الحلقات القادمة 👇</b>"
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📥 انضمام", url=FORCE_SUB_LINK)]
-        ] + (btns if btns else []))
+        if btns:
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📥 انضمام", url=FORCE_SUB_LINK)]
+            ] + btns)
+        else:
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📥 انضمام", url=FORCE_SUB_LINK)]
+            ])
     else:
         markup = InlineKeyboardMarkup(btns) if btns else None
 
@@ -270,7 +279,7 @@ async def set_quality(client, cb):
     await cb.message.edit_text(f"✅ الجودة: <b>{q}</b>\nأرسل رقم الحلقة:")
 
 # ===== استقبال رقم الحلقة =====
-@app.on_message(filters.chat(SOURCE_CHANNEL) & filters.text & ~filters.command(["start", "stats"]))
+@app.on_message(filters.chat(SOURCE_CHANNEL) & filters.text & ~filters.command(["start", "stats", "scan", "cleardb", "series"]))
 async def receive_ep_num(client, message):
     if not message.text.isdigit(): 
         return
@@ -362,18 +371,26 @@ async def scan_command(client, message):
                         INSERT INTO videos (v_id, title, ep_num, quality, duration, poster_id, poster_caption, status)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, 'posted')
                         ON CONFLICT (v_id) DO UPDATE SET
-                            title=EXCLUDED.title, ep_num=EXCLUDED.ep_num,
-                            quality=EXCLUDED.quality, poster_id=EXCLUDED.poster_id
+                            title=EXCLUDED.title, 
+                            ep_num=EXCLUDED.ep_num,
+                            quality=EXCLUDED.quality, 
+                            poster_id=EXCLUDED.poster_id,
+                            poster_caption=EXCLUDED.poster_caption
                     """, (str(m.id), poster['title'], ep, q, dur, poster['file_id'], poster['caption'][:200]), fetch=False)
             
             await asyncio.sleep(0.1)
         
-        await msg.edit_text(f"✅ تم المسح!\n📹 فيديوهات: {stats['videos']}\n🖼️ بوسترات: {stats['posters']}")
+        await msg.edit_text(
+            f"✅ <b>تم المسح بنجاح!</b>\n\n"
+            f"📹 فيديوهات: {stats['videos']}\n"
+            f"🖼️ بوسترات: {stats['posters']}",
+            parse_mode=ParseMode.HTML
+        )
     
     except Exception as e:
         await msg.edit_text(f"❌ خطأ: {e}")
 
-# ===== أمر المسح =====
+# ===== أمر مسح قاعدة البيانات =====
 @app.on_message(filters.command("cleardb") & filters.private)
 async def clear_db(client, message):
     if message.from_user.id != ADMIN_ID:
