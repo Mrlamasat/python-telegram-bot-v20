@@ -4,11 +4,22 @@ import logging
 import re
 import asyncio
 import time
+import random
 from html import escape
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait
+
+# ===== إعداد السجلات =====
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot.log'),
+        logging.StreamHandler()
+    ]
+)
 
 # ===== الإعدادات الأساسية =====
 API_ID = int(os.environ.get("API_ID"))
@@ -17,13 +28,52 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_ID = 7720165591
 
-# ===== معرفات القنوات (محدثة) =====
+# ===== معرفات القنوات =====
 SOURCE_CHANNEL = -1003547072209
 FORCE_SUB_CHANNEL = -1003790915936
 FORCE_SUB_LINK = "https://t.me/+nLtMePUz6lw3YzBk"
 PUBLIC_POST_CHANNEL = -1003678294148
 
-app = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# ===== تأخير ذكي قبل بدء التشغيل =====
+def smart_delay():
+    """تأخير ذكي لتجنب FloodWait عند بدء التشغيل"""
+    # التحقق من وجود ملف آخر تشغيل
+    last_run_file = "last_run.txt"
+    last_run = 0
+    
+    try:
+        if os.path.exists(last_run_file):
+            with open(last_run_file, 'r') as f:
+                last_run = float(f.read().strip())
+    except:
+        pass
+    
+    current_time = time.time()
+    time_since_last = current_time - last_run
+    
+    # إذا كان آخر تشغيل منذ أقل من 60 ثانية
+    if time_since_last < 60:
+        delay = random.randint(30, 60)
+        print(f"⚠️ آخر تشغيل كان منذ {time_since_last:.0f} ثانية")
+        print(f"⏳ انتظار {delay} ثانية قبل بدء التشغيل...")
+        time.sleep(delay)
+    
+    # حفظ وقت التشغيل الحالي
+    with open(last_run_file, 'w') as f:
+        f.write(str(current_time))
+
+# تطبيق التأخير
+smart_delay()
+
+# ===== إنشاء العميل مع إعدادات مناسبة =====
+app = Client(
+    "bot", 
+    api_id=API_ID, 
+    api_hash=API_HASH, 
+    bot_token=BOT_TOKEN,
+    sleep_threshold=30,  # زيادة حد النوم
+    max_concurrent_transmissions=1  # تقليل التزامن
+)
 
 # ===== قاعدة البيانات =====
 def db_query(query, params=(), fetch=True):
@@ -50,7 +100,6 @@ def obfuscate_visual(text):
 
 def clean_series_title(text):
     if not text: return "مسلسل"
-    # إزالة أرقام الحلقات والروابط
     text = re.sub(r'(الحلقة|حلقة|#)?\s*\d+', '', text, flags=re.IGNORECASE)
     text = re.sub(r'https?://\S+', '', text)
     text = re.sub(r'الجودة:.*|المدة:.*', '', text, flags=re.IGNORECASE)
@@ -74,9 +123,7 @@ def extract_quality(text):
 
 # ===== جلب الحلقات المرتبطة بنفس البوستر =====
 async def get_episodes_by_poster(video_id):
-    """الحصول على جميع الحلقات التي تشارك نفس البوستر"""
     try:
-        # جلب معلومات الفيديو الحالي
         video_data = db_query("""
             SELECT title, poster_id, poster_caption FROM videos 
             WHERE v_id = %s
@@ -87,7 +134,6 @@ async def get_episodes_by_poster(video_id):
         
         title, poster_id, poster_caption = video_data[0]
         
-        # إذا كان هناك بوستر، نبحث بنفس البوستر
         if poster_id and poster_id != '':
             episodes = db_query("""
                 SELECT v_id, ep_num FROM videos 
@@ -95,7 +141,6 @@ async def get_episodes_by_poster(video_id):
                 ORDER BY ep_num ASC
             """, (poster_id,))
         else:
-            # إذا لم نجد بوستر، نبحث بنفس العنوان
             episodes = db_query("""
                 SELECT v_id, ep_num FROM videos 
                 WHERE title = %s AND status = 'posted'
@@ -110,29 +155,21 @@ async def get_episodes_by_poster(video_id):
 
 # ===== إنشاء أزرار الحلقات =====
 async def get_episodes_markup(video_id, current_v_id):
-    """إنشاء أزرار الحلقات المرتبطة بنفس البوستر"""
     episodes = await get_episodes_by_poster(video_id)
     
     if not episodes or len(episodes) <= 1:
-        return []  # لا نعرض أزرار إذا كانت هناك حلقة واحدة
+        return []
     
     buttons, row = [], []
     bot_info = await app.get_me()
     
-    # ترتيب الحلقات تصاعدياً
     episodes.sort(key=lambda x: x[1])
     
     for v_id, ep_num in episodes:
-        # علامة على الحلقة الحالية
         label = f"📍 {ep_num}" if str(v_id) == str(current_v_id) else f"{ep_num}"
-        
-        btn = InlineKeyboardButton(
-            label, 
-            url=f"https://t.me/{bot_info.username}?start={v_id}"
-        )
+        btn = InlineKeyboardButton(label, url=f"https://t.me/{bot_info.username}?start={v_id}")
         row.append(btn)
         
-        # 5 أزرار في كل صف
         if len(row) == 5:
             buttons.append(row)
             row = []
@@ -146,13 +183,11 @@ async def check_subscription(client, user_id):
     try:
         member = await client.get_chat_member(FORCE_SUB_CHANNEL, user_id)
         return member.status not in ["left", "kicked"]
-    except Exception as e:
-        logging.error(f"❌ Subscription check error: {e}")
+    except:
         return False
 
-# ===== إرسال الفيديو النهائي للمستخدم =====
+# ===== إرسال الفيديو للمستخدم =====
 async def send_video_final(client, chat_id, user_id, v_id):
-    # جلب بيانات الحلقة
     video_data = db_query("""
         SELECT title, ep_num, quality, duration, poster_id 
         FROM videos WHERE v_id = %s
@@ -164,10 +199,8 @@ async def send_video_final(client, chat_id, user_id, v_id):
     
     title, ep, q, dur, poster_id = video_data[0]
     
-    # زيادة عداد المشاهدات
     db_query("UPDATE videos SET views = COALESCE(views, 0) + 1 WHERE v_id = %s", (v_id,), fetch=False)
     
-    # الحصول على أزرار الحلقات
     btns = await get_episodes_markup(v_id, v_id)
     is_subscribed = await check_subscription(client, user_id)
     
@@ -181,7 +214,7 @@ async def send_video_final(client, chat_id, user_id, v_id):
     cap = f"{info_text}\n\n🍿 <b>مشاهدة ممتعة!</b>"
 
     if not is_subscribed:
-        cap += "\n\n⚠️ <b>انضم للقناة لمتابعة الحلقات القادمة 👇</b>"
+        cap += "\n\n⚠️ <b>انضم للقناة لمتابعة الحلقات 👇</b>"
         if btns:
             markup = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📥 انضمام", url=FORCE_SUB_LINK)]
@@ -202,11 +235,16 @@ async def send_video_final(client, chat_id, user_id, v_id):
             parse_mode=ParseMode.HTML, 
             reply_markup=markup
         )
+    except FloodWait as e:
+        wait_time = e.value
+        logging.warning(f"⚠️ FloodWait في الإرسال: {wait_time} ثانية")
+        await asyncio.sleep(wait_time)
+        await send_video_final(client, chat_id, user_id, v_id)  # إعادة المحاولة
     except Exception as e:
         logging.error(f"❌ Send Error: {e}")
         await client.send_message(chat_id, f"🎬 {safe_title} - حلقة {ep}")
 
-# ===== أمر الإحصائيات =====
+# ===== الأوامر =====
 @app.on_message(filters.command("stats") & filters.private)
 async def get_stats(client, message):
     if message.from_user.id != ADMIN_ID: 
@@ -227,7 +265,7 @@ async def get_stats(client, message):
     
     await message.reply_text(text, parse_mode=ParseMode.HTML)
 
-# ===== استقبال الفيديو من القناة =====
+# ===== استقبال الفيديو =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document | filters.animation))
 async def receive_video(client, message):
     v_id = str(message.id)
@@ -246,7 +284,6 @@ async def receive_video(client, message):
 # ===== استقبال البوستر =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.photo)
 async def receive_poster(client, message):
-    # البحث عن فيديو في انتظار البوستر
     res = db_query("SELECT v_id FROM videos WHERE status='waiting' ORDER BY v_id DESC LIMIT 1")
     if not res: 
         return
@@ -281,7 +318,7 @@ async def set_quality(client, cb):
     await cb.message.edit_text(f"✅ الجودة: <b>{q}</b>\nأرسل رقم الحلقة:")
 
 # ===== استقبال رقم الحلقة =====
-@app.on_message(filters.chat(SOURCE_CHANNEL) & filters.text & ~filters.command(["start", "stats", "scan", "cleardb", "series"]))
+@app.on_message(filters.chat(SOURCE_CHANNEL) & filters.text & ~filters.command(["start", "stats", "scan", "cleardb", "series", "slowscan"]))
 async def receive_ep_num(client, message):
     if not message.text.isdigit(): 
         return
@@ -298,11 +335,9 @@ async def receive_ep_num(client, message):
     v_id, title, p_id, q, dur = res[0]
     ep_num = int(message.text)
     
-    # تحديث قاعدة البيانات
     db_query("UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s", (ep_num, v_id), fetch=False)
     
-    # نشر في القناة العامة
-    b_info = await client.get_me()
+    b_info = await app.get_me()
     safe_t = obfuscate_visual(escape(title))
     
     caption = (
@@ -314,10 +349,7 @@ async def receive_ep_num(client, message):
     )
     
     markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton(
-            "▶️ مشاهدة", 
-            url=f"https://t.me/{b_info.username}?start={v_id}"
-        )
+        InlineKeyboardButton("▶️ مشاهدة", url=f"https://t.me/{b_info.username}?start={v_id}")
     ]])
     
     await client.send_photo(
@@ -330,7 +362,7 @@ async def receive_ep_num(client, message):
     
     await message.reply_text("✅ تم النشر في القناة")
 
-# ===== أمر المسح التلقائي (مُحسّن) =====
+# ===== أمر المسح (مع تأخيرات أكبر) =====
 @app.on_message(filters.command("scan") & filters.private)
 async def scan_command(client, message):
     if message.from_user.id != ADMIN_ID:
@@ -342,84 +374,7 @@ async def scan_command(client, message):
         stats = {'videos': 0, 'posters': 0}
         poster_cache = {}
         
-        # مسح آخر 1000 رسالة فقط (بدلاً من 5000)
-        async for m in client.get_chat_history(SOURCE_CHANNEL, limit=1000):
-            try:
-                if m.photo:
-                    stats['posters'] += 1
-                    title = clean_series_title(m.caption or "")
-                    poster_cache[m.id] = {
-                        'title': title,
-                        'file_id': m.photo.file_id,
-                        'caption': m.caption or ""
-                    }
-                
-                elif m.video or m.document:
-                    stats['videos'] += 1
-                    
-                    # البحث عن البوستر
-                    poster = None
-                    for pid in sorted(poster_cache.keys(), reverse=True):
-                        if pid < m.id:
-                            poster = poster_cache[pid]
-                            break
-                    
-                    if poster:
-                        media = m.video or m.animation
-                        d = media.duration if media and hasattr(media, 'duration') else 0
-                        dur = f"{d//3600:02}:{(d%3600)//60:02}:{d%60:02}"
-                        ep = extract_ep_num(m.caption or "")
-                        q = extract_quality(m.caption or "")
-                        
-                        db_query("""
-                            INSERT INTO videos (v_id, title, ep_num, quality, duration, poster_id, poster_caption, status)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, 'posted')
-                            ON CONFLICT (v_id) DO UPDATE SET
-                                title=EXCLUDED.title, 
-                                ep_num=EXCLUDED.ep_num,
-                                quality=EXCLUDED.quality, 
-                                poster_id=EXCLUDED.poster_id,
-                                poster_caption=EXCLUDED.poster_caption
-                        """, (str(m.id), poster['title'], ep, q, dur, poster['file_id'], poster['caption'][:200]), fetch=False)
-                
-                # تأخير بسيط بين كل رسالة
-                await asyncio.sleep(0.5)
-                
-            except FloodWait as e:
-                wait_time = e.value
-                logging.warning(f"⚠️ FloodWait: {wait_time} ثانية")
-                await msg.edit_text(f"⚠️ انتظار {wait_time} ثانية...")
-                await asyncio.sleep(wait_time)
-            except Exception as e:
-                logging.error(f"❌ خطأ في معالجة رسالة: {e}")
-                continue
-        
-        await msg.edit_text(
-            f"✅ <b>تم المسح بنجاح!</b>\n\n"
-            f"📹 فيديوهات: {stats['videos']}\n"
-            f"🖼️ بوسترات: {stats['posters']}",
-            parse_mode=ParseMode.HTML
-        )
-    
-    except FloodWait as e:
-        wait_time = e.value
-        await msg.edit_text(f"⚠️ تم تجاوز الحد المسموح. انتظر {wait_time} ثانية وحاول مجدداً.")
-    except Exception as e:
-        await msg.edit_text(f"❌ خطأ: {e}")
-
-# ===== أمر المسح البطيء (آمن) =====
-@app.on_message(filters.command("slowscan") & filters.private)
-async def slow_scan_command(client, message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    
-    msg = await message.reply_text("🐌 جاري المسح البطيء (قد يستغرق وقتاً)...")
-    
-    try:
-        stats = {'videos': 0, 'posters': 0}
-        poster_cache = {}
-        
-        # مسح آخر 500 رسالة فقط مع تأخير كبير
+        # مسح آخر 500 رسالة فقط
         async for m in client.get_chat_history(SOURCE_CHANNEL, limit=500):
             try:
                 if m.photo:
@@ -434,7 +389,6 @@ async def slow_scan_command(client, message):
                 elif m.video or m.document:
                     stats['videos'] += 1
                     
-                    # البحث عن البوستر
                     poster = None
                     for pid in sorted(poster_cache.keys(), reverse=True):
                         if pid < m.id:
@@ -459,22 +413,28 @@ async def slow_scan_command(client, message):
                                 poster_caption=EXCLUDED.poster_caption
                         """, (str(m.id), poster['title'], ep, q, dur, poster['file_id'], poster['caption'][:200]), fetch=False)
                 
-                # تأخير أطول (ثانيتين) بين كل رسالة
-                await asyncio.sleep(2)
+                # تأخير 1 ثانية بين كل رسالة
+                await asyncio.sleep(1)
                 
             except FloodWait as e:
                 wait_time = e.value
+                logging.warning(f"⚠️ FloodWait: {wait_time} ثانية")
+                await msg.edit_text(f"⚠️ انتظار {wait_time} ثانية...")
                 await asyncio.sleep(wait_time)
             except Exception as e:
+                logging.error(f"❌ خطأ: {e}")
                 continue
         
         await msg.edit_text(
-            f"✅ <b>تم المسح البطيء!</b>\n\n"
+            f"✅ <b>تم المسح بنجاح!</b>\n\n"
             f"📹 فيديوهات: {stats['videos']}\n"
             f"🖼️ بوسترات: {stats['posters']}",
             parse_mode=ParseMode.HTML
         )
     
+    except FloodWait as e:
+        wait_time = e.value
+        await msg.edit_text(f"⚠️ تم تجاوز الحد. انتظر {wait_time} ثانية وحاول مجدداً.")
     except Exception as e:
         await msg.edit_text(f"❌ خطأ: {e}")
 
@@ -503,6 +463,19 @@ async def series_stats(client, message):
         text += f"🎬 {escape(title[:30])}\n└ {eps} حلقة | {views or 0} مشاهدة\n\n"
     
     await message.reply_text(text, parse_mode=ParseMode.HTML)
+
+# ===== أمر إعادة التشغيل الآمن =====
+@app.on_message(filters.command("restart") & filters.private)
+async def restart_bot(client, message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    msg = await message.reply_text("🔄 جاري إعادة التشغيل...")
+    await asyncio.sleep(2)
+    await msg.edit_text("✅ تم إعادة التشغيل")
+    
+    # إنهاء العملية (سيقوم النظام بإعادة تشغيلها)
+    os._exit(0)
 
 # ===== بدء التشغيل =====
 @app.on_message(filters.command("start") & filters.private)
@@ -535,4 +508,11 @@ if __name__ == "__main__":
     """, fetch=False)
     
     logging.info("🚀 البوت يعمل...")
-    app.run()
+    
+    try:
+        app.run()
+    except FloodWait as e:
+        wait_time = e.value
+        logging.error(f"⚠️ FloodWait عند بدء التشغيل: {wait_time} ثانية")
+        print(f"⏳ انتظر {wait_time} ثانية ثم شغل البوت مجدداً")
+        time.sleep(wait_time)
