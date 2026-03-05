@@ -54,81 +54,132 @@ def db_query(query, params=(), fetch=True):
 # ===== وظائف التنظيف والاستخراج =====
 def clean_series_title(text):
     if not text: return "مسلسل"
+    # إزالة الروابط وأرقام الحلقات والجودة والمدة
     text = re.sub(r'https?://\S+', '', text)
     text = re.sub(r'(الحلقة|حلقة)?\s*\d+|\[.*?\]|الجودة:.*|المدة:.*', '', text, flags=re.IGNORECASE)
+    # إزالة الأسطر الفارغة والمسافات الزائدة
+    text = re.sub(r'\n+', ' ', text)
     return text.strip()
 
 def extract_ep_num(text):
     if not text: return 0
+    # البحث عن رقم الحلقة في النص
     match = re.search(r'(?:الحلقة|حلقة|#)?\s*(\d+)', text)
     return int(match.group(1)) if match else 0
 
-async def scan_all_episodes(client, series_title, start_v_id):
-    """مسح جميع حلقات المسلسل وإضافتها إلى قاعدة البيانات"""
+def get_series_signature(caption):
+    """استخراج التوقيع الفريد للمسلسل (بدون رقم الحلقة)"""
+    if not caption:
+        return ""
+    # إزالة رقم الحلقة للحصول على التوقيع
+    signature = re.sub(r'(الحلقة|حلقة)?\s*\d+', '', caption, flags=re.IGNORECASE)
+    # تنظيف المسافات الزائدة
+    signature = re.sub(r'\s+', ' ', signature).strip()
+    return signature
+
+# ===== مسح جميع حلقات المسلسل =====
+async def scan_all_episodes(client, start_v_id):
+    """مسح جميع حلقات المسلسل باستخدام نفس توقيع البوستر/الوصف"""
     try:
-        logging.info(f"🔍 بدء مسح جميع حلقات المسلسل: {series_title}")
         v_id_int = int(start_v_id)
         
-        # البحث في الاتجاهين (قبل وبعد)
-        found_episodes = {}
+        # جلب الحلقة الأولى لتحديد توقيع المسلسل
+        first_msg = await client.get_messages(SOURCE_CHANNEL, v_id_int)
+        if not first_msg or first_msg.empty:
+            return 0
         
-        # البحث للأمام (الرسائل الأحدث)
-        current_id = v_id_int + 1
-        found_count = 0
-        while found_count < 30:  # حد أقصى 30 حلقة
-            try:
-                msg = await client.get_messages(SOURCE_CHANNEL, current_id)
-                if msg and not msg.empty:
-                    # التحقق إذا كانت هذه حلقة من نفس المسلسل
-                    if msg.video or msg.document:
-                        # استخراج العنوان ورقم الحلقة
-                        caption = msg.caption or ""
-                        msg_title = clean_series_title(caption)
-                        msg_ep = extract_ep_num(caption)
-                        
-                        # إذا كان العنوان مشابهاً للمسلسل
-                        if msg_title == series_title and msg_ep > 0:
-                            found_episodes[msg_ep] = current_id
-                            logging.info(f"✅ تم العثور على حلقة {msg_ep} (ID: {current_id})")
-                            
-                            # حفظ في قاعدة البيانات
-                            db_query("""
-                                INSERT INTO videos (v_id, title, ep_num, status) 
-                                VALUES (%s, %s, %s, 'posted')
-                                ON CONFLICT (v_id) DO NOTHING
-                            """, (str(current_id), series_title, msg_ep), fetch=False)
-                current_id += 1
-                found_count += 1
-            except:
+        # استخراج توقيع المسلسل من البوستر (إذا وجد) أو من وصف الفيديو
+        series_signature = ""
+        poster_caption = ""
+        
+        # البحث عن البوستر (أول رسالة صورة قبل الفيديو)
+        for i in range(1, 6):  # نبحث في الـ 5 رسائل السابقة
+            prev_msg = await client.get_messages(SOURCE_CHANNEL, v_id_int - i)
+            if prev_msg and not prev_msg.empty and prev_msg.photo:
+                poster_caption = prev_msg.caption or ""
+                series_signature = get_series_signature(poster_caption)
+                logging.info(f"✅ تم العثور على بوستر المسلسل: {series_signature[:50]}...")
                 break
+        
+        # إذا لم نجد بوستر، نستخدم وصف الفيديو نفسه
+        if not series_signature and first_msg.caption:
+            series_signature = get_series_signature(first_msg.caption)
+        
+        if not series_signature:
+            logging.error("❌ لم نتمكن من تحديد توقيع المسلسل")
+            return 0
+        
+        logging.info(f"🔍 بدء مسح جميع حلقات المسلسل بتوقيع: {series_signature[:50]}...")
+        
+        # متغيرات للبحث
+        found_episodes = {}
+        current_id = v_id_int
+        search_range = 200  # نبحث في نطاق 200 رسالة في كل اتجاه
         
         # البحث للخلف (الرسائل الأقدم)
-        current_id = v_id_int - 1
-        found_count = 0
-        while found_count < 30 and current_id > 0:
+        logging.info("⏪ البحث في الرسائل السابقة...")
+        for i in range(1, search_range):
             try:
-                msg = await client.get_messages(SOURCE_CHANNEL, current_id)
-                if msg and not msg.empty:
-                    if msg.video or msg.document:
-                        caption = msg.caption or ""
-                        msg_title = clean_series_title(caption)
-                        msg_ep = extract_ep_num(caption)
-                        
-                        if msg_title == series_title and msg_ep > 0:
-                            found_episodes[msg_ep] = current_id
-                            logging.info(f"✅ تم العثور على حلقة {msg_ep} (ID: {current_id})")
-                            
-                            db_query("""
-                                INSERT INTO videos (v_id, title, ep_num, status) 
-                                VALUES (%s, %s, %s, 'posted')
-                                ON CONFLICT (v_id) DO NOTHING
-                            """, (str(current_id), series_title, msg_ep), fetch=False)
-                current_id -= 1
-                found_count += 1
-            except:
-                break
+                msg_id = v_id_int - i
+                if msg_id <= 0:
+                    break
+                    
+                msg = await client.get_messages(SOURCE_CHANNEL, msg_id)
+                if not msg or msg.empty:
+                    continue
+                
+                # التحقق من الفيديوهات
+                if msg.video or msg.document:
+                    if msg.caption:
+                        msg_signature = get_series_signature(msg.caption)
+                        if msg_signature == series_signature:
+                            ep_num = extract_ep_num(msg.caption)
+                            if ep_num > 0:
+                                found_episodes[ep_num] = msg_id
+                                logging.info(f"✅ حلقة {ep_num} (ID: {msg_id})")
+                                
+                                # حفظ في قاعدة البيانات
+                                db_query("""
+                                    INSERT INTO videos (v_id, title, ep_num, status) 
+                                    VALUES (%s, %s, %s, 'posted')
+                                    ON CONFLICT (v_id) DO NOTHING
+                                """, (str(msg_id), series_signature[:100], ep_num), fetch=False)
+                
+            except Exception as e:
+                logging.error(f"خطأ في البحث للخلف: {e}")
+                continue
         
-        logging.info(f"📊 تم العثور على إجمالي {len(found_episodes)} حلقة للمسلسل {series_title}")
+        # البحث للأمام (الرسائل الأحدث)
+        logging.info("⏩ البحث في الرسائل التالية...")
+        for i in range(1, search_range):
+            try:
+                msg_id = v_id_int + i
+                msg = await client.get_messages(SOURCE_CHANNEL, msg_id)
+                if not msg or msg.empty:
+                    continue
+                
+                # التحقق من الفيديوهات
+                if msg.video or msg.document:
+                    if msg.caption:
+                        msg_signature = get_series_signature(msg.caption)
+                        if msg_signature == series_signature:
+                            ep_num = extract_ep_num(msg.caption)
+                            if ep_num > 0:
+                                found_episodes[ep_num] = msg_id
+                                logging.info(f"✅ حلقة {ep_num} (ID: {msg_id})")
+                                
+                                # حفظ في قاعدة البيانات
+                                db_query("""
+                                    INSERT INTO videos (v_id, title, ep_num, status) 
+                                    VALUES (%s, %s, %s, 'posted')
+                                    ON CONFLICT (v_id) DO NOTHING
+                                """, (str(msg_id), series_signature[:100], ep_num), fetch=False)
+                
+            except Exception as e:
+                logging.error(f"خطأ في البحث للأمام: {e}")
+                continue
+        
+        logging.info(f"📊 تم العثور على إجمالي {len(found_episodes)} حلقة للمسلسل")
         return len(found_episodes)
         
     except Exception as e:
@@ -140,42 +191,18 @@ async def auto_archive_logic(client, v_id_key):
     try:
         v_id_int = int(v_id_key)
         
-        # جلب الفيديو نفسه أولاً
+        # جلب الفيديو نفسه
         msg = await client.get_messages(SOURCE_CHANNEL, v_id_int)
         if not msg or msg.empty: 
             return None
 
-        title = "مسلسل مستعاد"
+        title = "مسلسل"
         ep = 0
         
-        # استخراج البيانات من الفيديو نفسه
+        # استخراج البيانات من الفيديو
         if msg.caption:
             title = clean_series_title(msg.caption)
             ep = extract_ep_num(msg.caption)
-        
-        # إذا لم نجد بيانات، نبحث في الرسائل المحيطة
-        if ep == 0:
-            # البحث في الرسائل التالية
-            next_ids = [i for i in range(v_id_int + 1, v_id_int + 11)]
-            next_messages = await client.get_messages(SOURCE_CHANNEL, next_ids)
-            
-            for m in next_messages:
-                if not m or m.empty:
-                    continue
-                    
-                if m.photo and m.caption:
-                    title = clean_series_title(m.caption)
-                    if ep == 0:
-                        ep = extract_ep_num(m.caption)
-                elif m.text:
-                    if m.text.isdigit():
-                        ep = int(m.text)
-                        break
-                    elif "الحلقة" in m.text or "حلقة" in m.text:
-                        extracted_ep = extract_ep_num(m.text)
-                        if extracted_ep > 0:
-                            ep = extracted_ep
-                            break
         
         # حفظ الحلقة الحالية
         db_query("""
@@ -185,7 +212,7 @@ async def auto_archive_logic(client, v_id_key):
         """, (v_id_key, title, ep, title, ep), fetch=False)
         
         # بدء مسح جميع الحلقات في الخلفية
-        asyncio.create_task(scan_all_episodes(client, title, v_id_key))
+        asyncio.create_task(scan_all_episodes(client, v_id_key))
         
         return (title, ep)
         
@@ -194,15 +221,18 @@ async def auto_archive_logic(client, v_id_key):
         return None
 
 async def get_episodes_markup(title, current_v_id, page=0):
-    """الحصول على أزرار الحلقات من قاعدة البيانات"""
+    """الحصول على أزرار الحلقات مرتبة حسب رقم الحلقة"""
     res = db_query("SELECT v_id, ep_num FROM videos WHERE title = %s AND status = 'posted' ORDER BY ep_num ASC", (title,))
     
-    if not res or len(res) <= 1:  # إذا كانت هناك حلقة واحدة فقط
+    if not res:
         return [[InlineKeyboardButton("🔄 جاري تحميل الحلقات...", callback_data="loading")]]
     
-    btns, row, seen = [], [], set()
+    if len(res) == 1:
+        return []  # لا نعرض أزرار إذا كانت هناك حلقة واحدة فقط
     
-    # تجهيز جميع الأزرار
+    btns, seen = [], set()
+    
+    # تجهيز جميع الأزرار مرتبة حسب رقم الحلقة
     all_buttons = []
     for v_id, ep_num in res:
         if ep_num in seen: continue
@@ -210,17 +240,20 @@ async def get_episodes_markup(title, current_v_id, page=0):
         label = f"✅ {ep_num}" if str(v_id) == str(current_v_id) else f"{ep_num}"
         all_buttons.append(InlineKeyboardButton(label, callback_data=f"ep_{v_id}"))
     
-    # عرض 8 أزرار في كل صفحة
-    items_per_page = 8
+    # ترتيب الأزرار حسب رقم الحلقة
+    all_buttons.sort(key=lambda btn: int(btn.text.replace('✅', '').strip()))
+    
+    # عرض 10 أزرار في كل صفحة (صفين، كل صف 5 أزرار)
+    items_per_page = 10
     total_pages = (len(all_buttons) + items_per_page - 1) // items_per_page
     
     start_idx = page * items_per_page
     end_idx = min(start_idx + items_per_page, len(all_buttons))
     current_buttons = all_buttons[start_idx:end_idx]
     
-    # تقسيم إلى صفوف (4 أزرار لكل صف)
-    for i in range(0, len(current_buttons), 4):
-        row_buttons = current_buttons[i:i+4]
+    # تقسيم إلى صفوف (5 أزرار لكل صف)
+    for i in range(0, len(current_buttons), 5):
+        row_buttons = current_buttons[i:i+5]
         btns.append(row_buttons)
     
     # أزرار التنقل
@@ -256,15 +289,10 @@ async def handle_callback(client: Client, query: CallbackQuery):
         
         title, ep = res[0]
         
-        # التحقق من وجود حلقات أخرى
-        check_other = db_query("SELECT COUNT(*) FROM videos WHERE title = %s", (title,))
-        if check_other and check_other[0][0] <= 1:
-            # إذا كانت هذه أول حلقة فقط، نبدأ المسح
-            asyncio.create_task(scan_all_episodes(client, title, v_id))
-        
         btns = await get_episodes_markup(title, v_id)
         
-        safe_title = " . ".join(list(title))
+        # تجميل الاسم
+        safe_title = " . ".join(list(title[:50]))  # نأخذ أول 50 حرف فقط
         cap = f"📺 <b>{safe_title}</b>\n🎞️ <b>الحلقة: {ep}</b>"
         
         try:
@@ -274,7 +302,7 @@ async def handle_callback(client: Client, query: CallbackQuery):
                 SOURCE_CHANNEL, 
                 int(v_id), 
                 caption=cap, 
-                reply_markup=InlineKeyboardMarkup(btns)
+                reply_markup=InlineKeyboardMarkup(btns) if btns else None
             )
             db_query("UPDATE videos SET views = COALESCE(views, 0) + 1 WHERE v_id = %s", (v_id,), fetch=False)
             await query.answer()
@@ -289,7 +317,7 @@ async def handle_callback(client: Client, query: CallbackQuery):
         current_v_id = parts[3]
         
         btns = await get_episodes_markup(title, current_v_id, page)
-        await query.message.edit_reply_markup(InlineKeyboardMarkup(btns))
+        await query.message.edit_reply_markup(InlineKeyboardMarkup(btns) if btns else None)
         await query.answer()
     
     elif data == "info":
@@ -319,16 +347,11 @@ async def start_handler(client, message):
             if m.status in ["left", "kicked"]:
                 return await message.reply_text("⚠️ اشترك لمشاهدة الحلقة 👇", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 انضمام", url=FORCE_SUB_LINK)]]))
         except: pass
-
-    # التحقق من وجود حلقات أخرى
-    check_other = db_query("SELECT COUNT(*) FROM videos WHERE title = %s", (title,))
-    if check_other and check_other[0][0] <= 1:
-        # إذا كانت هذه أول حلقة فقط، نبدأ المسح التلقائي
-        asyncio.create_task(scan_all_episodes(client, title, v_id))
     
     btns = await get_episodes_markup(title, v_id, page=0)
     
-    safe_title = " . ".join(list(title))
+    # تجميل الاسم
+    safe_title = " . ".join(list(title[:50]))
     cap = f"📺 <b>{safe_title}</b>\n🎞️ <b>الحلقة: {ep}</b>"
     
     try:
@@ -337,7 +360,7 @@ async def start_handler(client, message):
             SOURCE_CHANNEL, 
             int(v_id), 
             caption=cap, 
-            reply_markup=InlineKeyboardMarkup(btns)
+            reply_markup=InlineKeyboardMarkup(btns) if btns else None
         )
         db_query("UPDATE videos SET views = COALESCE(views, 0) + 1 WHERE v_id = %s", (v_id,), fetch=False)
     except Exception as e:
@@ -354,5 +377,5 @@ if __name__ == "__main__":
             views INTEGER DEFAULT 0
         )
     """, fetch=False)
-    logging.info("🚀 البوت يعمل الآن مع مسح تلقائي لجميع الحلقات...")
+    logging.info("🚀 البوت يعمل الآن مع التعرف على الحلقات بنفس البوستر والوصف...")
     app.run()
