@@ -124,7 +124,7 @@ def get_duration(media):
         return f"{d//3600:02}:{(d%3600)//60:02}:{d%60:02}"
     return "00:00:00"
 
-# ===== جلب بيانات الفيديو من المصدر (مع البحث عن البوستر بعد الفيديو) =====
+# ===== جلب بيانات الفيديو من المصدر =====
 async def fetch_video_from_source(video_id):
     """جلب بيانات الفيديو من القناة مع البحث عن البوستر الذي يليه"""
     try:
@@ -132,13 +132,11 @@ async def fetch_video_from_source(video_id):
         if not msg or msg.empty:
             return None
         
-        # استخراج البيانات الأساسية من الفيديو
         raw_caption = msg.caption or ""
         title_from_video = clean_title(raw_caption)
         ep_num = extract_ep_num(raw_caption)
         quality = extract_quality(raw_caption)
         
-        # استخراج المدة
         media = msg.video or msg.animation or msg.document
         duration = get_duration(media)
         
@@ -147,7 +145,6 @@ async def fetch_video_from_source(video_id):
         poster_caption = ""
         poster_message_id = None
         
-        # البحث في الـ 5 رسائل التالية
         for i in range(1, 6):
             try:
                 next_msg = await app.get_messages(SOURCE_CHANNEL, int(video_id) + i)
@@ -156,7 +153,6 @@ async def fetch_video_from_source(video_id):
                     poster_caption = next_msg.caption or ""
                     poster_message_id = next_msg.id
                     
-                    # عنوان المسلسل الحقيقي موجود في البوستر
                     if poster_caption:
                         title_from_poster = clean_title(poster_caption)
                         if title_from_poster and title_from_poster != "مسلسل":
@@ -224,14 +220,14 @@ async def save_video_to_db(video_data):
         logging.error(f"❌ خطأ في حفظ البيانات: {e}")
         return False
 
-# ===== مسح القناة باستخدام iter_messages (بديل get_chat_history) =====
+# ===== مسح القناة باستخدام get_chat_history (الطريقة الصحيحة للبوتات) =====
 async def scan_channel_full(client, limit=500):
-    """مسح القناة باستخدام iter_messages (طريقة آمنة للبوتات)"""
+    """مسح القناة باستخدام get_chat_history"""
     stats = {'videos': 0, 'posters': 0, 'errors': 0}
     
     try:
-        # استخدام iter_messages بدلاً من get_chat_history
-        async for message in client.iter_messages(SOURCE_CHANNEL, limit=limit):
+        # استخدام get_chat_history (تعمل مع البوتات)
+        async for message in client.get_chat_history(SOURCE_CHANNEL, limit=limit):
             try:
                 # إذا كان فيديو
                 if message.video or message.document or message.animation:
@@ -446,7 +442,57 @@ async def scan_command(client, message):
     msg = await message.reply_text("🔍 جاري مسح القناة...")
     
     try:
-        stats = await scan_channel_full(client, limit=500)
+        # استخدام get_chat_history مباشرة
+        stats = {'videos': 0, 'posters': 0, 'errors': 0}
+        
+        async for m in client.get_chat_history(SOURCE_CHANNEL, limit=500):
+            try:
+                if m.video or m.document or m.animation:
+                    # فيديو
+                    raw_caption = m.caption or ""
+                    title = clean_title(raw_caption)
+                    ep_num = extract_ep_num(raw_caption)
+                    quality = extract_quality(raw_caption)
+                    duration = get_duration(m.video or m.animation)
+                    
+                    video_data = {
+                        'v_id': str(m.id),
+                        'title': title,
+                        'ep_num': ep_num,
+                        'quality': quality,
+                        'duration': duration,
+                        'poster_id': None,
+                        'poster_caption': None,
+                        'poster_message_id': None,
+                        'raw_caption': raw_caption
+                    }
+                    
+                    # البحث عن البوستر بعد الفيديو
+                    for i in range(1, 4):  # نحاول 3 مرات فقط
+                        try:
+                            next_msg = await client.get_messages(SOURCE_CHANNEL, m.id + i)
+                            if next_msg and next_msg.photo:
+                                video_data['poster_id'] = next_msg.photo.file_id
+                                video_data['poster_caption'] = next_msg.caption or ""
+                                if next_msg.caption:
+                                    poster_title = clean_title(next_msg.caption)
+                                    if poster_title and poster_title != "مسلسل":
+                                        video_data['title'] = poster_title
+                                break
+                        except:
+                            continue
+                    
+                    if await save_video_to_db(video_data):
+                        stats['videos'] += 1
+                    
+                    await asyncio.sleep(0.3)
+                
+                elif m.photo:
+                    stats['posters'] += 1
+                
+            except Exception as e:
+                stats['errors'] += 1
+                logging.error(f"خطأ: {e}")
         
         result = (
             f"✅ <b>تم المسح بنجاح!</b>\n\n"
@@ -510,9 +556,7 @@ async def restart_command(client, message):
 
 # ===== تشغيل البوت =====
 if __name__ == "__main__":
-    # تهيئة قاعدة البيانات
     init_database()
-    
     logging.info("🚀 بوت جلب الفيديوهات من المصدر يعمل...")
     
     while True:
