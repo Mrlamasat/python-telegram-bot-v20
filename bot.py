@@ -16,7 +16,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 SOURCE_CHANNEL = -1003547072209
 PUBLIC_POST_CHANNEL = -1003554018307
-ADMIN_ID = 7720165591
+ADMIN_ID = 7720165591  # ✅ تم التعديل للمعرف الصحيح
 
 app = Client("railway_final_stable", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -120,12 +120,7 @@ async def start_command(client, message):
 
 @app.on_message(filters.command("id") & filters.private)
 async def id_command(client, message):
-    await message.reply_text(
-        f"👤 **معلوماتك:**\n"
-        f"معرفك: `{message.from_user.id}`\n"
-        f"معرف المحادثة: `{message.chat.id}`\n"
-        f"الاسم: {message.from_user.first_name}"
-    )
+    await message.reply_text(f"معرفك: `{message.from_user.id}`")
 
 @app.on_message(filters.command("stats") & filters.private)
 async def stats_command(client, message):
