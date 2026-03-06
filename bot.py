@@ -59,6 +59,48 @@ def encrypt_title(title):
         return title
     return title[:3] + "..." + title[-3:]
 
+def format_duration(seconds):
+    """تنسيق المدة الزمنية"""
+    if not seconds:
+        return "غير معروف"
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    else:
+        return f"{minutes}:{secs:02d}"
+
+async def get_video_info(client, v_id):
+    """استخراج معلومات الفيديو (المدة والجودة)"""
+    try:
+        msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
+        if msg and msg.video:
+            duration = msg.video.duration
+            # تقدير الجودة بناءً على الأبعاد
+            if msg.video.height >= 1080:
+                quality = "Full HD"
+            elif msg.video.height >= 720:
+                quality = "HD"
+            elif msg.video.height >= 480:
+                quality = "SD"
+            else:
+                quality = "منخفضة"
+            
+            file_size = msg.video.file_size
+            size_mb = file_size / (1024 * 1024)
+            
+            return {
+                "duration": format_duration(duration),
+                "quality": quality,
+                "size": f"{size_mb:.1f} MB",
+                "height": msg.video.height,
+                "width": msg.video.width
+            }
+    except Exception as e:
+        logging.error(f"Error getting video info: {e}")
+    return None
+
 async def is_valid_video(client, v_id):
     """التحقق من وجود الفيديو في قناة المصدر"""
     try:
@@ -94,23 +136,10 @@ async def test_command(client, message):
             result += f"✅ **آخر 5 رسائل في القناة:**\n"
             result += "\n".join(messages) + "\n\n"
             
-            # 3. اختبار جلب فيديو محدد (أول فيديو في القائمة)
-            video_found = False
-            async for msg in client.get_chat_history(SOURCE_CHANNEL, limit=20):
-                if msg.video:
-                    result += f"✅ **تم العثور على فيديو:**\n"
-                    result += f"• ID الفيديو: {msg.id}\n"
-                    result += f"• يمكن استخدام هذا ID للاختبار\n"
-                    video_found = True
-                    break
-            
-            if not video_found:
-                result += f"⚠️ **لم يتم العثور على فيديوهات في آخر 20 رسالة**\n"
-        
         except Exception as e:
             result += f"❌ **خطأ في جلب الرسائل:** {e}\n"
         
-        # 4. معلومات البوت
+        # 3. معلومات البوت
         me = await client.get_me()
         result += f"\n**معلومات البوت:**\n"
         result += f"• اليوزرنيم: @{me.username}\n"
@@ -146,7 +175,7 @@ async def start_command(client, message):
         logging.error(f"Error in start: {e}")
         await message.reply_text("حدث خطأ، حاول مرة أخرى.")
 
-# ===== دالة عرض الحلقة =====
+# ===== دالة عرض الحلقة (بدون أزرار الحلقات) =====
 async def show_episode(client, message, current_vid):
     video_info = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (current_vid,))
     if not video_info:
@@ -158,33 +187,23 @@ async def show_episode(client, message, current_vid):
     # تحديث المشاهدات
     db_query("UPDATE videos SET views = views + 1, last_view = NOW() WHERE v_id = %s", (current_vid,), fetch=False)
     
-    # جلب جميع حلقات نفس المسلسل
-    episodes = db_query("""
-        SELECT v_id, ep_num FROM videos 
-        WHERE title = %s AND status = 'posted' AND ep_num > 0 
-        ORDER BY ep_num ASC
-    """, (title,))
+    # جلب معلومات الفيديو (المدة والجودة)
+    info = await get_video_info(client, current_vid)
     
-    # بناء أزرار الحلقات الصالحة فقط
-    btns, row = [], []
-    seen_eps = set()
+    # بناء نص المعلومات
+    info_text = f"<b>📺 {encrypt_title(title)} - حلقة {current_ep}</b>\n\n"
+    if info:
+        info_text += f"⏱️ **المدة:** {info['duration']}\n"
+        info_text += f"📊 **الجودة:** {info['quality']}\n"
+        info_text += f"💾 **الحجم:** {info['size']}\n"
+        if info['height'] and info['width']:
+            info_text += f"📐 **الدقة:** {info['width']}×{info['height']}\n"
+    else:
+        info_text += "⏱️ **المدة:** غير معروفة\n"
+        info_text += "📊 **الجودة:** غير معروفة\n"
     
-    for vid, ep in episodes:
-        if ep in seen_eps:
-            continue
-        if await is_valid_video(client, vid):
-            seen_eps.add(ep)
-            label = f"✅ {ep}" if str(vid) == str(current_vid) else str(ep)
-            row.append(InlineKeyboardButton(label, callback_data=f"ep_{vid}"))
-            
-            if len(row) == 5:
-                btns.append(row)
-                row = []
-    
-    if row:
-        btns.append(row)
-    
-    btns.append([InlineKeyboardButton("📢 قناة النشر", url=BACKUP_CHANNEL_LINK)])
+    # زر واحد فقط - القناة
+    btns = [[InlineKeyboardButton("📢 قناة النشر", url=BACKUP_CHANNEL_LINK)]]
     
     try:
         # نسخ الفيديو من قناة المصدر
@@ -192,8 +211,8 @@ async def show_episode(client, message, current_vid):
             chat_id=message.chat.id,
             from_chat_id=SOURCE_CHANNEL,
             message_id=int(current_vid),
-            caption=f"<b>📺 {encrypt_title(title)} - حلقة {current_ep}</b>",
-            reply_markup=InlineKeyboardMarkup(btns) if btns else None,
+            caption=info_text,
+            reply_markup=InlineKeyboardMarkup(btns),
             parse_mode=ParseMode.HTML
         )
     except Exception as e:
@@ -219,7 +238,7 @@ async def show_next_for_check(client, message, user_id):
     ]
     
     try:
-        # إرسال الفيديو نفسه للفحص (كما يفعل المستخدم العادي)
+        # إرسال الفيديو نفسه للفحص
         await client.copy_message(
             chat_id=message.chat.id,
             from_chat_id=SOURCE_CHANNEL,
@@ -269,18 +288,6 @@ async def handle_callback(client, callback_query: CallbackQuery):
             
             await callback_query.message.delete()
             await show_next_for_check(client, callback_query.message, user_id)
-            await callback_query.answer()
-        
-        # أزرار الحلقات العادية
-        elif data.startswith("ep_"):
-            v_id = data.replace("ep_", "")
-            
-            if not await is_valid_video(client, v_id):
-                await callback_query.answer("❌ هذه الحلقة غير متوفرة", show_alert=True)
-                return
-            
-            await callback_query.message.delete()
-            await show_episode(client, callback_query.message, v_id)
             await callback_query.answer()
         
         # أزرار الفحص (تأكيد/حذف)
@@ -431,7 +438,7 @@ async def stats_command(client, message):
     
     await message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
-# ===== معالج قناة المصدر (معدل بالكامل) =====
+# ===== معالج قناة المصدر =====
 @app.on_message(filters.chat(SOURCE_CHANNEL))
 async def handle_source(client, message):
     try:
@@ -439,10 +446,8 @@ async def handle_source(client, message):
         
         # فيديو
         if message.video or message.document:
-            video_id = str(message.id)  # هذا هو ID الفيديو الحقيقي
-            # حذف أي بيانات سابقة لنفس الـ ID
+            video_id = str(message.id)
             db_query("DELETE FROM videos WHERE v_id = %s", (video_id,), fetch=False)
-            # إدخال الفيديو في حالة انتظار
             db_query("INSERT INTO videos (v_id, status) VALUES (%s, 'waiting')", (video_id,), fetch=False)
             await message.reply_text(
                 "✅ **تم استلام الفيديو!**\n"
@@ -453,16 +458,14 @@ async def handle_source(client, message):
         
         # بوستر
         elif message.photo:
-            # البحث عن آخر فيديو في حالة waiting
             res = db_query("SELECT v_id FROM videos WHERE status='waiting' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 1")
             if not res:
                 await message.reply_text("❌ لا يوجد فيديو في الانتظار. أرسل الفيديو أولاً.")
                 return
             
-            video_id = res[0][0]  # هذا هو ID الفيديو الذي سنربط به البوستر
+            video_id = res[0][0]
             title = message.caption or "مسلسل"
             
-            # تحديث سجل الفيديو بمعلومات البوستر
             db_query(
                 "UPDATE videos SET title=%s, poster_id=%s, status='awaiting_ep' WHERE v_id=%s",
                 (title, message.photo.file_id, video_id),
@@ -486,25 +489,23 @@ async def handle_source(client, message):
             video_id, title, poster_id = res[0]
             ep_num = int(message.text)
             
-            # حذف أي إدخال سابق بنفس العنوان ورقم الحلقة (لمنع التكرار)
+            # حذف أي إدخال سابق بنفس العنوان ورقم الحلقة
             db_query("DELETE FROM videos WHERE title = %s AND ep_num = %s AND v_id != %s", 
                     (title, ep_num, video_id), fetch=False)
             
-            # تحديث حالة الفيديو إلى منشور
             db_query(
                 "UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s",
                 (ep_num, video_id),
                 fetch=False
             )
             
-            # النشر في القناة العامة (باستخدام البوستر)
+            # النشر في القناة العامة
             username = (await app.get_me()).username
             pub_caption = f"🎬 <b>{encrypt_title(title)}</b>\n\n<b>الحلقة: [{ep_num}]</b>"
             pub_markup = InlineKeyboardMarkup([[
                 InlineKeyboardButton("▶️ مشاهدة", url=f"https://t.me/{username}?start={video_id}")
             ]])
             
-            # ننشر البوستر مع رابط الفيديو
             await client.send_photo(
                 chat_id=PUBLIC_POST_CHANNEL,
                 photo=poster_id,
