@@ -1,7 +1,7 @@
 import os
 import psycopg2
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.enums import ParseMode
@@ -51,14 +51,89 @@ def init_database():
         )
     """, fetch=False)
 
-# ===== دوال مساعدة =====
-def encrypt_title(title):
+# ===== دوال مساعدة للتشفير =====
+
+def encrypt_title(title, level=2):
+    """
+    تشفير اسم المسلسل بعدة مستويات
+    level 1: أول 3 حروف + ... + آخر 3 حروف
+    level 2: تشفير متقدم (أول 2 حرف + عدد الحروف + آخر 2 حرف)
+    level 3: تشفير كامل (أحرف متقطعة)
+    """
     if not title:
         return "مسلسل"
-    if len(title) <= 6:
-        return title
-    return title[:3] + "..." + title[-3:]
+    
+    # إزالة المسافات الزائدة
+    title = title.strip()
+    
+    if len(title) <= 4:
+        # إذا كان الاسم قصيراً، نظهر أول 2 حرف فقط
+        return title[:2] + "••"
+    
+    if level == 1:
+        # مستوى بسيط: أول 3 وآخر 3
+        return title[:3] + "•••" + title[-3:]
+    
+    elif level == 2:
+        # مستوى متوسط: أول 2 + عدد الحروف + آخر 2
+        chars_count = len(title.replace(" ", ""))
+        return f"{title[:2]}••{chars_count}••{title[-2:]}"
+    
+    elif level == 3:
+        # مستوى متقدم: أحرف متقطعة
+        first = title[0]
+        last = title[-1]
+        middle = len(title[1:-1].replace(" ", ""))
+        return f"{first}••{middle}••{last}"
+    
+    else:
+        # مستوى افتراضي: أول 2 وآخر 2
+        return title[:2] + "•••" + title[-2:]
 
+def encrypt_for_stats(title):
+    """تشفير خاص للإحصائيات (يظهر جزء بسيط جداً)"""
+    if not title:
+        return "م"
+    if len(title) <= 3:
+        return title[0] + "••"
+    
+    # يظهر أول حرف فقط والباقي نقاط
+    return title[0] + "•" * (len(title) - 1)
+
+def encrypt_advanced(text, preserve_first=1, preserve_last=1):
+    """
+    تشفير متقدم: يحفظ أول n حرف وآخر n حرف
+    """
+    if not text:
+        return ""
+    
+    text = text.strip()
+    if len(text) <= preserve_first + preserve_last + 2:
+        return text[0] + "•" * (len(text) - 1)
+    
+    first_part = text[:preserve_first]
+    last_part = text[-preserve_last:]
+    middle_length = len(text) - preserve_first - preserve_last
+    
+    return f"{first_part}{'•' * middle_length}{last_part}"
+
+def obfuscate_arabic_text(text):
+    """
+    تشفير النص العربي بإضافة نقاط بين الحروف
+    """
+    if not text:
+        return ""
+    
+    # إزالة المسافات وتقطيع الحروف
+    clean_text = text.replace(" ", "")
+    if len(clean_text) <= 3:
+        return clean_text
+    
+    # إضافة نقاط بين الحروف
+    obfuscated = " . ".join(list(clean_text))
+    return obfuscated
+
+# ===== دوال مساعدة =====
 def format_duration(seconds):
     """تنسيق المدة الزمنية"""
     if not seconds:
@@ -175,7 +250,7 @@ async def start_command(client, message):
         logging.error(f"Error in start: {e}")
         await message.reply_text("حدث خطأ، حاول مرة أخرى.")
 
-# ===== دالة عرض الحلقة (بدون أزرار الحلقات) =====
+# ===== دالة عرض الحلقة (مع تشفير الاسم) =====
 async def show_episode(client, message, current_vid):
     video_info = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (current_vid,))
     if not video_info:
@@ -190,8 +265,13 @@ async def show_episode(client, message, current_vid):
     # جلب معلومات الفيديو (المدة والجودة)
     info = await get_video_info(client, current_vid)
     
-    # بناء نص المعلومات
-    info_text = f"<b>📺 {encrypt_title(title)} - حلقة {current_ep}</b>\n\n"
+    # تشفير اسم المسلسل بمستوى متقدم
+    encrypted_title = encrypt_title(title, level=3)
+    
+    # بناء نص المعلومات مع الاسم المشفر
+    info_text = f"<b>📺 {encrypted_title} - حلقة {current_ep}</b>\n\n"
+    info_text += f"<i>⚡ تم التحميل بنجاح</i>\n\n"
+    
     if info:
         info_text += f"⏱️ **المدة:** {info['duration']}\n"
         info_text += f"📊 **الجودة:** {info['quality']}\n"
@@ -219,7 +299,7 @@ async def show_episode(client, message, current_vid):
         logging.error(f"Copy Error: {e}")
         await message.reply_text("⚠️ عذراً، تعذر جلب هذا الفيديو")
 
-# ===== دالة عرض العنصر التالي للفحص (مع الفيديو) =====
+# ===== دالة عرض العنصر التالي للفحص (مع تشفير الاسم) =====
 async def show_next_for_check(client, message, user_id):
     if user_id not in user_check_state or not user_check_state[user_id]:
         await message.edit_text("✅ **تم الانتهاء من فحص جميع الحلقات!**")
@@ -228,6 +308,9 @@ async def show_next_for_check(client, message, user_id):
         return
     
     v_id, title, ep_num = user_check_state[user_id][0]
+    
+    # تشفير الاسم للمدير أيضاً (ولكن بمستوى أقل)
+    encrypted_title = encrypt_title(title, level=1)
     
     btns = [
         [
@@ -243,7 +326,7 @@ async def show_next_for_check(client, message, user_id):
             chat_id=message.chat.id,
             from_chat_id=SOURCE_CHANNEL,
             message_id=int(v_id),
-            caption=f"🔍 **فحص الحلقة**\n\n📺 {encrypt_title(title)} - حلقة {ep_num}\n\n✅ تأكيد = الحلقة سليمة\n🗑️ حذف = إزالة من قاعدة البيانات",
+            caption=f"🔍 **فحص الحلقة**\n\n📺 {encrypted_title} - حلقة {ep_num}\n\n✅ تأكيد = الحلقة سليمة\n🗑️ حذف = إزالة من قاعدة البيانات",
             reply_markup=InlineKeyboardMarkup(btns),
             parse_mode=ParseMode.MARKDOWN
         )
@@ -252,7 +335,7 @@ async def show_next_for_check(client, message, user_id):
         logging.error(f"Error in show_next_for_check: {e}")
         # إذا فشل إرسال الفيديو، نعرض رسالة خطأ
         await message.edit_text(
-            f"❌ **فشل في إرسال الفيديو**\n\n📺 {encrypt_title(title)} - حلقة {ep_num}\nID: {v_id}\n\nالخطأ: {str(e)[:200]}\n\n🔄 هل تريد المتابعة؟",
+            f"❌ **فشل في إرسال الفيديو**\n\n📺 {encrypted_title} - حلقة {ep_num}\nID: {v_id}\n\nالخطأ: {str(e)[:200]}\n\n🔄 هل تريد المتابعة؟",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("▶️ متابعة", callback_data="next_check")
             ]])
@@ -329,7 +412,101 @@ async def handle_callback(client, callback_query: CallbackQuery):
         logging.error(f"Error in callback: {e}")
         await callback_query.answer("حدث خطأ", show_alert=True)
 
-# ===== أمر فحص الحلقات =====
+# ===== أوامر المدير مع تشفير الأسماء =====
+
+@app.on_message(filters.command("stats") & filters.private)
+async def stats_command(client, message):
+    """إحصائيات متقدمة مع تشفير الأسماء"""
+    if message.from_user.id != ADMIN_ID:
+        return await message.reply_text("❌ هذا الأمر للمدير فقط.")
+    
+    status_msg = await message.reply_text("📊 جاري تحليل الإحصائيات...")
+    
+    # إحصائيات عامة
+    total_videos = db_query("SELECT COUNT(*) FROM videos")[0][0]
+    total_views = db_query("SELECT SUM(views) FROM videos")[0][0] or 0
+    unique_series = db_query("SELECT COUNT(DISTINCT title) FROM videos WHERE title IS NOT NULL")[0][0]
+    
+    # إحصائيات اليوم
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_views = db_query("SELECT COUNT(*) FROM videos WHERE last_view >= %s", (today_start,))[0][0]
+    
+    # إحصائيات الأمس
+    yesterday_start = today_start - timedelta(days=1)
+    yesterday_end = today_start
+    yesterday_views = db_query("SELECT COUNT(*) FROM videos WHERE last_view >= %s AND last_view < %s", 
+                              (yesterday_start, yesterday_end))[0][0]
+    
+    # إحصائيات هذا الأسبوع
+    week_start = today_start - timedelta(days=7)
+    week_views = db_query("SELECT COUNT(*) FROM videos WHERE last_view >= %s", (week_start,))[0][0]
+    
+    # أكثر 5 مسلسلات مشاهدة (مع تشفير للأمان)
+    top_series = db_query("""
+        SELECT title, SUM(views) as total_views 
+        FROM videos 
+        WHERE title IS NOT NULL 
+        GROUP BY title 
+        ORDER BY total_views DESC 
+        LIMIT 5
+    """)
+    
+    # أكثر 5 حلقات مشاهدة (مع تشفير)
+    top_episodes = db_query("""
+        SELECT title, ep_num, views 
+        FROM videos 
+        WHERE status = 'posted' AND ep_num > 0 
+        ORDER BY views DESC 
+        LIMIT 5
+    """)
+    
+    # آخر 5 مشاهدات (مع تشفير)
+    recent_views = db_query("""
+        SELECT title, ep_num, last_view 
+        FROM videos 
+        WHERE last_view IS NOT NULL 
+        ORDER BY last_view DESC 
+        LIMIT 5
+    """)
+    
+    # بناء التقرير
+    text = "📊 **إحصائيات متقدمة**\n\n"
+    
+    text += "**📌 إحصائيات عامة:**\n"
+    text += f"• عدد المسلسلات: {unique_series}\n"
+    text += f"• عدد الحلقات: {total_videos}\n"
+    text += f"• إجمالي المشاهدات: {total_views:,}\n\n"
+    
+    text += "**📈 المشاهدات:**\n"
+    text += f"• اليوم: {today_views}\n"
+    text += f"• الأمس: {yesterday_views}\n"
+    text += f"• آخر 7 أيام: {week_views}\n\n"
+    
+    if top_series:
+        text += "**🏆 أكثر 5 مسلسلات مشاهدة:**\n"
+        for i, (title, views) in enumerate(top_series, 1):
+            # تشفير الاسم حتى في الإحصائيات
+            encrypted = encrypt_for_stats(title)
+            text += f"{i}. {encrypted} - {views} مشاهدة\n"
+        text += "\n"
+    
+    if top_episodes:
+        text += "**⭐ أكثر 5 حلقات مشاهدة:**\n"
+        for title, ep, views in top_episodes:
+            encrypted = encrypt_for_stats(title)
+            text += f"• {encrypted} (حلقة {ep}) - {views} مشاهدة\n"
+        text += "\n"
+    
+    if recent_views:
+        text += "**🕐 آخر المشاهدات:**\n"
+        for title, ep, last_view in recent_views:
+            if last_view:
+                encrypted = encrypt_for_stats(title)
+                time_str = last_view.strftime("%Y-%m-%d %H:%M")
+                text += f"• {encrypted} (حلقة {ep}) - {time_str}\n"
+    
+    await status_msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
+
 @app.on_message(filters.command("check") & filters.private)
 async def check_command(client, message):
     if message.from_user.id != ADMIN_ID:
@@ -386,7 +563,6 @@ async def check_command(client, message):
         ]])
     )
 
-# ===== أمر التنظيف السريع =====
 @app.on_message(filters.command("fix") & filters.private)
 async def fix_command(client, message):
     if message.from_user.id != ADMIN_ID:
@@ -403,7 +579,9 @@ async def fix_command(client, message):
             db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
             deleted += 1
             if len(invalid_list) < 10:
-                invalid_list.append(f"• {encrypt_title(title)} - حلقة {ep_num}")
+                # تشفير الاسم حتى في قائمة المحذوفات
+                encrypted = encrypt_for_stats(title)
+                invalid_list.append(f"• {encrypted} - حلقة {ep_num}")
     
     if deleted > 0:
         report = f"✅ **تم الحذف!**\n"
@@ -417,26 +595,9 @@ async def fix_command(client, message):
     
     await status_msg.edit_text(report)
 
-# ===== أوامر المدير الأخرى =====
 @app.on_message(filters.command("id") & filters.private)
 async def id_command(client, message):
     await message.reply_text(f"معرفك: `{message.from_user.id}`")
-
-@app.on_message(filters.command("stats") & filters.private)
-async def stats_command(client, message):
-    if message.from_user.id != ADMIN_ID:
-        return await message.reply_text("❌ هذا الأمر للمدير فقط.")
-    
-    total_videos = db_query("SELECT COUNT(*) FROM videos")[0][0]
-    total_views = db_query("SELECT SUM(views) FROM videos")[0][0] or 0
-    unique_series = db_query("SELECT COUNT(DISTINCT title) FROM videos WHERE title IS NOT NULL")[0][0]
-    
-    text = "📊 **إحصائيات البوت**\n\n"
-    text += f"• عدد المسلسلات: {unique_series}\n"
-    text += f"• عدد الحلقات: {total_videos}\n"
-    text += f"• إجمالي المشاهدات: {total_views:,}\n"
-    
-    await message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 # ===== معالج قناة المصدر =====
 @app.on_message(filters.chat(SOURCE_CHANNEL))
@@ -499,9 +660,10 @@ async def handle_source(client, message):
                 fetch=False
             )
             
-            # النشر في القناة العامة
+            # النشر في القناة العامة مع تشفير الاسم
             username = (await app.get_me()).username
-            pub_caption = f"🎬 <b>{encrypt_title(title)}</b>\n\n<b>الحلقة: [{ep_num}]</b>"
+            encrypted_title = encrypt_title(title, level=2)  # تشفير الاسم في المنشور
+            pub_caption = f"🎬 <b>{encrypted_title}</b>\n\n<b>الحلقة: [{ep_num}]</b>"
             pub_markup = InlineKeyboardMarkup([[
                 InlineKeyboardButton("▶️ مشاهدة", url=f"https://t.me/{username}?start={video_id}")
             ]])
