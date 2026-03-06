@@ -20,7 +20,7 @@ DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.pr
 SOURCE_CHANNEL = -1003547072209 
 FORCE_SUB_CHANNEL = -1003894735143
 FORCE_SUB_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
-ADMIN_ID = 111111111  # 💡 ضاع آيدي حسابك هنا يا محمد لكي تظهر لك ميزات النشر
+ADMIN_ID = 7720165591  # 💡 ضاع آيدي حسابك هنا يا محمد لكي تظهر لك ميزات النشر
 
 app = Client("mohammed_bot_final", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
