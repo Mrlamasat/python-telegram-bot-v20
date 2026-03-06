@@ -14,40 +14,21 @@ API_ID = 35405228
 API_HASH = "dacba460d875d963bbd4462c5eb554d6"
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
-
 SOURCE_CHANNEL = -1003547072209 
-ADMIN_ID = 7464197368 
 
-app = Client("mohammed_smart_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client("mohammed_bot_final_fixed", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ===== محرك الذكاء لاستخراج اسم المسلسل =====
-def smart_extract_title(caption):
-    if not caption: return "مسلسل"
-    
-    # تقسيم النص إلى أسطر وتنظيفها
-    lines = [l.strip() for l in caption.split('\n') if l.strip()]
-    
-    candidate_title = "مسلسل"
-    for line in lines[:3]: # فحص أول 3 أسطر بحثاً عن الاسم
-        # حذف الإيموجي والرموز الخاصة
-        clean_line = re.sub(r'[^\w\s]', '', line).strip()
-        # حذف الأرقام والكلمات المساعدة
-        clean_line = re.sub(r'\d+', '', clean_line)
-        for word in ["الحلقة", "حلقة", "مشاهدة", "اضغط", "هنا", "جديدة", "فيديو", "وصف"]:
-            clean_line = clean_line.replace(word, "")
-        
-        clean_line = clean_line.strip()
-        if len(clean_line) > 1: # إذا وجدنا نصاً حقيقياً وليس مجرد رمز
-            candidate_title = clean_line
-            break
-            
-    return candidate_title.replace(" ", "").replace("_", "")
+# قائمة المسلسلات الذكية للمطابقة
+MY_SERIES = [
+    "اولاد الراعي", "كلهم بيحبو مودي", "الست موناليزا", "فن الحرب",
+    "افراج", "الكاميرا الخفيه", "رامز ليفل الوحش", "صحاب الارض",
+    "وننسى اللي كان", "علي كلاي", "عين سحريه", "فخر الدلتا",
+    "الكينج", "درش", "راس الافعى", "المداح", "هي كيميا", "سوا سوا",
+    "بيبو", "النص الثاني", "عرض وطلب", "مولانا", "فرصه اخيره",
+    "حكايه نرجس", "اب ولكن", "اللون الازرق", "المتر سمير",
+    "بابا وماما جيران", "قطر صغنطوط", "ن النسوه"
+]
 
-def visual_name(title):
-    """عرض الاسم بنقاط بشكل احترافي"""
-    return " . ".join(list(title))
-
-# ===== إدارة قاعدة البيانات =====
 def db_query(query, params=(), fetch=True):
     conn = None
     try:
@@ -58,9 +39,33 @@ def db_query(query, params=(), fetch=True):
         cur.close()
         conn.close()
         return res
-    except Exception as e:
+    except:
         if conn: conn.close()
         return None
+
+def extract_smart_data(caption):
+    """محرك استخراج الاسم والرقم بالذكاء"""
+    # 1. استخراج الاسم من القائمة
+    title = "مسلسل"
+    for s in MY_SERIES:
+        if s in caption:
+            title = s.replace(" ", "").strip()
+            break
+            
+    # 2. استخراج الرقم بنظام (رقم الحلقة: X) أو السطر الأخير
+    ep = 0
+    match = re.search(r'رقم الحلقة\s*:?\s*(\d+)', caption)
+    if match:
+        ep = int(match.group(1))
+    else:
+        lines = [l.strip() for l in caption.split('\n') if l.strip()]
+        if lines and lines[-1].isdigit():
+            ep = int(lines[-1])
+            
+    return title, ep
+
+def visual_name(title):
+    return " . ".join(list(title))
 
 async def get_episodes_markup(title, current_v_id):
     res = db_query("SELECT v_id, ep_num FROM videos WHERE title = %s ORDER BY ep_num ASC", (title,))
@@ -68,7 +73,7 @@ async def get_episodes_markup(title, current_v_id):
     btns, row, seen = [], [], set()
     me = await app.get_me()
     for vid, ep in res:
-        if ep in seen: continue
+        if ep == 0 or ep in seen: continue
         seen.add(ep)
         label = f"✅ {ep}" if str(vid) == str(current_v_id) else f"{ep}"
         row.append(InlineKeyboardButton(label, url=f"https://t.me/{me.username}?start={vid}"))
@@ -84,19 +89,15 @@ async def on_start(client, message):
         return await message.reply_text(f"أهلاً بك {message.from_user.first_name}!")
     
     v_id = message.command[1].strip()
-    
-    # محاولة جلب البيانات
     res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
     title, ep = (res[0] if res and res[0] else (None, None))
 
-    # إذا كان الاسم رمزاً أو غير موجود، نستخدم الاستخراج الذكي
-    if not title or len(title) < 2 or ep == 0:
+    # إذا كانت البيانات قديمة (صفر) أو غير موجودة، نصححها فوراً من المصدر
+    if not title or ep == 0:
         try:
             m = await client.get_messages(SOURCE_CHANNEL, int(v_id))
             if m and m.caption:
-                title = smart_extract_title(m.caption)
-                ep_match = re.search(r'(\d+)', m.caption)
-                ep = int(ep_match.group(1)) if ep_match else 0
+                title, ep = extract_smart_data(m.caption)
                 db_query("INSERT INTO videos (v_id, title, ep_num, status) VALUES (%s, %s, %s, 'posted') ON CONFLICT (v_id) DO UPDATE SET title=%s, ep_num=%s", (v_id, title, ep, title, ep), fetch=False)
         except:
             if not title: title, ep = "مسلسل", 0
