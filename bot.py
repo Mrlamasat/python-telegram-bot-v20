@@ -1,7 +1,7 @@
 import os
 import psycopg2
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.enums import ParseMode
@@ -54,68 +54,32 @@ def init_database():
         )
     """, fetch=False)
 
-# ===== [3] دوال المساعدة والتشفير =====
-def encrypt_title(title, level=2):
+# ===== [3] دوال المساعدة =====
+def encrypt_title(title):
     if not title: return "مسلسل"
     title = title.strip()
     if len(title) <= 4: return title[:2] + "••"
     return title[:2] + "•••" + title[-2:]
 
-async def is_valid_video(client, v_id):
-    try:
-        msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
-        return msg and not msg.empty
-    except: return False
-
-# ===== [4] نظام الأزرار والعرض =====
-async def get_episodes_markup(client, title, current_v_id):
-    all_entries = db_query("""
-        SELECT v_id, ep_num FROM videos 
-        WHERE title = %s AND status = 'posted' 
-        ORDER BY ep_num ASC
-    """, (title,))
-    
-    valid_episodes = {}
-    for v_id, ep_num in all_entries:
-        if ep_num in valid_episodes: continue
-        if await is_valid_video(client, v_id):
-            valid_episodes[ep_num] = v_id
-        else:
-            db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
-
-    keyboard = []
-    row = []
-    sorted_eps = sorted(valid_episodes.items()) 
-    for ep_num, v_id in sorted_eps:
-        btn_text = f"• {ep_num} •" if str(v_id) == str(current_v_id) else f"{ep_num}"
-        row.append(InlineKeyboardButton(btn_text, callback_data=f"go_{v_id}"))
-        if len(row) == 5:
-            keyboard.append(row)
-            row = []
-    if row: keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("🔗 اضغط هنا للاشتراك بالقناه الإحتياطيه", url=BACKUP_CHANNEL_LINK)])
-    return InlineKeyboardMarkup(keyboard)
-
-async def show_episode(client, message, current_vid, is_callback=False):
+# ===== [4] عرض الحلقة (بدون أزرار تنقل) =====
+async def show_episode(client, message, current_vid):
     res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (current_vid,))
     if not res: return
 
     title, current_ep = res[0]
     db_query("UPDATE videos SET views = views + 1, last_view = NOW() WHERE v_id = %s", (current_vid,), fetch=False)
     
-    # تم حذف الجملة التي لم تطلبها
     caption = (
         f"<b>📺 {encrypt_title(title)}</b>\n"
         f"<b>🎬 الحلقة رقم: {current_ep}</b>\n"
         f"━━━━━━━━━━━━━━━"
     )
     
-    markup = await get_episodes_markup(client, title, current_vid)
+    # الزر الوحيد المسموح به هو القناة الاحتياطية
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔗 اضغط هنا للاشتراك بالقناه الإحتياطيه", url=BACKUP_CHANNEL_LINK)
+    ]])
 
-    if is_callback:
-        try: await message.delete()
-        except: pass
-        
     await client.copy_message(
         chat_id=message.chat.id,
         from_chat_id=SOURCE_CHANNEL,
@@ -135,11 +99,6 @@ async def start_command(client, message):
     else:
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 اضغط هنا للاشتراك بالقناه الإحتياطيه", url=BACKUP_CHANNEL_LINK)]])
         await message.reply_text(f"👋 أهلاً بك يا محمد في بوت المسلسلات!\nاختر حلقة من القناة للمشاهدة.", reply_markup=markup)
-
-@app.on_callback_query(filters.regex("^go_"))
-async def handle_navigation(client, callback_query):
-    target_vid = callback_query.data.split("_")[1]
-    await show_episode(client, callback_query.message, target_vid, is_callback=True)
 
 # ===== [6] نظام النشر المطور =====
 @app.on_message(filters.chat(SOURCE_CHANNEL))
@@ -170,7 +129,7 @@ async def handle_source_auto(client, message):
                 await message.reply_text(f"🚀 تم النشر: {title} - حلقة {ep_num}")
     except Exception as e: logging.error(f"Error: {e}")
 
-# ===== [7] الإحصائيات =====
+# ===== [7] الإحصائيات المطورة =====
 @app.on_message(filters.command("stats") & filters.private)
 async def stats_command(client, message):
     if message.from_user.id != ADMIN_ID: return
