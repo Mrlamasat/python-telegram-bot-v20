@@ -6,7 +6,6 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.enums import ParseMode
 
-# إعداد السجلات لمراقبة الأخطاء
 logging.basicConfig(level=logging.INFO)
 
 # ===== [1] الإعدادات الأساسية =====
@@ -22,7 +21,7 @@ ADMIN_ID = 7720165591
 
 app = Client("railway_final_stable", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ===== [2] إدارة قاعدة البيانات =====
+# ===== [2] قاعدة البيانات =====
 def db_query(query, params=(), fetch=True):
     try:
         conn = psycopg2.connect(DATABASE_URL, sslmode="require")
@@ -37,7 +36,6 @@ def db_query(query, params=(), fetch=True):
         return []
 
 def init_database():
-    # جدول الفيديوهات
     db_query("""
         CREATE TABLE IF NOT EXISTS videos (
             v_id TEXT PRIMARY KEY,
@@ -49,7 +47,6 @@ def init_database():
             last_view TIMESTAMP
         )
     """, fetch=False)
-    # جدول المستخدمين
     db_query("""
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
@@ -70,7 +67,7 @@ async def is_valid_video(client, v_id):
         return msg and not msg.empty
     except: return False
 
-# ===== [4] نظام عرض الحلقات والأزرار =====
+# ===== [4] نظام الأزرار والعرض =====
 async def get_episodes_markup(client, title, current_v_id):
     all_entries = db_query("""
         SELECT v_id, ep_num FROM videos 
@@ -88,15 +85,14 @@ async def get_episodes_markup(client, title, current_v_id):
 
     keyboard = []
     row = []
-    for ep_num, v_id in sorted(valid_episodes.items()):
+    sorted_eps = sorted(valid_episodes.items()) 
+    for ep_num, v_id in sorted_eps:
         btn_text = f"• {ep_num} •" if str(v_id) == str(current_v_id) else f"{ep_num}"
         row.append(InlineKeyboardButton(btn_text, callback_data=f"go_{v_id}"))
         if len(row) == 5:
             keyboard.append(row)
             row = []
     if row: keyboard.append(row)
-    
-    # النص المطلوب: الاشتراك بالقناة الاحتياطية
     keyboard.append([InlineKeyboardButton("🔗 اضغط هنا للاشتراك بالقناه الإحتياطيه", url=BACKUP_CHANNEL_LINK)])
     return InlineKeyboardMarkup(keyboard)
 
@@ -107,11 +103,11 @@ async def show_episode(client, message, current_vid, is_callback=False):
     title, current_ep = res[0]
     db_query("UPDATE videos SET views = views + 1, last_view = NOW() WHERE v_id = %s", (current_vid,), fetch=False)
     
+    # تم حذف الجملة التي لم تطلبها
     caption = (
         f"<b>📺 {encrypt_title(title)}</b>\n"
         f"<b>🎬 الحلقة رقم: {current_ep}</b>\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"🍿 انتقل بين الحلقات المتوفرة عبر الأزرار:"
+        f"━━━━━━━━━━━━━━━"
     )
     
     markup = await get_episodes_markup(client, title, current_vid)
@@ -129,13 +125,11 @@ async def show_episode(client, message, current_vid, is_callback=False):
         parse_mode=ParseMode.HTML
     )
 
-# ===== [5] معالجات الرسائل والأوامر =====
+# ===== [5] المعالجات =====
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_command(client, message):
-    # تسجيل المستخدم في القاعدة
     db_query("INSERT INTO users (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (message.from_user.id,), fetch=False)
-    
     if len(message.command) > 1:
         await show_episode(client, message, message.command[1])
     else:
@@ -147,77 +141,55 @@ async def handle_navigation(client, callback_query):
     target_vid = callback_query.data.split("_")[1]
     await show_episode(client, callback_query.message, target_vid, is_callback=True)
 
-# ===== [6] نظام النشر المطور (المصصح) =====
+# ===== [6] نظام النشر المطور =====
 @app.on_message(filters.chat(SOURCE_CHANNEL))
 async def handle_source_auto(client, message):
     try:
-        # خطوة 1: استقبال الفيديو
         if message.video or message.document:
             v_id = str(message.id)
             db_query("INSERT INTO videos (v_id, status) VALUES (%s, 'waiting') ON CONFLICT DO NOTHING", (v_id,), fetch=False)
-            await message.reply_text(f"✅ تم استلام الفيديو `{v_id}`\nالآن أرسل **البوستر** (صورة) واكتب اسم المسلسل في وصفها.")
+            await message.reply_text(f"✅ تم استلام الفيديو `{v_id}`\nالآن أرسل البوستر.")
 
-        # خطوة 2: استقبال البوستر والاسم
         elif message.photo:
             res = db_query("SELECT v_id FROM videos WHERE status='waiting' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 1")
             if res:
                 v_id = res[0][0]
-                title = message.caption or "مسلسل جديد"
+                title = message.caption or "مسلسل"
                 db_query("UPDATE videos SET title=%s, poster_id=%s, status='awaiting_ep' WHERE v_id=%s", (title, message.photo.file_id, v_id), fetch=False)
-                await message.reply_text(f"📌 تم حفظ البوستر لـ: **{title}**\nأرسل الآن **رقم الحلقة** (أرقام فقط).")
+                await message.reply_text(f"📌 تم حفظ البوستر لـ: {title}\nأرسل رقم الحلقة.")
 
-        # خطوة 3: استقبال رقم الحلقة والنشر النهائي
         elif message.text and message.text.isdigit():
             res = db_query("SELECT v_id, title, poster_id FROM videos WHERE status='awaiting_ep' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 1")
             if res:
                 v_id, title, p_id = res[0]
                 ep_num = int(message.text)
                 db_query("UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s", (ep_num, v_id), fetch=False)
-                
                 me = await client.get_me()
-                # زر المشاهدة المطلوب
-                pub_markup = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("▶️ اضغط هنا لمشاهدة الحلقة كاملة", url=f"https://t.me/{me.username}?start={v_id}")
-                ]])
-                
-                await client.send_photo(
-                    PUBLIC_POST_CHANNEL, 
-                    p_id, 
-                    f"🎬 <b>{encrypt_title(title)}</b>\n<b>الحلقة: [{ep_num}]</b>", 
-                    reply_markup=pub_markup,
-                    parse_mode=ParseMode.HTML
-                )
-                await message.reply_text(f"🚀 تم النشر بنجاح: {title} - حلقة {ep_num}")
+                pub_markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ اضغط هنا لمشاهدة الحلقة كاملة", url=f"https://t.me/{me.username}?start={v_id}")]])
+                await client.send_photo(PUBLIC_POST_CHANNEL, p_id, f"🎬 <b>{encrypt_title(title)}</b>\n<b>الحلقة: [{ep_num}]</b>", reply_markup=pub_markup)
+                await message.reply_text(f"🚀 تم النشر: {title} - حلقة {ep_num}")
+    except Exception as e: logging.error(f"Error: {e}")
 
-    except Exception as e:
-        logging.error(f"Upload System Error: {e}")
-
-# ===== [7] الإحصائيات المطورة (مستخدمين + مشاهدات يومية) =====
+# ===== [7] الإحصائيات =====
 @app.on_message(filters.command("stats") & filters.private)
 async def stats_command(client, message):
     if message.from_user.id != ADMIN_ID: return
-    
     u_count = db_query("SELECT COUNT(*) FROM users")[0][0]
     v_total = db_query("SELECT SUM(views) FROM videos")[0][0] or 0
-    # حساب مشاهدات آخر 24 ساعة بدقة
     v_daily = db_query("SELECT SUM(views) FROM videos WHERE last_view >= NOW() - INTERVAL '1 day'")[0][0] or 0
     v_count = db_query("SELECT COUNT(*) FROM videos WHERE status='posted'")[0][0]
     
     report = (
         "<b>📊 إحصائيات البوت (محمد المحسن)</b>\n"
         "━━━━━━━━━━━━━━━\n"
-        f"<b>👥 عدد المستخدمين:</b> <code>{u_count}</code>\n"
-        f"<b>🎬 الحلقات المرفوعة:</b> <code>{v_count}</code>\n"
+        f"<b>👥 المشتركين:</b> <code>{u_count}</code>\n"
+        f"<b>🎬 الحلقات:</b> <code>{v_count}</code>\n"
         "━━━━━━━━━━━━━━━\n"
         f"<b>🔥 مشاهدات اليوم:</b> <code>{v_daily}</code>\n"
         f"<b>👁️ إجمالي المشاهدات:</b> <code>{v_total:,}</code>\n"
-        "━━━━━━━━━━━━━━━\n"
-        f"📅 تاريخ التقرير: {datetime.now().strftime('%Y-%m-%d')}"
     )
     await message.reply_text(report, parse_mode=ParseMode.HTML)
 
-# ===== [8] التشغيل =====
 if __name__ == "__main__":
     init_database()
-    print("🚀 البوت انطلق بنظام الرفع المصلح ونصوصك الجديدة!")
     app.run()
