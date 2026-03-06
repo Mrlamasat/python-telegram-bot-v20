@@ -67,6 +67,60 @@ async def is_valid_video(client, v_id):
     except:
         return False
 
+# ===== أمر اختبار القناة =====
+@app.on_message(filters.command("test") & filters.private)
+async def test_command(client, message):
+    if message.from_user.id != ADMIN_ID:
+        return await message.reply_text("❌ هذا الأمر للمدير فقط")
+    
+    status_msg = await message.reply_text("🔍 جاري اختبار الاتصال...")
+    
+    try:
+        # 1. اختبار قناة المصدر
+        channel = await client.get_chat(SOURCE_CHANNEL)
+        result = f"✅ **قناة المصدر:**\n"
+        result += f"• الاسم: {channel.title}\n"
+        result += f"• المعرف: {channel.id}\n"
+        result += f"• النوع: {channel.type}\n\n"
+        
+        # 2. اختبار جلب رسالة من القناة
+        try:
+            # جلب آخر 5 رسائل
+            messages = []
+            async for msg in client.get_chat_history(SOURCE_CHANNEL, limit=5):
+                msg_type = "فيديو" if msg.video else "صورة" if msg.photo else "نص" if msg.text else "أخرى"
+                messages.append(f"• ID: {msg.id} - النوع: {msg_type}")
+            
+            result += f"✅ **آخر 5 رسائل في القناة:**\n"
+            result += "\n".join(messages) + "\n\n"
+            
+            # 3. اختبار جلب فيديو محدد (أول فيديو في القائمة)
+            video_found = False
+            async for msg in client.get_chat_history(SOURCE_CHANNEL, limit=20):
+                if msg.video:
+                    result += f"✅ **تم العثور على فيديو:**\n"
+                    result += f"• ID الفيديو: {msg.id}\n"
+                    result += f"• يمكن استخدام هذا ID للاختبار\n"
+                    video_found = True
+                    break
+            
+            if not video_found:
+                result += f"⚠️ **لم يتم العثور على فيديوهات في آخر 20 رسالة**\n"
+        
+        except Exception as e:
+            result += f"❌ **خطأ في جلب الرسائل:** {e}\n"
+        
+        # 4. معلومات البوت
+        me = await client.get_me()
+        result += f"\n**معلومات البوت:**\n"
+        result += f"• اليوزرنيم: @{me.username}\n"
+        result += f"• المعرف: {me.id}\n"
+        
+        await status_msg.edit_text(result)
+        
+    except Exception as e:
+        await status_msg.edit_text(f"❌ **خطأ في الوصول للقناة:** {e}")
+
 # ===== معالج بدء البوت =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_command(client, message):
@@ -142,7 +196,7 @@ async def show_episode(client, message, current_vid):
         logging.error(f"Copy Error: {e}")
         await message.reply_text("⚠️ عذراً، تعذر جلب هذا الفيديو")
 
-# ===== دالة عرض العنصر التالي للفحص =====
+# ===== دالة عرض العنصر التالي للفحص (مع الفيديو) =====
 async def show_next_for_check(client, message, user_id):
     if user_id not in user_check_state or not user_check_state[user_id]:
         await message.edit_text("✅ **تم الانتهاء من فحص جميع الحلقات!**")
@@ -161,7 +215,7 @@ async def show_next_for_check(client, message, user_id):
     ]
     
     try:
-        # محاولة إرسال الفيديو نفسه للفحص
+        # إرسال الفيديو نفسه للفحص (كما يفعل المستخدم العادي)
         await client.copy_message(
             chat_id=message.chat.id,
             from_chat_id=SOURCE_CHANNEL,
@@ -172,10 +226,13 @@ async def show_next_for_check(client, message, user_id):
         )
         await message.delete()
     except Exception as e:
-        # إذا فشل إرسال الفيديو، نعرض رسالة بدون فيديو
+        logging.error(f"Error in show_next_for_check: {e}")
+        # إذا فشل إرسال الفيديو، نعرض رسالة خطأ
         await message.edit_text(
-            f"🔍 **فحص الحلقة**\n\n📺 {encrypt_title(title)} - حلقة {ep_num}\n⚠️ **الفيديو غير متوفر في المصدر**\n\n✅ تأكيد = الحلقة سليمة\n🗑️ حذف = إزالة من قاعدة البيانات",
-            reply_markup=InlineKeyboardMarkup(btns)
+            f"❌ **خطأ في جلب الفيديو**\n\n📺 {encrypt_title(title)} - حلقة {ep_num}\nID: {v_id}\n\nالخطأ: {str(e)[:100]}\n\n🔄 سيتم تخطي هذه الحلقة",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("▶️ متابعة", callback_data="next_check")
+            ]])
         )
 
 # ===== معالج الضغط على الأزرار =====
@@ -184,6 +241,16 @@ async def handle_callback(client, callback_query: CallbackQuery):
     try:
         data = callback_query.data
         user_id = callback_query.from_user.id
+        
+        # زر التالي بعد الخطأ
+        if data == "next_check":
+            if user_id in user_check_state and user_check_state[user_id]:
+                # حذف العنصر الحالي (الذي تسبب بالخطأ)
+                user_check_state[user_id] = user_check_state[user_id][1:]
+                await callback_query.message.delete()
+                await show_next_for_check(client, callback_query.message, user_id)
+            await callback_query.answer()
+            return
         
         # زر بدء الفحص
         if data == "start_check":
@@ -238,6 +305,7 @@ async def handle_callback(client, callback_query: CallbackQuery):
                     await callback_query.message.edit_text("✅ **تم الانتهاء من فحص جميع الحلقات!**")
                     del user_check_state[user_id]
                 else:
+                    await callback_query.message.delete()
                     await show_next_for_check(client, callback_query.message, user_id)
         
         elif data == "cancel_check":
@@ -317,13 +385,26 @@ async def fix_command(client, message):
     
     all_entries = db_query("SELECT v_id, title, ep_num FROM videos WHERE status = 'posted'")
     deleted = 0
+    invalid_list = []
     
     for v_id, title, ep_num in all_entries:
         if not await is_valid_video(client, v_id):
             db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
             deleted += 1
+            if len(invalid_list) < 10:
+                invalid_list.append(f"• {encrypt_title(title)} - حلقة {ep_num}")
     
-    await status_msg.edit_text(f"✅ **تم الحذف!**\nتمت إزالة {deleted} إدخال غير صالح.")
+    if deleted > 0:
+        report = f"✅ **تم الحذف!**\n"
+        report += f"تمت إزالة {deleted} إدخال غير صالح.\n\n"
+        if invalid_list:
+            report += "**المحذوفات:**\n" + "\n".join(invalid_list)
+            if deleted > 10:
+                report += f"\n... و{deleted - 10} إدخالات أخرى"
+    else:
+        report = f"✅ **لا توجد إدخالات غير صالحة!**"
+    
+    await status_msg.edit_text(report)
 
 # ===== أوامر المدير الأخرى =====
 @app.on_message(filters.command("id") & filters.private)
@@ -378,6 +459,11 @@ async def handle_source(client, message):
             
             v_id, title, p_id = res[0]
             ep_num = int(message.text)
+            
+            # حذف أي إدخال سابق بنفس العنوان ورقم الحلقة
+            db_query("DELETE FROM videos WHERE title = %s AND ep_num = %s AND v_id != %s", 
+                    (title, ep_num, v_id), fetch=False)
+            
             db_query("UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s", (ep_num, v_id), fetch=False)
             
             username = (await app.get_me()).username
