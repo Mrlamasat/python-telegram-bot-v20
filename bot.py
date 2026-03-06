@@ -100,39 +100,6 @@ def encrypt_for_stats(title):
     # يظهر أول حرف فقط والباقي نقاط
     return title[0] + "•" * (len(title) - 1)
 
-def encrypt_advanced(text, preserve_first=1, preserve_last=1):
-    """
-    تشفير متقدم: يحفظ أول n حرف وآخر n حرف
-    """
-    if not text:
-        return ""
-    
-    text = text.strip()
-    if len(text) <= preserve_first + preserve_last + 2:
-        return text[0] + "•" * (len(text) - 1)
-    
-    first_part = text[:preserve_first]
-    last_part = text[-preserve_last:]
-    middle_length = len(text) - preserve_first - preserve_last
-    
-    return f"{first_part}{'•' * middle_length}{last_part}"
-
-def obfuscate_arabic_text(text):
-    """
-    تشفير النص العربي بإضافة نقاط بين الحروف
-    """
-    if not text:
-        return ""
-    
-    # إزالة المسافات وتقطيع الحروف
-    clean_text = text.replace(" ", "")
-    if len(clean_text) <= 3:
-        return clean_text
-    
-    # إضافة نقاط بين الحروف
-    obfuscated = " . ".join(list(clean_text))
-    return obfuscated
-
 # ===== دوال مساعدة =====
 def format_duration(seconds):
     """تنسيق المدة الزمنية"""
@@ -270,7 +237,6 @@ async def show_episode(client, message, current_vid):
     
     # بناء نص المعلومات مع الاسم المشفر
     info_text = f"<b>📺 {encrypted_title} - حلقة {current_ep}</b>\n\n"
-    info_text += f"<i>⚡ تم التحميل بنجاح</i>\n\n"
     
     if info:
         info_text += f"⏱️ **المدة:** {info['duration']}\n"
