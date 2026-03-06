@@ -1,19 +1,23 @@
 import os
 import psycopg2
 import re
+import logging
 from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 
-# ===== الإعدادات =====
+logging.basicConfig(level=logging.INFO)
+
+# ===== الإعدادات الأساسية =====
 API_ID = 35405228
 API_HASH = "dacba460d875d963bbd4462c5eb554d6"
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-DATABASE_URL = os.environ.get("DATABASE_URL")
-SOURCE_CHANNEL = -1003547072209  # قناة المصدر الأساسية
-PUBLIC_CHANNEL = -1003554018307  # قناة النشر (التي فيها الكلمات المفتاحية)
+DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
 
-app = Client("smart_auto_fix_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+SOURCE_CHANNEL = -1003547072209
+ADMIN_ID = 7464197368 # آيدي حسابك
+
+app = Client("final_stable_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 def db_query(query, params=(), fetch=True):
     conn = psycopg2.connect(DATABASE_URL, sslmode="require")
@@ -24,26 +28,14 @@ def db_query(query, params=(), fetch=True):
     conn.close()
     return res
 
-def extract_episode_number(text):
-    """المستخرج الذكي من الكلمات المفتاحية"""
-    if not text: return 0
-    # يبحث عن (حلقة رقم أو الحلقة أو حلقة) يتبعها رقم، مع دعم الأقواس [ ] أو :
-    patterns = [
-        r'(?:حلقة رقم|الحلقة|حلقة)\s*[:\s]*\[?(\d+)\]?', # يبحث عن "حلقة رقم 5" أو "الحلقة: [5]"
-        r'(\d+)' # احتياط: أول رقم يظهر في النص
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return int(match.group(1))
-    return 0
-
-def visual_name(title):
-    if not title: return "مسلسل"
-    clean = re.sub(r'[^\w\s]', '', title).replace(" ", "")
+def obfuscate_visual(text):
+    if not text: return "مسلسل"
+    # تنظيف الاسم من أي رموز وجعل المسافات نقاط (ا . ل . م . د . ا . ح)
+    clean = re.sub(r'[^\w\s]', '', text).replace(" ", "")
     return " . ".join(list(clean))
 
 async def get_episodes_markup(title, current_v_id):
+    # جلب الحلقات مرتبة رقمياً
     res = db_query("SELECT v_id, ep_num FROM videos WHERE title = %s AND status = 'posted' ORDER BY ep_num ASC", (title,))
     if not res: return None
     btns, row, seen = [], [], set()
@@ -59,45 +51,57 @@ async def get_episodes_markup(title, current_v_id):
     if row: btns.append(row)
     return InlineKeyboardMarkup(btns)
 
+# --- نظام الرفع (Admin) ---
+
+@app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document))
+async def on_video(client, message):
+    v_id = str(message.id)
+    db_query("INSERT INTO videos (v_id, status) VALUES (%s, 'waiting') ON CONFLICT (v_id) DO UPDATE SET status='waiting'", (v_id,), fetch=False)
+    await message.reply_text("✅ استلمت الفيديو. أرسل البوستر الآن وضع اسم المسلسل في الوصف.")
+
+@app.on_message(filters.chat(SOURCE_CHANNEL) & filters.photo)
+async def on_poster(client, message):
+    res = db_query("SELECT v_id FROM videos WHERE status='waiting' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 1")
+    if not res: return
+    v_id = res[0][0]
+    title = message.caption or "مسلسل"
+    db_query("UPDATE videos SET title=%s, status='awaiting_ep' WHERE v_id=%s", (title, v_id), fetch=False)
+    await message.reply_text(f"📌 المسلسل: {title}\nأرسل الآن **رقم الحلقة** كرسالة نصية:")
+
+@app.on_message(filters.chat(SOURCE_CHANNEL) & filters.text & ~filters.command(["start", "del"]))
+async def on_ep_num(client, message):
+    if not message.text.isdigit(): return
+    res = db_query("SELECT v_id, title FROM videos WHERE status='awaiting_ep' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 1")
+    if not res: return
+    v_id, title = res[0]
+    ep = int(message.text)
+    db_query("UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s", (ep, v_id), fetch=False)
+    await message.reply_text(f"🚀 تم الحفظ بنجاح!\nالمسلسل: {title}\nالحلقة: {ep}")
+
+# --- نظام العرض (User) ---
+
 @app.on_message(filters.command("start") & filters.private)
 async def on_start(client, message):
     if len(message.command) < 2:
-        return await message.reply_text("أهلاً بك في بوت المشاهدة!")
+        return await message.reply_text(f"أهلاً بك يا {message.from_user.first_name} في بوت المشاهدة.")
 
     v_id = message.command[1]
-    # جلب البيانات الحالية من القاعدة
     res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
-    
-    title = res[0][0] if res else "مسلسل"
-    ep_num = res[0][1] if res else 0
+    if not res: return await message.reply_text("⚠️ الحلقة غير موجودة.")
 
-    # التنشيط التلقائي: إذا كان الرقم 0، يبحث عنه في المصدر أو النشر فوراً
-    if ep_num == 0:
-        try:
-            # نحاول جلب الرسالة من قناة المصدر أولاً
-            source_msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
-            if source_msg and source_msg.caption:
-                ep_num = extract_episode_number(source_msg.caption)
-                # إذا وجدنا الرقم، نحدث قاعدة البيانات فوراً
-                if ep_num > 0:
-                    db_query("UPDATE videos SET ep_num = %s WHERE v_id = %s", (ep_num, v_id), fetch=False)
-        except Exception as e:
-            print(f"Error auto-fixing: {e}")
-
+    title, ep = res[0]
     markup = await get_episodes_markup(title, v_id)
+    
     caption = (
-        f"<b>📺 المسلسل : {visual_name(title)}</b>\n"
-        f"<b>🎞️ رقم الحلقة : {ep_num}</b>\n\n"
+        f"<b>📺 المسلسل : {obfuscate_visual(title)}</b>\n"
+        f"<b>🎞️ رقم الحلقة : {ep}</b>\n\n"
         f"🍿 مشاهدة ممتعة!"
     )
 
     try:
-        await client.copy_message(
-            message.chat.id, SOURCE_CHANNEL, int(v_id),
-            caption=caption, reply_markup=markup, parse_mode=ParseMode.HTML
-        )
+        await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), caption=caption, reply_markup=markup, parse_mode=ParseMode.HTML)
     except:
-        await message.reply_text("⚠️ لم يتم العثور على الحلقة.")
+        await message.reply_text("⚠️ عذراً، لا يمكن الوصول للفيديو حالياً.")
 
 if __name__ == "__main__":
     app.run()
