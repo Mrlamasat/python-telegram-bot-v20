@@ -7,6 +7,7 @@ from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 
+# إعداد السجلات
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ===== الإعدادات =====
@@ -16,25 +17,11 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
 
 SOURCE_CHANNEL = -1003547072209 
-FORCE_SUB_CHANNEL = -1003894735143
-FORCE_SUB_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
-ADMIN_ID = 7464197368 # تأكد من وضع الآيدي الخاص بك هنا
+ADMIN_ID = 7464197368 # آيدي حسابك
 
-app = Client("mohammed_bot_fixed", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client("mohammed_bot_final_v2", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- دالة التحقق من الاشتراك (محسنة) ---
-async def is_subscribed(client, user_id):
-    if user_id == ADMIN_ID: return True
-    try:
-        member = await client.get_chat_member(FORCE_SUB_CHANNEL, user_id)
-        if member.status in ["member", "administrator", "creator"]:
-            return True
-    except Exception as e:
-        # إذا حدث خطأ تقني أو البوت ليس أدمن في القناة، نسمح للمستخدم بالمرور
-        logging.error(f"Subscription Check Error: {e}")
-        return True 
-    return False
-
+# ===== إدارة قاعدة البيانات =====
 def db_query(query, params=(), fetch=True):
     conn = None
     try:
@@ -49,19 +36,29 @@ def db_query(query, params=(), fetch=True):
         if conn: conn.close()
         return None
 
-def clean_name(text):
+# ===== تنظيف الأسماء (نظام صارم جداً) =====
+def clean_name_strict(text):
     if not text: return "مسلسل"
-    t = re.sub(r'[^\w\s]', '', text)
-    return t.replace(".", "").replace(" ", "").strip()
+    # نأخذ السطر الأول فقط ونحذف أي أرقام أو رموز
+    first_line = text.split('\n')[0].strip()
+    clean = re.sub(r'\d+', '', first_line) # حذف الأرقام
+    clean = re.sub(r'[^\w\s]', '', clean) # حذف الرموز
+    # حذف الكلمات الشائعة التي تخرب الربط
+    for word in ["الحلقة", "حلقة", "مشاهدة", "اضغط", "هنا", "جديدة"]:
+        clean = clean.replace(word, "")
+    return clean.replace(" ", "").strip()
 
 def visual_name(text):
-    clean = clean_name(text)
-    return " . ".join(list(clean))
+    """عرض الاسم بنقاط للجمالية"""
+    name = clean_name_strict(text)
+    return " . ".join(list(name))
 
+# ===== جلب أزرار الحلقات =====
 async def get_episodes_markup(title, current_v_id):
-    search_title = clean_name(title)
+    search_title = clean_name_strict(title)
     res = db_query("SELECT v_id, ep_num FROM videos WHERE title = %s ORDER BY ep_num ASC", (search_title,))
     if not res: return None
+    
     btns, row, seen = [], [], set()
     me = await app.get_me()
     for vid, ep in res:
@@ -75,47 +72,44 @@ async def get_episodes_markup(title, current_v_id):
     if row: btns.append(row)
     return InlineKeyboardMarkup(btns)
 
+# ===== معالجة أمر Start (بدون اشتراك إجباري) =====
 @app.on_message(filters.command("start") & filters.private)
 async def on_start(client, message):
     if len(message.command) < 2:
-        return await message.reply_text(f"أهلاً بك {message.from_user.first_name}!")
+        return await message.reply_text(f"أهلاً بك {message.from_user.first_name} في بوت المشاهدة!")
     
     v_id = message.command[1].strip()
     
-    # 1. فحص الاشتراك الإجباري أولاً
-    if not await is_subscribed(client, message.from_user.id):
-        return await message.reply_text(
-            f"⚠️ عذراً يا {message.from_user.first_name}، يجب عليك الاشتراك في القناة أولاً لتتمكن من المشاهدة.\n\n{FORCE_SUB_LINK}",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 اضغط هنا للاشتراك", url=FORCE_SUB_LINK)]])
-        )
-
-    # 2. جلب البيانات والتصحيح التلقائي
+    # 1. جلب البيانات من القاعدة
     res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
     title, ep = (res[0] if res and res[0] else (None, None))
 
+    # 2. نظام التصحيح التلقائي (لو كانت 0 أو غير موجودة)
     if not title or ep == 0:
         try:
             m = await client.get_messages(SOURCE_CHANNEL, int(v_id))
             if m and m.caption:
-                lines = [l.strip() for l in m.caption.split('\n') if l.strip()]
-                title = clean_name(lines[0])
-                ep_match = re.search(r'\[(\d+)\]', m.caption) or re.search(r'(\d+)', m.caption)
+                title = clean_name_strict(m.caption)
+                # استخراج رقم الحلقة (أول رقم يظهر في الكابتشن بالكامل)
+                ep_match = re.search(r'(\d+)', m.caption)
                 ep = int(ep_match.group(1)) if ep_match else 0
                 db_query("INSERT INTO videos (v_id, title, ep_num, status) VALUES (%s, %s, %s, 'posted') ON CONFLICT (v_id) DO UPDATE SET title=%s, ep_num=%s", (v_id, title, ep, title, ep), fetch=False)
         except:
             if not title: title, ep = "مسلسل", 0
 
-    # 3. الإرسال
+    # 3. إرسال الحلقة مباشرة
     markup = await get_episodes_markup(title, v_id)
     caption = f"<b>📺 المسلسل : {visual_name(title)}</b>\n<b>🎞️ رقم الحلقة : {ep}</b>\n\n🍿 مشاهدة ممتعة!"
 
     try:
         await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), caption=caption, reply_markup=markup, parse_mode=ParseMode.HTML)
     except:
-        await message.reply_text("⚠️ الحلقة غير متوفرة.")
+        await message.reply_text("⚠️ عذراً، هذه الحلقة غير متوفرة حالياً.")
 
+# ===== التشغيل =====
 async def main():
     await app.start()
+    logging.info("🚀 البوت يعمل الآن بنظام الأسماء الصارمة وبدون اشتراك إجباري...")
     await idle()
     await app.stop()
 
