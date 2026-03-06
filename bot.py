@@ -102,22 +102,26 @@ async def show_episode(client, message, current_vid):
     # تحديث المشاهدات
     db_query("UPDATE videos SET views = views + 1, last_view = NOW() WHERE v_id = %s", (current_vid,), fetch=False)
     
-    # جلب جميع حلقات نفس المسلسل
+    # جلب جميع حلقات نفس المسلسل مرتبة من الأحدث إلى الأقدم
     all_episodes = db_query("""
         SELECT v_id, ep_num FROM videos 
         WHERE title = %s AND status = 'posted' AND ep_num > 0 
-        ORDER BY ep_num ASC
+        ORDER BY ep_num ASC, CAST(v_id AS INTEGER) DESC
     """, (title,))
     
-    # التحقق من صحة كل فيديو واختيار الأحدث لكل رقم حلقة
+    # بناء قاموس للأرقام الصالحة فقط
     valid_episodes = {}
+    invalid_episodes = set()
     
+    # أولاً: تحقق من صحة كل فيديو
     for vid, ep_num in all_episodes:
-        # إذا لم نضف هذا الرقم بعد، أو وجدنا فيديو أحدث لهذا الرقم
-        if ep_num not in valid_episodes:
-            # تحقق من صحة الفيديو
-            if await is_valid_video(client, vid):
+        if await is_valid_video(client, vid):
+            # إذا كان الرقم غير موجود، أضفه (مع الاحتفاظ بأول ظهور وهو الأحدث بسبب الترتيب)
+            if ep_num not in valid_episodes:
                 valid_episodes[ep_num] = vid
+        else:
+            # سجل الأرقام المعطلة
+            invalid_episodes.add(ep_num)
     
     # بناء أزرار الحلقات الصالحة فقط
     btns, row = [], []
@@ -143,6 +147,13 @@ async def show_episode(client, message, current_vid):
     
     # إضافة زر القناة
     btns.append([InlineKeyboardButton("📢 قناة النشر", url=BACKUP_CHANNEL_LINK)])
+    
+    # إذا كان هناك أرقام معطلة، أضف رسالة تحذير للمدير فقط
+    if invalid_episodes and message.from_user.id == ADMIN_ID:
+        await client.send_message(
+            message.chat.id,
+            f"⚠️ تنبيه للمدير: الأرقام التالية معطلة: {sorted(invalid_episodes)}"
+        )
     
     # إرسال الفيديو
     await client.copy_message(
@@ -249,6 +260,7 @@ async def clean_command(client, message):
     cleaned = 0
     deleted = 0
     valid_eps = {}
+    invalid_list = []
     
     for v_id, title, ep_num in all_videos:
         if not title or not ep_num:
@@ -257,23 +269,28 @@ async def clean_command(client, message):
         # التحقق من صحة الفيديو
         if await is_valid_video(client, v_id):
             key = f"{title}_{ep_num}"
-            # إذا كان هذا الرقم موجوداً مسبقاً، احتفظ بالأحدث (بأكبر v_id)
-            if key not in valid_eps or int(v_id) > int(valid_eps[key]):
+            # احتفظ بالأحدث (بأكبر v_id)
+            if key not in valid_eps or int(v_id) > int(valid_eps[key][0]):
                 if key in valid_eps:
                     # حذف القديم
-                    db_query("DELETE FROM videos WHERE v_id = %s", (valid_eps[key],), fetch=False)
+                    old_vid = valid_eps[key][0]
+                    db_query("DELETE FROM videos WHERE v_id = %s", (old_vid,), fetch=False)
                     deleted += 1
-                valid_eps[key] = v_id
+                valid_eps[key] = (v_id, title, ep_num)
             else:
                 # حذف المكرر الأقدم
                 db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
                 deleted += 1
         else:
-            # حذف الفيديو المعطل
-            db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
-            deleted += 1
+            # سجل الفيديو المعطل للحذف
+            invalid_list.append(v_id)
         
         cleaned += 1
+    
+    # حذف جميع الفيديوهات المعطلة
+    for v_id in invalid_list:
+        db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
+        deleted += 1
     
     await status_msg.edit_text(f"✅ تم التنظيف!\n• تم فحص {cleaned} إدخال\n• تم حذف {deleted} إدخال مكرر/معطل")
 
