@@ -12,10 +12,10 @@ logging.basicConfig(level=logging.INFO)
 API_ID = 35405228
 API_HASH = "dacba460d875d963bbd4462c5eb554d6"
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 SOURCE_CHANNEL = -1003547072209
-ADMIN_ID = 7464197368 # آيدي حسابك
+PUBLIC_POST_CHANNEL = -1003554018307  # قناة النشر العامة
 
 app = Client("final_stable_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -30,12 +30,10 @@ def db_query(query, params=(), fetch=True):
 
 def obfuscate_visual(text):
     if not text: return "مسلسل"
-    # تنظيف الاسم من أي رموز وجعل المسافات نقاط (ا . ل . م . د . ا . ح)
     clean = re.sub(r'[^\w\s]', '', text).replace(" ", "")
     return " . ".join(list(clean))
 
 async def get_episodes_markup(title, current_v_id):
-    # جلب الحلقات مرتبة رقمياً
     res = db_query("SELECT v_id, ep_num FROM videos WHERE title = %s AND status = 'posted' ORDER BY ep_num ASC", (title,))
     if not res: return None
     btns, row, seen = [], [], set()
@@ -51,7 +49,7 @@ async def get_episodes_markup(title, current_v_id):
     if row: btns.append(row)
     return InlineKeyboardMarkup(btns)
 
-# --- نظام الرفع (Admin) ---
+# --- نظام الرفع والنشر (Admin) ---
 
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.document))
 async def on_video(client, message):
@@ -65,18 +63,38 @@ async def on_poster(client, message):
     if not res: return
     v_id = res[0][0]
     title = message.caption or "مسلسل"
-    db_query("UPDATE videos SET title=%s, status='awaiting_ep' WHERE v_id=%s", (title, v_id), fetch=False)
+    # حفظ آيدي البوستر أيضاً للنشر لاحقاً
+    db_query("UPDATE videos SET title=%s, poster_id=%s, status='awaiting_ep' WHERE v_id=%s", (title, message.photo.file_id, v_id), fetch=False)
     await message.reply_text(f"📌 المسلسل: {title}\nأرسل الآن **رقم الحلقة** كرسالة نصية:")
 
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.text & ~filters.command(["start", "del"]))
 async def on_ep_num(client, message):
     if not message.text.isdigit(): return
-    res = db_query("SELECT v_id, title FROM videos WHERE status='awaiting_ep' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 1")
+    res = db_query("SELECT v_id, title, poster_id FROM videos WHERE status='awaiting_ep' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 1")
     if not res: return
-    v_id, title = res[0]
+    
+    v_id, title, p_id = res[0]
     ep = int(message.text)
     db_query("UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s", (ep, v_id), fetch=False)
-    await message.reply_text(f"🚀 تم الحفظ بنجاح!\nالمسلسل: {title}\nالحلقة: {ep}")
+    
+    # --- جزء النشر التلقائي في القناة العامة ---
+    me = await client.get_me()
+    safe_title = obfuscate_visual(title)
+    pub_caption = (
+        f"🎬 <b>{safe_title}</b>\n\n"
+        f"<b>الحلقة: [{ep}]</b>\n"
+        f"<b>الجودة: [HD]</b>\n\n"
+        f"نتمنى لكم مشاهدة ممتعة."
+    )
+    pub_markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("▶️ مشاهدة الحلقة", url=f"https://t.me/{me.username}?start={v_id}")
+    ]])
+    
+    try:
+        await client.send_photo(chat_id=PUBLIC_POST_CHANNEL, photo=p_id, caption=pub_caption, reply_markup=pub_markup)
+        await message.reply_text(f"🚀 تم الحفظ والنشر في القناة بنجاح!\nالمسلسل: {title}\nالحلقة: {ep}")
+    except Exception as e:
+        await message.reply_text(f"✅ تم الحفظ، ولكن فشل النشر التلقائي. الخطأ: {e}")
 
 # --- نظام العرض (User) ---
 
