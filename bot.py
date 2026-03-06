@@ -178,7 +178,7 @@ async def start_command(client, message):
             await show_episode(client, message, v_id)
         else:
             markup = InlineKeyboardMarkup([[
-                InlineKeyboardButton("📢 قناة النشر", url=BACKUP_CHANNEL_LINK)
+                InlineKeyboardButton("📢 القناه الإحتياطية اشترك الان ", url=BACKUP_CHANNEL_LINK)
             ]])
             await message.reply_text(
                 "👋 أهلاً بك في بوت المسلسلات!\n"
