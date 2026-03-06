@@ -1,5 +1,6 @@
 import os
 import psycopg2
+import re
 import logging
 from datetime import datetime
 from pyrogram import Client, filters
@@ -48,6 +49,7 @@ def init_database():
             last_view TIMESTAMP
         )
     """, fetch=False)
+    logging.info("✅ قاعدة البيانات جاهزة")
 
 # ===== دوال مساعدة =====
 def encrypt_title(title):
@@ -57,7 +59,11 @@ def encrypt_title(title):
         return title
     return title[:3] + "..." + title[-3:]
 
-# ===== دالة التحقق من صحة الفيديو في القناة =====
+async def get_bot_username():
+    me = await app.get_me()
+    return me.username
+
+# ===== دالة التحقق من صحة الفيديو في قناة المصدر =====
 async def is_valid_video(client, v_id):
     try:
         await client.get_messages(SOURCE_CHANNEL, int(v_id))
@@ -92,51 +98,45 @@ async def start_command(client, message):
 
 # ===== دالة عرض الحلقة =====
 async def show_episode(client, message, current_vid):
-    # جلب معلومات الحلقة الحالية
+    # 1. جلب معلومات الحلقة المطلوبة
     video_info = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (current_vid,))
     if not video_info:
         return await message.reply_text("⚠️ هذه الحلقة غير موجودة في قاعدة البيانات")
     
     title, current_ep = video_info[0]
+    clean_title = title.strip()
     
     # تحديث المشاهدات
     db_query("UPDATE videos SET views = views + 1, last_view = NOW() WHERE v_id = %s", (current_vid,), fetch=False)
     
-    # جلب جميع حلقات نفس المسلسل مرتبة من الأحدث إلى الأقدم
+    # 2. جلب جميع الحلقات المنشورة لهذا المسلسل
     all_episodes = db_query("""
         SELECT v_id, ep_num FROM videos 
-        WHERE title = %s AND status = 'posted' AND ep_num > 0 
-        ORDER BY ep_num ASC, CAST(v_id AS INTEGER) DESC
-    """, (title,))
+        WHERE TRIM(title) = %s AND status = 'posted' AND ep_num > 0 
+        ORDER BY ep_num ASC
+    """, (clean_title,))
     
-    # بناء قاموس للأرقام الصالحة فقط
-    valid_episodes = {}
-    invalid_episodes = set()
-    
-    # أولاً: تحقق من صحة كل فيديو
-    for vid, ep_num in all_episodes:
-        if await is_valid_video(client, vid):
-            # إذا كان الرقم غير موجود، أضفه (مع الاحتفاظ بأول ظهور وهو الأحدث بسبب الترتيب)
-            if ep_num not in valid_episodes:
-                valid_episodes[ep_num] = vid
-        else:
-            # سجل الأرقام المعطلة
-            invalid_episodes.add(ep_num)
-    
-    # بناء أزرار الحلقات الصالحة فقط
+    # 3. بناء الأزرار (فقط للحلقات الصالحة)
+    username = await get_bot_username()
     btns, row = [], []
-    
-    # ترتيب الأرقام تصاعدياً
-    for ep_num in sorted(valid_episodes.keys()):
-        vid = valid_episodes[ep_num]
-        
+    seen_eps = set()  # لمنع التكرار
+
+    for vid, ep_num in all_episodes:
+        # تحقق من صحة الفيديو في قناة المصدر
+        if not await is_valid_video(client, vid):
+            continue  # تخطي هذا الإدخال إذا كان الفيديو غير صالح
+            
+        if ep_num in seen_eps:
+            continue
+        seen_eps.add(ep_num)
+
         # تمييز الحلقة الحالية
-        if str(vid) == str(current_vid):
-            label = f"✅ {ep_num}"
-        else:
-            label = str(ep_num)
+        label = f"✅ {ep_num}" if str(vid) == str(current_vid) else str(ep_num)
         
-        row.append(InlineKeyboardButton(label, callback_data=f"ep_{vid}"))
+        row.append(InlineKeyboardButton(
+            label, 
+            url=f"https://t.me/{username}?start={vid}"
+        ))
         
         if len(row) == 5:
             btns.append(row)
@@ -145,51 +145,22 @@ async def show_episode(client, message, current_vid):
     if row:
         btns.append(row)
     
-    # إضافة زر القناة
-    btns.append([InlineKeyboardButton("📢 قناة النشر", url=BACKUP_CHANNEL_LINK)])
+    # إضافة زر القناة الاحتياطية
+    btns.append([InlineKeyboardButton("📢 قناة النشر الأساسية", url=BACKUP_CHANNEL_LINK)])
     
-    # إذا كان هناك أرقام معطلة، أضف رسالة تحذير للمدير فقط
-    if invalid_episodes and message.from_user.id == ADMIN_ID:
-        await client.send_message(
-            message.chat.id,
-            f"⚠️ تنبيه للمدير: الأرقام التالية معطلة: {sorted(invalid_episodes)}"
-        )
-    
-    # إرسال الفيديو
-    await client.copy_message(
-        chat_id=message.chat.id,
-        from_chat_id=SOURCE_CHANNEL,
-        message_id=int(current_vid),
-        caption=f"<b>📺 {encrypt_title(title)} - حلقة {current_ep}</b>",
-        reply_markup=InlineKeyboardMarkup(btns),
-        parse_mode=ParseMode.HTML
-    )
-
-# ===== معالج الضغط على الأزرار =====
-@app.on_callback_query()
-async def handle_callback(client, callback_query: CallbackQuery):
+    # 4. إرسال الفيديو مع الأزرار
     try:
-        data = callback_query.data
-        
-        if data.startswith("ep_"):
-            v_id = data.replace("ep_", "")
-            
-            # التحقق من صحة الفيديو قبل العرض
-            if not await is_valid_video(client, v_id):
-                await callback_query.answer("❌ هذه الحلقة غير متوفرة", show_alert=True)
-                return
-            
-            # حذف الرسالة القديمة
-            await callback_query.message.delete()
-            
-            # عرض الحلقة الجديدة
-            await show_episode(client, callback_query.message, v_id)
-            
-            await callback_query.answer()
-            
+        await client.copy_message(
+            chat_id=message.chat.id,
+            from_chat_id=SOURCE_CHANNEL,
+            message_id=int(current_vid),
+            caption=f"<b>📺 {encrypt_title(title)} - حلقة {current_ep}</b>",
+            reply_markup=InlineKeyboardMarkup(btns),
+            parse_mode=ParseMode.HTML
+        )
     except Exception as e:
-        logging.error(f"Callback error: {e}")
-        await callback_query.answer("حدث خطأ", show_alert=True)
+        logging.error(f"Copy Error: {e}")
+        await message.reply_text("⚠️ عذراً، تعذر جلب الفيديو من المصدر.")
 
 # ===== أوامر المدير =====
 @app.on_message(filters.command("id") & filters.private)
@@ -246,55 +217,125 @@ async def stats_command(client, message):
     
     await message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
-@app.on_message(filters.command("clean") & filters.private)
-async def clean_command(client, message):
-    """أمر لتنظيف قاعدة البيانات من الإدخالات المكررة والمعطلة (للمدير فقط)"""
+# ===== أمر حذف الإدخالات غير الصالحة من قاعدة البيانات فقط =====
+@app.on_message(filters.command("fix") & filters.private)
+async def fix_invalid_entries(client, message):
     if message.from_user.id != ADMIN_ID:
-        return await message.reply_text("❌ هذا الأمر للمدير فقط.")
+        return await message.reply_text("❌ هذا الأمر للمدير فقط")
     
-    status_msg = await message.reply_text("🧹 جاري تنظيف قاعدة البيانات...")
+    status_msg = await message.reply_text("🔍 جاري البحث عن الإدخالات غير الصالحة...")
     
-    # جلب جميع الفيديوهات
-    all_videos = db_query("SELECT v_id, title, ep_num FROM videos WHERE status = 'posted'")
+    # جلب جميع الإدخالات من قاعدة البيانات
+    all_entries = db_query("SELECT v_id, title, ep_num FROM videos WHERE status = 'posted'")
     
-    cleaned = 0
-    deleted = 0
-    valid_eps = {}
+    invalid_count = 0
+    valid_count = 0
     invalid_list = []
     
-    for v_id, title, ep_num in all_videos:
-        if not title or not ep_num:
-            continue
-            
-        # التحقق من صحة الفيديو
-        if await is_valid_video(client, v_id):
-            key = f"{title}_{ep_num}"
-            # احتفظ بالأحدث (بأكبر v_id)
-            if key not in valid_eps or int(v_id) > int(valid_eps[key][0]):
-                if key in valid_eps:
-                    # حذف القديم
-                    old_vid = valid_eps[key][0]
-                    db_query("DELETE FROM videos WHERE v_id = %s", (old_vid,), fetch=False)
-                    deleted += 1
-                valid_eps[key] = (v_id, title, ep_num)
-            else:
-                # حذف المكرر الأقدم
-                db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
-                deleted += 1
+    for v_id, title, ep_num in all_entries:
+        # التحقق من صحة الفيديو في قناة المصدر
+        if not await is_valid_video(client, v_id):
+            # هذا الإدخال غير صالح (لا يوجد فيديو في القناة)
+            db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
+            invalid_count += 1
+            invalid_list.append(f"• {title} - حلقة {ep_num} (ID: {v_id})")
         else:
-            # سجل الفيديو المعطل للحذف
-            invalid_list.append(v_id)
-        
-        cleaned += 1
+            valid_count += 1
     
-    # حذف جميع الفيديوهات المعطلة
-    for v_id in invalid_list:
-        db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
-        deleted += 1
+    # تقرير النتيجة
+    if invalid_count > 0:
+        report = f"✅ **تم الحذف بنجاح!**\n\n"
+        report += f"📊 **الإحصائيات:**\n"
+        report += f"• إجمالي الإدخالات: {valid_count + invalid_count}\n"
+        report += f"• الإدخالات الصالحة: {valid_count}\n"
+        report += f"• الإدخالات غير الصالحة: {invalid_count}\n\n"
+        report += f"🗑️ **الإدخالات المحذوفة:**\n"
+        report += "\n".join(invalid_list[:10])  # عرض أول 10 فقط
+        if len(invalid_list) > 10:
+            report += f"\n... و{len(invalid_list) - 10} إدخالات أخرى"
+    else:
+        report = f"✅ **لا توجد إدخالات غير صالحة!**\n\n"
+        report += f"📊 جميع الإدخالات الـ {valid_count} صالحة."
     
-    await status_msg.edit_text(f"✅ تم التنظيف!\n• تم فحص {cleaned} إدخال\n• تم حذف {deleted} إدخال مكرر/معطل")
+    await status_msg.edit_text(report)
 
-# ===== معالج قناة المصدر =====
+# ===== أمر المزامنة مع قناة النشر =====
+@app.on_message(filters.command("sync") & filters.private)
+async def sync_from_channel(client, message):
+    if message.from_user.id != ADMIN_ID:
+        return await message.reply_text("❌ هذا الأمر للمدير فقط")
+    
+    status_msg = await message.reply_text("🔄 جاري مطابقة البيانات مع قناة النشر... انتظر قليلاً")
+    
+    updated = 0
+    processed = 0
+    
+    # جلب آخر 200 رسالة من قناة النشر العامة
+    async for msg in client.get_chat_history(PUBLIC_POST_CHANNEL, limit=200):
+        processed += 1
+        
+        # التأكد أنها رسالة تحتوي على زر (رابط start) ووصف
+        if msg.reply_markup and msg.caption and msg.reply_markup.inline_keyboard:
+            try:
+                # استخراج v_id من رابط الزر
+                button_url = msg.reply_markup.inline_keyboard[0][0].url
+                if "start=" not in button_url:
+                    continue
+                    
+                v_id = button_url.split("start=")[1]
+                
+                # استخراج رقم الحلقة من الوصف
+                patterns = [
+                    r'\[(\d+)\]',  # [17]
+                    r'حلقة:?\s*(\d+)',  # حلقة 17
+                    r'الحلقة:?\s*(\d+)'  # الحلقة 17
+                ]
+                
+                correct_ep = None
+                for pattern in patterns:
+                    match = re.search(pattern, msg.caption, re.IGNORECASE)
+                    if match:
+                        correct_ep = int(match.group(1))
+                        break
+                
+                if correct_ep:
+                    # تحقق مما إذا كان هذا v_id موجود في قاعدة البيانات
+                    existing = db_query("SELECT ep_num FROM videos WHERE v_id = %s", (v_id,))
+                    
+                    if existing:
+                        # إذا كان موجوداً ولكن برقم مختلف
+                        if existing[0][0] != correct_ep:
+                            db_query(
+                                "UPDATE videos SET ep_num = %s, status = 'posted' WHERE v_id = %s",
+                                (correct_ep, v_id),
+                                fetch=False
+                            )
+                            updated += 1
+                    else:
+                        # إذا لم يكن موجوداً، أضفه
+                        title_match = re.search(r'<b>(.+?)</b>', msg.caption)
+                        title = title_match.group(1) if title_match else "مسلسل"
+                        title = re.sub(r'<[^>]+>', '', title)
+                        
+                        db_query(
+                            "INSERT INTO videos (v_id, title, ep_num, status) VALUES (%s, %s, %s, 'posted')",
+                            (v_id, title, correct_ep),
+                            fetch=False
+                        )
+                        updated += 1
+                        
+            except Exception as e:
+                logging.error(f"Error syncing msg {msg.id}: {e}")
+    
+    await status_msg.edit_text(
+        f"✅ **تمت المزامنة بنجاح!**\n\n"
+        f"📊 **الإحصائيات:**\n"
+        f"• تم فحص {processed} منشور في القناة\n"
+        f"• تم تحديث/إضافة {updated} حلقة\n\n"
+        f"🔹 استخدم أمر /fix لحذف الإدخالات غير الصالحة."
+    )
+
+# ===== معالج قناة المصدر (لرفع الفيديوهات) =====
 @app.on_message(filters.chat(SOURCE_CHANNEL))
 async def handle_source(client, message):
     try:
@@ -346,7 +387,7 @@ async def handle_source(client, message):
             )
             
             # النشر في القناة العامة
-            username = (await app.get_me()).username
+            username = await get_bot_username()
             pub_caption = f"🎬 <b>{encrypt_title(title)}</b>\n\n<b>الحلقة: [{ep_num}]</b>"
             pub_markup = InlineKeyboardMarkup([[
                 InlineKeyboardButton("▶️ مشاهدة", url=f"https://t.me/{username}?start={v_id}")
