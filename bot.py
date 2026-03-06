@@ -1,96 +1,34 @@
 import os
 import psycopg2
-import re
-import logging
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.enums import ParseMode
 
-logging.basicConfig(level=logging.INFO)
-
-# ===== الإعدادات الأساسية =====
+# الإعدادات
 API_ID = 35405228
 API_HASH = "dacba460d875d963bbd4462c5eb554d6"
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-SOURCE_CHANNEL = -1003547072209
-PUBLIC_POST_CHANNEL = -1003554018307
-ADMIN_ID = 7464197368 
+# --- تغيير اسم الجلسة هنا لضمان عدم التداخل مع Termux ---
+app = Client("railway_live_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-app = Client("emergency_fix_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+@app.on_message(filters.command("start"))
+async def start(client, message):
+    await message.reply_text("✅ البوت يعمل الآن بشكل مستقل عن أي جلسات أخرى!")
 
-def db_query(query, params=(), fetch=True):
+@app.on_message(filters.command("stats"))
+async def stats(client, message):
     try:
-        conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+        # إضافة timeout للاتصال لكي لا يعلق البوت إذا كانت القاعدة مشغولة
+        conn = psycopg2.connect(DATABASE_URL, sslmode="require", connect_timeout=5)
         cur = conn.cursor()
-        cur.execute(query, params)
-        res = cur.fetchall() if fetch else (conn.commit() or None)
+        cur.execute("SELECT COUNT(*) FROM videos")
+        count = cur.fetchone()[0]
         cur.close()
         conn.close()
-        return res
+        await message.reply_text(f"📊 القاعدة متصلة. عدد السجلات: {count}")
     except Exception as e:
-        logging.error(f"Database Error: {e}")
-        return []
-
-def obfuscate_visual(text):
-    if not text: return "مسلسل"
-    clean = re.sub(r'[^\w\s]', '', text).replace(" ", "")
-    return " . ".join(list(clean))
-
-# --- نظام الإحصائيات (مباشر وبسيط) ---
-@app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
-async def get_stats(client, message):
-    res = db_query("SELECT title, SUM(views) FROM videos GROUP BY title ORDER BY SUM(views) DESC LIMIT 5")
-    if not res:
-        return await message.reply_text("❌ لا توجد بيانات في القاعدة.")
-    
-    text = "📊 <b>الإحصائيات العامة:</b>\n\n"
-    for title, v in res:
-        text += f"• {obfuscate_visual(title)} ← {v}\n"
-    await message.reply_text(text)
-
-# --- نظام العرض (User) ---
-@app.on_message(filters.command("start") & filters.private)
-async def on_start(client, message):
-    if len(message.command) < 2:
-        return await message.reply_text("أهلاً بك يا محمد!")
-
-    v_id = message.command[1]
-    
-    # تحديث المشاهدات
-    db_query("UPDATE videos SET views = COALESCE(views, 0) + 1, last_view = CURRENT_TIMESTAMP WHERE v_id = %s", (v_id,), fetch=False)
-    
-    res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
-    if not res:
-        return await message.reply_text("⚠️ الحلقة غير موجودة.")
-
-    title, ep = res[0]
-    
-    # جلب الحلقات للأزرار
-    username = (await client.get_me()).username
-    ep_res = db_query("SELECT v_id, ep_num FROM videos WHERE title = %s AND status = 'posted' ORDER BY ep_num ASC", (title,))
-    
-    btns, row, seen = [], [], set()
-    for vid, e_num in ep_res:
-        if e_num == 0 or e_num in seen: continue
-        seen.add(e_num)
-        label = f"✅ {e_num}" if str(vid) == str(v_id) else f"{e_num}"
-        row.append(InlineKeyboardButton(label, url=f"https://t.me/{username}?start={vid}"))
-        if len(row) == 5:
-            btns.append(row)
-            row = []
-    if row: btns.append(row)
-
-    caption = f"<b>📺 المسلسل : {obfuscate_visual(title)}</b>\n<b>🎞️ رقم الحلقة : {ep}</b>\n\n🍿 مشاهدة ممتعة!"
-    
-    try:
-        await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), caption=caption, reply_markup=InlineKeyboardMarkup(btns))
-    except Exception as e:
-        await message.reply_text(f"⚠️ خطأ في العرض: {e}")
-
-# --- الأوامر المفقودة (النشر والرفع) ادمجها هنا إذا عمل البوت ---
-# ... (يمكنك إضافة بقية الهاندلرز لاحقاً بعد التأكد من الاستجابة)
+        await message.reply_text(f"❌ القاعدة لا تستجيب: {e}")
 
 if __name__ == "__main__":
+    print("🚀 البوت بدأ التشغيل...")
     app.run()
