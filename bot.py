@@ -16,7 +16,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 SOURCE_CHANNEL = -1003547072209
 PUBLIC_POST_CHANNEL = -1003554018307
-ADMIN_ID = 7464197368 
+ADMIN_ID = 7464197368
 
 app = Client("railway_final_stable", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -64,41 +64,174 @@ async def get_bot_username():
         BOT_CACHE["username"] = me.username
     return BOT_CACHE["username"]
 
-# ===== أمر الإحصائيات =====
-@app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
-async def get_stats(client, message):
+# ===== معالج الأوامر في الخاص =====
+@app.on_message(filters.command("start") & filters.private)
+async def start_command(client, message):
     try:
-        res = db_query("SELECT title, SUM(views) FROM videos GROUP BY title ORDER BY SUM(views) DESC LIMIT 5")
-        if not res:
-            return await message.reply_text("❌ لا توجد بيانات حالياً.")
+        if len(message.command) > 1:
+            v_id = message.command[1]
+            
+            # تحديث المشاهدات
+            db_query("UPDATE videos SET views = COALESCE(views, 0) + 1, last_view = CURRENT_TIMESTAMP WHERE v_id = %s", (v_id,), fetch=False)
+            
+            # جلب معلومات الحلقة
+            res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
+            if not res:
+                return await message.reply_text("⚠️ الحلقة غير موجودة.")
+            
+            title, ep = res[0]
+            username = await get_bot_username()
+            
+            # جلب قائمة الحلقات
+            ep_res = db_query("SELECT v_id, ep_num FROM videos WHERE title = %s AND status = 'posted' ORDER BY ep_num ASC", (title,))
+            
+            # بناء الأزرار
+            btns, row, seen = [], [], set()
+            for vid, e_n in ep_res:
+                if e_n == 0 or e_n in seen:
+                    continue
+                seen.add(e_n)
+                label = f"✅ {e_n}" if str(vid) == str(v_id) else f"{e_n}"
+                row.append(InlineKeyboardButton(label, url=f"https://t.me/{username}?start={vid}"))
+                if len(row) == 5:
+                    btns.append(row)
+                    row = []
+            if row:
+                btns.append(row)
+            
+            caption = f"<b>📺 {obfuscate_visual(title)} - حلقة {ep}</b>"
+            
+            try:
+                await client.copy_message(
+                    message.chat.id,
+                    SOURCE_CHANNEL,
+                    int(v_id),
+                    caption=caption,
+                    reply_markup=InlineKeyboardMarkup(btns) if btns else None,
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                await message.reply_text(f"⚠️ خطأ في جلب الفيديو: {e}")
+        else:
+            await message.reply_text("👋 أهلاً بك في بوت المسلسلات!\nتابع قناتنا لمشاهدة أحدث الحلقات.")
+    except Exception as e:
+        logging.error(f"خطأ في start: {e}")
+        await message.reply_text("❌ حدث خطأ، حاول مرة أخرى.")
+
+@app.on_message(filters.command("id") & filters.private)
+async def id_command(client, message):
+    await message.reply_text(
+        f"👤 **معلوماتك:**\n"
+        f"معرفك: `{message.from_user.id}`\n"
+        f"معرف المحادثة: `{message.chat.id}`\n"
+        f"الاسم: {message.from_user.first_name}"
+    )
+
+@app.on_message(filters.command("stats") & filters.private)
+async def stats_command(client, message):
+    try:
+        # التحقق من أن الأمر من المدير
+        if message.from_user.id != ADMIN_ID:
+            return await message.reply_text("❌ هذا الأمر للمدير فقط.")
         
-        text = "📊 <b>تقرير المشاهدات العام:</b>\n\n"
-        for title, v in res:
-            text += f"• {obfuscate_visual(title)} ← {v} مشاهدة\n"
-        await message.reply_text(text, parse_mode=ParseMode.HTML)
+        # إحصائيات عامة
+        total_videos = db_query("SELECT COUNT(*) FROM videos")[0][0]
+        total_views = db_query("SELECT SUM(views) FROM videos")[0][0] or 0
+        
+        text = f"📊 **إحصائيات عامة**\n\n"
+        text += f"📹 إجمالي الفيديوهات: {total_videos}\n"
+        text += f"👀 إجمالي المشاهدات: {total_views}\n\n"
+        text += "**أكثر 5 مسلسلات مشاهدة:**\n"
+        
+        top_series = db_query("SELECT title, SUM(views) FROM videos GROUP BY title ORDER BY SUM(views) DESC LIMIT 5")
+        if top_series:
+            for title, views in top_series:
+                text += f"• {obfuscate_visual(title)}: {views} مشاهدة\n"
+        else:
+            text += "لا توجد بيانات كافية\n"
+        
+        await message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        
     except Exception as e:
         await message.reply_text(f"❌ خطأ: {e}")
 
-# ===== أمر التشخيص =====
-@app.on_message(filters.command("debug") & filters.user(ADMIN_ID))
+@app.on_message(filters.command("debug") & filters.private)
 async def debug_command(client, message):
     try:
-        # اختبار القناة
-        channel = await client.get_chat(SOURCE_CHANNEL)
-        await message.reply_text(f"✅ القناة: {channel.title}\nID: {channel.id}\nType: {channel.type}")
+        # التحقق من أن الأمر من المدير
+        if message.from_user.id != ADMIN_ID:
+            return await message.reply_text("❌ هذا الأمر للمدير فقط.")
         
-        # اختبار قاعدة البيانات
-        count = db_query("SELECT COUNT(*) FROM videos")
-        await message.reply_text(f"📊 عدد الفيديوهات في DB: {count[0][0] if count else 0}")
+        text = "🔍 **تشخيص البوت**\n\n"
         
-        # اختبار صلاحيات البوت
-        bot_member = await client.get_chat_member(SOURCE_CHANNEL, "me")
-        await message.reply_text(f"👤 صلاحية البوت: {bot_member.status}")
+        # 1. معلومات البوت
+        me = await client.get_me()
+        text += f"**معلومات البوت:**\n"
+        text += f"• الاسم: {me.first_name}\n"
+        text += f"• اليوزرنيم: @{me.username}\n"
+        text += f"• المعرف: {me.id}\n\n"
+        
+        # 2. معلومات القناة المصدر
+        try:
+            channel = await client.get_chat(SOURCE_CHANNEL)
+            text += f"**قناة المصدر:**\n"
+            text += f"• الاسم: {channel.title}\n"
+            text += f"• المعرف: {channel.id}\n"
+            
+            # التحقق من صلاحيات البوت
+            bot_member = await client.get_chat_member(SOURCE_CHANNEL, "me")
+            text += f"• صلاحية البوت: {bot_member.status}\n"
+        except Exception as e:
+            text += f"• ❌ خطأ في الوصول للقناة: {e}\n"
+        
+        text += f"\n"
+        
+        # 3. معلومات القناة العامة
+        try:
+            pub_channel = await client.get_chat(PUBLIC_POST_CHANNEL)
+            text += f"**القناة العامة:**\n"
+            text += f"• الاسم: {pub_channel.title}\n"
+            text += f"• المعرف: {pub_channel.id}\n"
+            
+            # التحقق من وجود البوت
+            try:
+                bot_member_pub = await client.get_chat_member(PUBLIC_POST_CHANNEL, "me")
+                text += f"• صلاحية البوت: {bot_member_pub.status}\n"
+            except:
+                text += f"• ⚠️ البوت ليس عضواً في القناة\n"
+        except Exception as e:
+            text += f"• ❌ خطأ في الوصول للقناة: {e}\n"
+        
+        text += f"\n"
+        
+        # 4. قاعدة البيانات
+        try:
+            # عدد الفيديوهات
+            count = db_query("SELECT COUNT(*) FROM videos")[0][0]
+            text += f"**قاعدة البيانات:**\n"
+            text += f"• عدد الفيديوهات: {count}\n"
+            
+            # آخر 5 فيديوهات
+            recent = db_query("""
+                SELECT v_id, title, ep_num, status, views 
+                FROM videos 
+                ORDER BY CAST(v_id AS INTEGER) DESC 
+                LIMIT 5
+            """)
+            
+            if recent:
+                text += f"\n**آخر 5 فيديوهات:**\n"
+                for v_id, title, ep, status, views in recent:
+                    text += f"• {v_id}: {title or 'بدون عنوان'} | حلقة {ep or '?'} | {status} | {views} مشاهدة\n"
+        except Exception as e:
+            text += f"• ❌ خطأ في قاعدة البيانات: {e}\n"
+        
+        await message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
         
     except Exception as e:
         await message.reply_text(f"❌ خطأ في التشخيص: {e}")
 
-# ===== معالج قناة المصدر =====
+# ===== معالج قناة المصدر (لرفع الفيديوهات) =====
 @app.on_message(filters.chat(SOURCE_CHANNEL))
 async def handle_source(client, message):
     try:
@@ -196,11 +329,11 @@ async def handle_source(client, message):
                     reply_to_message_id=message.id
                 )
         
-        # 4. رسالة تشخيصية لأي نص آخر
+        # 4. رسالة لأي نص آخر
         elif message.text:
             await client.send_message(
                 SOURCE_CHANNEL,
-                f"📝 تم استقبال نص: {message.text[:50]}...\nلإضافة حلقة، أرسل فيديو أولاً.",
+                "📝 أرسل فيديو أولاً لبدء عملية الرفع.",
                 reply_to_message_id=message.id
             )
     
@@ -213,61 +346,6 @@ async def handle_source(client, message):
             )
         except:
             pass
-
-# ===== نظام العرض للمشتركين =====
-@app.on_message(filters.command("start") & filters.private)
-async def on_start(client, message):
-    try:
-        if len(message.command) < 2:
-            return await message.reply_text("أهلاً بك! ابدأ المشاهدة من قنواتنا.")
-
-        v_id = message.command[1]
-        
-        # تحديث المشاهدات
-        db_query("UPDATE videos SET views = COALESCE(views, 0) + 1, last_view = CURRENT_TIMESTAMP WHERE v_id = %s", (v_id,), fetch=False)
-        
-        # جلب معلومات الحلقة
-        res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
-        if not res:
-            return await message.reply_text("⚠️ الحلقة غير موجودة.")
-
-        title, ep = res[0]
-        username = await get_bot_username()
-        
-        # جلب قائمة الحلقات
-        ep_res = db_query("SELECT v_id, ep_num FROM videos WHERE title = %s AND status = 'posted' ORDER BY ep_num ASC", (title,))
-        
-        # بناء الأزرار
-        btns, row, seen = [], [], set()
-        for vid, e_n in ep_res:
-            if e_n == 0 or e_n in seen:
-                continue
-            seen.add(e_n)
-            label = f"✅ {e_n}" if str(vid) == str(v_id) else f"{e_n}"
-            row.append(InlineKeyboardButton(label, url=f"https://t.me/{username}?start={vid}"))
-            if len(row) == 5:
-                btns.append(row)
-                row = []
-        if row:
-            btns.append(row)
-
-        caption = f"<b>📺 {obfuscate_visual(title)} - حلقة {ep}</b>"
-        
-        try:
-            await client.copy_message(
-                message.chat.id,
-                SOURCE_CHANNEL,
-                int(v_id),
-                caption=caption,
-                reply_markup=InlineKeyboardMarkup(btns) if btns else None,
-                parse_mode=ParseMode.HTML
-            )
-        except Exception as e:
-            await message.reply_text(f"⚠️ خطأ في جلب الفيديو: {e}")
-            
-    except Exception as e:
-        logging.error(f"خطأ في start: {e}")
-        await message.reply_text("❌ حدث خطأ، حاول مرة أخرى.")
 
 # ===== تشغيل البوت =====
 if __name__ == "__main__":
