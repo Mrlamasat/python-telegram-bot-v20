@@ -17,7 +17,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 SOURCE_CHANNEL = -1003547072209
 PUBLIC_POST_CHANNEL = -1003554018307
-BACKUP_CHANNEL_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"  # رابط القناة الاحتياطية
+BACKUP_CHANNEL_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
 ADMIN_ID = 7720165591
 
 app = Client("railway_final_stable", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -40,7 +40,6 @@ def db_query(query, params=(), fetch=True):
         return []
 
 def init_database():
-    """إنشاء جدول قاعدة البيانات إذا لم يكن موجوداً"""
     db_query("""
         CREATE TABLE IF NOT EXISTS videos (
             v_id TEXT PRIMARY KEY,
@@ -56,7 +55,6 @@ def init_database():
 
 # ===== دوال مساعدة =====
 def encrypt_title(title):
-    """تشفير أسماء المسلسلات للعرض"""
     if not title:
         return "مسلسل"
     if len(title) <= 6:
@@ -73,34 +71,44 @@ async def get_bot_username():
 @app.on_message(filters.command("start") & filters.private)
 async def start_command(client, message):
     try:
+        # إذا كان الدخول عبر رابط حلقة (يحتوي على v_id)
         if len(message.command) > 1:
             v_id = message.command[1]
             
-            # التحقق من وجود الحلقة
+            # 1. جلب معلومات الحلقة المطلوبة من قاعدة البيانات
             video_info = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
+            
             if not video_info:
-                return await message.reply_text("⚠️ الحلقة غير موجودة.")
+                return await message.reply_text("⚠️ هذه الحلقة غير موجودة أو تم حذفها.")
             
             title, ep = video_info[0]
+            clean_title = title.strip()
             
-            # تحديث المشاهدات
+            # 2. تحديث عدد المشاهدات وتوقيت آخر مشاهدة
             db_query("UPDATE videos SET views = COALESCE(views, 0) + 1, last_view = CURRENT_TIMESTAMP WHERE v_id = %s", (v_id,), fetch=False)
             
-            # جلب جميع حلقات نفس المسلسل
+            # 3. جلب كافة الحلقات المنشورة فعلياً لنفس المسلسل
             episodes = db_query("""
                 SELECT v_id, ep_num 
                 FROM videos 
-                WHERE title = %s AND status = 'posted' AND ep_num IS NOT NULL 
+                WHERE TRIM(title) = %s 
+                AND status = 'posted' 
+                AND ep_num > 0 
                 ORDER BY ep_num ASC
-            """, (title,))
+            """, (clean_title,))
             
-            # بناء أزرار الحلقات
+            # 4. بناء لوحة الأزرار
             username = await get_bot_username()
             btns = []
             row = []
-            
+            seen_episodes = set()
+
             for vid, ep_num in episodes:
-                # تمييز الحلقة الحالية
+                if ep_num in seen_episodes:
+                    continue
+                seen_episodes.add(ep_num)
+
+                # تحديث الرقم: وضع علامة صح على الحلقة التي تم ضغطها الآن
                 if str(vid) == str(v_id):
                     label = f"✅ {ep_num}"
                 else:
@@ -111,6 +119,7 @@ async def start_command(client, message):
                     url=f"https://t.me/{username}?start={vid}"
                 ))
                 
+                # تنظيم الصفوف: 5 أزرار في كل سطر
                 if len(row) == 5:
                     btns.append(row)
                     row = []
@@ -118,36 +127,32 @@ async def start_command(client, message):
             if row:
                 btns.append(row)
             
-            # إضافة زر القناة الاحتياطية
-            btns.append([InlineKeyboardButton("📢 القناة", url=BACKUP_CHANNEL_LINK)])
+            # إضافة زر القناة في الأسفل
+            btns.append([InlineKeyboardButton("📢 قناة النشر", url=BACKUP_CHANNEL_LINK)])
             
-            # إرسال الفيديو
-            try:
-                await client.copy_message(
-                    chat_id=message.chat.id,
-                    from_chat_id=SOURCE_CHANNEL,
-                    message_id=int(v_id),
-                    caption=f"<b>📺 {encrypt_title(title)} - حلقة {ep}</b>",
-                    reply_markup=InlineKeyboardMarkup(btns),
-                    parse_mode=ParseMode.HTML
-                )
-            except Exception as e:
-                logging.error(f"خطأ في نسخ الفيديو: {e}")
-                await message.reply_text("⚠️ حدث خطأ في جلب الفيديو.")
+            # 5. إرسال الفيديو مع لوحة الأزرار المحدثة
+            await client.copy_message(
+                chat_id=message.chat.id,
+                from_chat_id=SOURCE_CHANNEL,
+                message_id=int(v_id),
+                caption=f"<b>📺 {encrypt_title(title)} - حلقة {ep}</b>",
+                reply_markup=InlineKeyboardMarkup(btns),
+                parse_mode=ParseMode.HTML
+            )
         
         else:
             # رسالة الترحيب
-            welcome_btns = [[InlineKeyboardButton("📢 القناة", url=BACKUP_CHANNEL_LINK)]]
+            welcome_markup = InlineKeyboardMarkup([[InlineKeyboardButton("📢 قناة النشر", url=BACKUP_CHANNEL_LINK)]])
             await message.reply_text(
-                "👋 أهلاً بك في بوت المسلسلات!\n"
-                "تابع قناتنا لمشاهدة أحدث الحلقات.",
-                reply_markup=InlineKeyboardMarkup(welcome_btns)
+                f"👋 أهلاً بك في بوت المسلسلات!\n\nيرجى اختيار المسلسل والحلقة من قناة النشر.",
+                reply_markup=welcome_markup
             )
     
     except Exception as e:
-        logging.error(f"خطأ في start: {e}")
-        await message.reply_text("❌ حدث خطأ، حاول مرة أخرى.")
+        logging.error(f"Error in start command: {e}")
+        await message.reply_text("⚠️ حدث خطأ أثناء جلب الحلقة، يرجى المحاولة لاحقاً.")
 
+# ===== أوامر المدير =====
 @app.on_message(filters.command("id") & filters.private)
 async def id_command(client, message):
     await message.reply_text(f"معرفك: `{message.from_user.id}`")
@@ -160,7 +165,6 @@ async def stats_command(client, message):
         
         today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         
-        # إحصائيات عامة
         total_videos = db_query("SELECT COUNT(*) FROM videos")[0][0]
         total_views = db_query("SELECT SUM(views) FROM videos")[0][0] or 0
         unique_series = db_query("SELECT COUNT(DISTINCT title) FROM videos WHERE title IS NOT NULL")[0][0]
@@ -185,15 +189,6 @@ async def stats_command(client, message):
             LIMIT 5
         """)
         
-        # آخر 5 حلقات
-        recent_eps = db_query("""
-            SELECT title, ep_num, views 
-            FROM videos 
-            WHERE status = 'posted' AND ep_num IS NOT NULL
-            ORDER BY CAST(v_id AS INTEGER) DESC 
-            LIMIT 5
-        """)
-        
         text = "📊 **إحصائيات البوت**\n\n"
         text += f"**📌 إحصائيات عامة:**\n"
         text += f"• عدد المسلسلات: {unique_series}\n"
@@ -210,11 +205,6 @@ async def stats_command(client, message):
             text += f"**🏆 الأكثر مشاهدة كل الوقت:**\n"
             for i, (title, views) in enumerate(top_series, 1):
                 text += f"{i}. {encrypt_title(title)} - {views} مشاهدة\n"
-        
-        if recent_eps:
-            text += f"\n**🆕 آخر الحلقات:**\n"
-            for title, ep, views in recent_eps:
-                text += f"• {encrypt_title(title)} (حلقة {ep}) - {views} مشاهدة\n"
         
         await message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
         
@@ -234,17 +224,6 @@ async def debug_command(client, message):
         text += f"• الاسم: {me.first_name}\n"
         text += f"• اليوزرنيم: @{me.username}\n"
         text += f"• المعرف: {me.id}\n\n"
-        
-        # قناة المصدر
-        try:
-            channel = await client.get_chat(SOURCE_CHANNEL)
-            text += f"**قناة المصدر:**\n"
-            text += f"• الاسم: {channel.title}\n"
-            text += f"• المعرف: {channel.id}\n"
-            bot_member = await client.get_chat_member(SOURCE_CHANNEL, "me")
-            text += f"• صلاحية البوت: {bot_member.status}\n\n"
-        except Exception as e:
-            text += f"• ❌ خطأ في قناة المصدر: {e}\n\n"
         
         # قاعدة البيانات
         count = db_query("SELECT COUNT(*) FROM videos")[0][0]
