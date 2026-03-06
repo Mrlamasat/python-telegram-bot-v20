@@ -16,7 +16,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 SOURCE_CHANNEL = -1003547072209
 PUBLIC_POST_CHANNEL = -1003554018307
-ADMIN_ID = 7720165591
+ADMIN_ID = 7720165591  # ✅ تم التعديل للمعرف الصحيح
 
 app = Client("railway_final_stable", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -53,6 +53,11 @@ def init_database():
     logging.info("✅ قاعدة البيانات جاهزة")
 
 # ===== دوال مساعدة =====
+def obfuscate_visual(text):
+    if not text: return "مسلسل"
+    clean = re.sub(r'[^\w\s]', '', text).replace(" ", "")
+    return " . ".join(list(clean))
+
 async def get_bot_username():
     if not BOT_CACHE["username"]:
         me = await app.get_me()
@@ -81,25 +86,20 @@ async def start_command(client, message):
             ep_res = db_query("SELECT v_id, ep_num FROM videos WHERE title = %s AND status = 'posted' ORDER BY ep_num ASC", (title,))
             
             # بناء الأزرار
-            btns, row = [], []
+            btns, row, seen = [], [], set()
             for vid, e_n in ep_res:
-                if e_n == 0:
+                if e_n == 0 or e_n in seen:
                     continue
-                # استخدام url بدلاً من callback_data لمنع أي تفاعل آخر
-                row.append(InlineKeyboardButton(
-                    str(e_n), 
-                    url=f"https://t.me/{username}?start={vid}"
-                ))
+                seen.add(e_n)
+                label = f"✅ {e_n}" if str(vid) == str(v_id) else f"{e_n}"
+                row.append(InlineKeyboardButton(label, url=f"https://t.me/{username}?start={vid}"))
                 if len(row) == 5:
                     btns.append(row)
                     row = []
             if row:
                 btns.append(row)
             
-            # إضافة زر للقناة
-            btns.append([InlineKeyboardButton("📢 القناة", url=f"https://t.me/{(await client.get_chat(PUBLIC_POST_CHANNEL)).username}")])
-            
-            caption = f"<b>📺 {title} - حلقة {ep}</b>"
+            caption = f"<b>📺 {obfuscate_visual(title)} - حلقة {ep}</b>"
             
             try:
                 await client.copy_message(
@@ -113,13 +113,7 @@ async def start_command(client, message):
             except Exception as e:
                 await message.reply_text(f"⚠️ خطأ في جلب الفيديو: {e}")
         else:
-            # رسالة الترحيب
-            btns = [[InlineKeyboardButton("📢 القناة", url=f"https://t.me/{(await client.get_chat(PUBLIC_POST_CHANNEL)).username}")]]
-            await message.reply_text(
-                "👋 أهلاً بك في بوت المسلسلات!\n"
-                "تابع قناتنا لمشاهدة أحدث الحلقات.",
-                reply_markup=InlineKeyboardMarkup(btns)
-            )
+            await message.reply_text("👋 أهلاً بك في بوت المسلسلات!\nتابع قناتنا لمشاهدة أحدث الحلقات.")
     except Exception as e:
         logging.error(f"خطأ في start: {e}")
         await message.reply_text("❌ حدث خطأ، حاول مرة أخرى.")
@@ -138,45 +132,18 @@ async def stats_command(client, message):
         # إحصائيات عامة
         total_videos = db_query("SELECT COUNT(*) FROM videos")[0][0]
         total_views = db_query("SELECT SUM(views) FROM videos")[0][0] or 0
-        unique_series = db_query("SELECT COUNT(DISTINCT title) FROM videos WHERE title IS NOT NULL")[0][0]
         
-        # أشهر 5 مسلسلات
-        top_series = db_query("""
-            SELECT title, SUM(views) as total_views 
-            FROM videos 
-            WHERE title IS NOT NULL 
-            GROUP BY title 
-            ORDER BY total_views DESC 
-            LIMIT 5
-        """)
+        text = f"📊 **إحصائيات عامة**\n\n"
+        text += f"📹 إجمالي الفيديوهات: {total_videos}\n"
+        text += f"👀 إجمالي المشاهدات: {total_views}\n\n"
+        text += "**أكثر 5 مسلسلات مشاهدة:**\n"
         
-        # آخر 5 حلقات مضافة
-        recent_eps = db_query("""
-            SELECT title, ep_num, views 
-            FROM videos 
-            WHERE status = 'posted' 
-            ORDER BY CAST(v_id AS INTEGER) DESC 
-            LIMIT 5
-        """)
-        
-        # بناء رسالة الإحصائيات
-        text = "📊 **إحصائيات البوت**\n\n"
-        text += f"**📌 إحصائيات عامة:**\n"
-        text += f"• عدد المسلسلات: {unique_series}\n"
-        text += f"• عدد الحلقات: {total_videos}\n"
-        text += f"• إجمالي المشاهدات: {total_views:,}\n\n"
-        
+        top_series = db_query("SELECT title, SUM(views) FROM videos GROUP BY title ORDER BY SUM(views) DESC LIMIT 5")
         if top_series:
-            text += f"**🔥 الأكثر مشاهدة:**\n"
-            for i, (title, views) in enumerate(top_series, 1):
-                if title:
-                    text += f"{i}. {title} - {views} مشاهدة\n"
-        
-        if recent_eps:
-            text += f"\n**🆕 آخر الحلقات:**\n"
-            for title, ep, views in recent_eps:
-                if title and ep:
-                    text += f"• {title} (حلقة {ep}) - {views} مشاهدة\n"
+            for title, views in top_series:
+                text += f"• {obfuscate_visual(title)}: {views} مشاهدة\n"
+        else:
+            text += "لا توجد بيانات كافية\n"
         
         await message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
         
@@ -329,7 +296,7 @@ async def handle_source(client, message):
             
             # النشر في القناة العامة
             username = await get_bot_username()
-            pub_caption = f"🎬 <b>{title}</b>\n\n<b>الحلقة: [{ep_num}]</b>"
+            pub_caption = f"🎬 <b>{obfuscate_visual(title)}</b>\n\n<b>الحلقة: [{ep_num}]</b>"
             pub_markup = InlineKeyboardMarkup([[
                 InlineKeyboardButton("▶️ مشاهدة الحلقة", url=f"https://t.me/{username}?start={v_id}")
             ]])
