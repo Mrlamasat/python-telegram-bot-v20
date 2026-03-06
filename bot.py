@@ -55,50 +55,28 @@ def init_database():
 
 def encrypt_title(title, level=2):
     """
-    تشفير اسم المسلسل بعدة مستويات
-    level 1: أول 3 حروف + ... + آخر 3 حروف
-    level 2: تشفير متقدم (أول 2 حرف + عدد الحروف + آخر 2 حرف)
-    level 3: تشفير كامل (أحرف متقطعة)
+    تشفير اسم المسلسل بعدة مستويات - للمستخدمين العاديين فقط
     """
     if not title:
         return "مسلسل"
     
-    # إزالة المسافات الزائدة
     title = title.strip()
     
     if len(title) <= 4:
-        # إذا كان الاسم قصيراً، نظهر أول 2 حرف فقط
         return title[:2] + "••"
     
     if level == 1:
-        # مستوى بسيط: أول 3 وآخر 3
         return title[:3] + "•••" + title[-3:]
-    
     elif level == 2:
-        # مستوى متوسط: أول 2 + عدد الحروف + آخر 2
         chars_count = len(title.replace(" ", ""))
         return f"{title[:2]}••{chars_count}••{title[-2:]}"
-    
     elif level == 3:
-        # مستوى متقدم: أحرف متقطعة
         first = title[0]
         last = title[-1]
         middle = len(title[1:-1].replace(" ", ""))
         return f"{first}••{middle}••{last}"
-    
     else:
-        # مستوى افتراضي: أول 2 وآخر 2
         return title[:2] + "•••" + title[-2:]
-
-def encrypt_for_stats(title):
-    """تشفير خاص للإحصائيات (يظهر جزء بسيط جداً)"""
-    if not title:
-        return "م"
-    if len(title) <= 3:
-        return title[0] + "••"
-    
-    # يظهر أول حرف فقط والباقي نقاط
-    return title[0] + "•" * (len(title) - 1)
 
 # ===== دوال مساعدة =====
 def format_duration(seconds):
@@ -119,7 +97,6 @@ async def get_video_info(client, v_id):
         msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
         if msg and msg.video:
             duration = msg.video.duration
-            # تقدير الجودة بناءً على الأبعاد
             if msg.video.height >= 1080:
                 quality = "Full HD"
             elif msg.video.height >= 720:
@@ -160,16 +137,13 @@ async def test_command(client, message):
     status_msg = await message.reply_text("🔍 جاري اختبار الاتصال...")
     
     try:
-        # 1. اختبار قناة المصدر
         channel = await client.get_chat(SOURCE_CHANNEL)
         result = f"✅ **قناة المصدر:**\n"
         result += f"• الاسم: {channel.title}\n"
         result += f"• المعرف: {channel.id}\n"
         result += f"• النوع: {channel.type}\n\n"
         
-        # 2. اختبار جلب رسالة من القناة
         try:
-            # جلب آخر 5 رسائل
             messages = []
             async for msg in client.get_chat_history(SOURCE_CHANNEL, limit=5):
                 msg_type = "فيديو" if msg.video else "صورة" if msg.photo else "نص" if msg.text else "أخرى"
@@ -181,7 +155,6 @@ async def test_command(client, message):
         except Exception as e:
             result += f"❌ **خطأ في جلب الرسائل:** {e}\n"
         
-        # 3. معلومات البوت
         me = await client.get_me()
         result += f"\n**معلومات البوت:**\n"
         result += f"• اليوزرنيم: @{me.username}\n"
@@ -199,7 +172,6 @@ async def start_command(client, message):
         if len(message.command) > 1:
             v_id = message.command[1]
             
-            # التحقق من وجود الفيديو
             if not await is_valid_video(client, v_id):
                 return await message.reply_text("⚠️ هذه الحلقة غير متوفرة حالياً")
             
@@ -217,7 +189,7 @@ async def start_command(client, message):
         logging.error(f"Error in start: {e}")
         await message.reply_text("حدث خطأ، حاول مرة أخرى.")
 
-# ===== دالة عرض الحلقة (مع تشفير الاسم) =====
+# ===== دالة عرض الحلقة (مع تشفير الاسم للمستخدم العادي) =====
 async def show_episode(client, message, current_vid):
     video_info = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (current_vid,))
     if not video_info:
@@ -229,13 +201,12 @@ async def show_episode(client, message, current_vid):
     # تحديث المشاهدات
     db_query("UPDATE videos SET views = views + 1, last_view = NOW() WHERE v_id = %s", (current_vid,), fetch=False)
     
-    # جلب معلومات الفيديو (المدة والجودة)
+    # جلب معلومات الفيديو
     info = await get_video_info(client, current_vid)
     
-    # تشفير اسم المسلسل بمستوى متقدم
+    # للمستخدم العادي: تشفير الاسم
     encrypted_title = encrypt_title(title, level=3)
     
-    # بناء نص المعلومات مع الاسم المشفر
     info_text = f"<b>📺 {encrypted_title} - حلقة {current_ep}</b>\n\n"
     
     if info:
@@ -248,11 +219,9 @@ async def show_episode(client, message, current_vid):
         info_text += "⏱️ **المدة:** غير معروفة\n"
         info_text += "📊 **الجودة:** غير معروفة\n"
     
-    # زر واحد فقط - القناة
     btns = [[InlineKeyboardButton("📢 قناة النشر", url=BACKUP_CHANNEL_LINK)]]
     
     try:
-        # نسخ الفيديو من قناة المصدر
         await client.copy_message(
             chat_id=message.chat.id,
             from_chat_id=SOURCE_CHANNEL,
@@ -265,7 +234,7 @@ async def show_episode(client, message, current_vid):
         logging.error(f"Copy Error: {e}")
         await message.reply_text("⚠️ عذراً، تعذر جلب هذا الفيديو")
 
-# ===== دالة عرض العنصر التالي للفحص (مع تشفير الاسم) =====
+# ===== دالة عرض العنصر التالي للفحص =====
 async def show_next_for_check(client, message, user_id):
     if user_id not in user_check_state or not user_check_state[user_id]:
         await message.edit_text("✅ **تم الانتهاء من فحص جميع الحلقات!**")
@@ -274,9 +243,6 @@ async def show_next_for_check(client, message, user_id):
         return
     
     v_id, title, ep_num = user_check_state[user_id][0]
-    
-    # تشفير الاسم للمدير أيضاً (ولكن بمستوى أقل)
-    encrypted_title = encrypt_title(title, level=1)
     
     btns = [
         [
@@ -287,21 +253,19 @@ async def show_next_for_check(client, message, user_id):
     ]
     
     try:
-        # إرسال الفيديو نفسه للفحص
         await client.copy_message(
             chat_id=message.chat.id,
             from_chat_id=SOURCE_CHANNEL,
             message_id=int(v_id),
-            caption=f"🔍 **فحص الحلقة**\n\n📺 {encrypted_title} - حلقة {ep_num}\n\n✅ تأكيد = الحلقة سليمة\n🗑️ حذف = إزالة من قاعدة البيانات",
+            caption=f"🔍 **فحص الحلقة**\n\n📺 {title} - حلقة {ep_num}\n\n✅ تأكيد = الحلقة سليمة\n🗑️ حذف = إزالة من قاعدة البيانات",
             reply_markup=InlineKeyboardMarkup(btns),
             parse_mode=ParseMode.MARKDOWN
         )
         await message.delete()
     except Exception as e:
         logging.error(f"Error in show_next_for_check: {e}")
-        # إذا فشل إرسال الفيديو، نعرض رسالة خطأ
         await message.edit_text(
-            f"❌ **فشل في إرسال الفيديو**\n\n📺 {encrypted_title} - حلقة {ep_num}\nID: {v_id}\n\nالخطأ: {str(e)[:200]}\n\n🔄 هل تريد المتابعة؟",
+            f"❌ **فشل في إرسال الفيديو**\n\n📺 {title} - حلقة {ep_num}\nID: {v_id}\n\nالخطأ: {str(e)[:200]}\n\n🔄 هل تريد المتابعة؟",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("▶️ متابعة", callback_data="next_check")
             ]])
@@ -314,17 +278,14 @@ async def handle_callback(client, callback_query: CallbackQuery):
         data = callback_query.data
         user_id = callback_query.from_user.id
         
-        # زر التالي بعد الخطأ
         if data == "next_check":
             if user_id in user_check_state and user_check_state[user_id]:
-                # حذف العنصر الحالي (الذي تسبب بالخطأ)
                 user_check_state[user_id] = user_check_state[user_id][1:]
                 await callback_query.message.delete()
                 await show_next_for_check(client, callback_query.message, user_id)
             await callback_query.answer()
             return
         
-        # زر بدء الفحص
         if data == "start_check":
             if user_id != ADMIN_ID:
                 await callback_query.answer("❌ هذا الأمر للمدير فقط", show_alert=True)
@@ -339,10 +300,9 @@ async def handle_callback(client, callback_query: CallbackQuery):
             await show_next_for_check(client, callback_query.message, user_id)
             await callback_query.answer()
         
-        # أزرار الفحص (تأكيد/حذف)
         elif data.startswith("verify_"):
             parts = data.split("_")
-            action = parts[1]  # confirm أو delete
+            action = parts[1]
             v_id = parts[2]
             series_name = "_".join(parts[3:])
             
@@ -357,7 +317,6 @@ async def handle_callback(client, callback_query: CallbackQuery):
                 db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
                 await callback_query.answer("🗑️ تم حذف الحلقة من قاعدة البيانات", show_alert=True)
             
-            # تحديث قائمة الفحص
             if user_id in user_check_state:
                 user_check_state[user_id] = [item for item in user_check_state[user_id] if item[0] != v_id]
                 
@@ -378,11 +337,10 @@ async def handle_callback(client, callback_query: CallbackQuery):
         logging.error(f"Error in callback: {e}")
         await callback_query.answer("حدث خطأ", show_alert=True)
 
-# ===== أوامر المدير مع تشفير الأسماء =====
-
+# ===== أمر الإحصائيات المتقدمة (بدون تشفير للمدير) =====
 @app.on_message(filters.command("stats") & filters.private)
 async def stats_command(client, message):
-    """إحصائيات متقدمة مع تشفير الأسماء"""
+    """إحصائيات متقدمة - تظهر الأسماء كاملة للمدير"""
     if message.from_user.id != ADMIN_ID:
         return await message.reply_text("❌ هذا الأمر للمدير فقط.")
     
@@ -407,7 +365,7 @@ async def stats_command(client, message):
     week_start = today_start - timedelta(days=7)
     week_views = db_query("SELECT COUNT(*) FROM videos WHERE last_view >= %s", (week_start,))[0][0]
     
-    # أكثر 5 مسلسلات مشاهدة (مع تشفير للأمان)
+    # أكثر 5 مسلسلات مشاهدة (بدون تشفير للمدير)
     top_series = db_query("""
         SELECT title, SUM(views) as total_views 
         FROM videos 
@@ -417,7 +375,7 @@ async def stats_command(client, message):
         LIMIT 5
     """)
     
-    # أكثر 5 حلقات مشاهدة (مع تشفير)
+    # أكثر 5 حلقات مشاهدة (بدون تشفير)
     top_episodes = db_query("""
         SELECT title, ep_num, views 
         FROM videos 
@@ -426,7 +384,7 @@ async def stats_command(client, message):
         LIMIT 5
     """)
     
-    # آخر 5 مشاهدات (مع تشفير)
+    # آخر 5 مشاهدات (بدون تشفير)
     recent_views = db_query("""
         SELECT title, ep_num, last_view 
         FROM videos 
@@ -435,7 +393,7 @@ async def stats_command(client, message):
         LIMIT 5
     """)
     
-    # بناء التقرير
+    # بناء التقرير - الأسماء كاملة للمدير
     text = "📊 **إحصائيات متقدمة**\n\n"
     
     text += "**📌 إحصائيات عامة:**\n"
@@ -451,25 +409,21 @@ async def stats_command(client, message):
     if top_series:
         text += "**🏆 أكثر 5 مسلسلات مشاهدة:**\n"
         for i, (title, views) in enumerate(top_series, 1):
-            # تشفير الاسم حتى في الإحصائيات
-            encrypted = encrypt_for_stats(title)
-            text += f"{i}. {encrypted} - {views} مشاهدة\n"
+            text += f"{i}. {title} - {views} مشاهدة\n"
         text += "\n"
     
     if top_episodes:
         text += "**⭐ أكثر 5 حلقات مشاهدة:**\n"
         for title, ep, views in top_episodes:
-            encrypted = encrypt_for_stats(title)
-            text += f"• {encrypted} (حلقة {ep}) - {views} مشاهدة\n"
+            text += f"• {title} (حلقة {ep}) - {views} مشاهدة\n"
         text += "\n"
     
     if recent_views:
         text += "**🕐 آخر المشاهدات:**\n"
         for title, ep, last_view in recent_views:
             if last_view:
-                encrypted = encrypt_for_stats(title)
                 time_str = last_view.strftime("%Y-%m-%d %H:%M")
-                text += f"• {encrypted} (حلقة {ep}) - {time_str}\n"
+                text += f"• {title} (حلقة {ep}) - {time_str}\n"
     
     await status_msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
 
@@ -480,34 +434,28 @@ async def check_command(client, message):
     
     status_msg = await message.reply_text("🔍 جاري تحليل قاعدة البيانات...")
     
-    # جلب جميع المسلسلات
     series_list = db_query("SELECT DISTINCT title FROM videos WHERE status = 'posted' AND title IS NOT NULL")
     
     all_issues = []
     
     for (title,) in series_list:
-        # جلب جميع حلقات هذا المسلسل
         episodes = db_query("""
             SELECT v_id, ep_num FROM videos 
             WHERE title = %s AND status = 'posted' 
             ORDER BY ep_num ASC, CAST(v_id AS INTEGER) DESC
         """, (title,))
         
-        # تجميع حسب رقم الحلقة
         ep_dict = {}
         for v_id, ep_num in episodes:
             if ep_num not in ep_dict:
                 ep_dict[ep_num] = []
             ep_dict[ep_num].append((v_id, ep_num))
         
-        # استخراج التكرارات والحلقات المعطلة
         for ep_num, entries in ep_dict.items():
             if len(entries) > 1:
-                # هناك تكرار - نضيف جميع الإدخالات ما عدا الأول (الأحدث)
                 for v_id, _ in entries[1:]:
                     all_issues.append((v_id, title, ep_num))
             else:
-                # لا يوجد تكرار، نتحقق من صلاحية الفيديو
                 v_id, _ = entries[0]
                 if not await is_valid_video(client, v_id):
                     all_issues.append((v_id, title, ep_num))
@@ -516,7 +464,6 @@ async def check_command(client, message):
         await status_msg.edit_text("✅ **لا توجد حلقات مكررة أو معطلة!**\n\nقاعدة البيانات نظيفة تماماً.")
         return
     
-    # تخزين القائمة في قاموس المستخدم
     user_check_state[message.from_user.id] = all_issues
     
     await status_msg.edit_text(
@@ -545,9 +492,7 @@ async def fix_command(client, message):
             db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
             deleted += 1
             if len(invalid_list) < 10:
-                # تشفير الاسم حتى في قائمة المحذوفات
-                encrypted = encrypt_for_stats(title)
-                invalid_list.append(f"• {encrypted} - حلقة {ep_num}")
+                invalid_list.append(f"• {title} - حلقة {ep_num}")
     
     if deleted > 0:
         report = f"✅ **تم الحذف!**\n"
@@ -571,7 +516,6 @@ async def handle_source(client, message):
     try:
         logging.info(f"📥 رسالة جديدة - ID: {message.id}, Type: {message.media}")
         
-        # فيديو
         if message.video or message.document:
             video_id = str(message.id)
             db_query("DELETE FROM videos WHERE v_id = %s", (video_id,), fetch=False)
@@ -583,7 +527,6 @@ async def handle_source(client, message):
                 f"🎬 Video ID: `{video_id}`"
             )
         
-        # بوستر
         elif message.photo:
             res = db_query("SELECT v_id FROM videos WHERE status='waiting' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 1")
             if not res:
@@ -606,7 +549,6 @@ async def handle_source(client, message):
                 f"🎬 Video ID: `{video_id}`"
             )
         
-        # رقم الحلقة
         elif message.text and message.text.isdigit():
             res = db_query("SELECT v_id, title, poster_id FROM videos WHERE status='awaiting_ep' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 1")
             if not res:
@@ -616,7 +558,6 @@ async def handle_source(client, message):
             video_id, title, poster_id = res[0]
             ep_num = int(message.text)
             
-            # حذف أي إدخال سابق بنفس العنوان ورقم الحلقة
             db_query("DELETE FROM videos WHERE title = %s AND ep_num = %s AND v_id != %s", 
                     (title, ep_num, video_id), fetch=False)
             
@@ -626,9 +567,8 @@ async def handle_source(client, message):
                 fetch=False
             )
             
-            # النشر في القناة العامة مع تشفير الاسم
             username = (await app.get_me()).username
-            encrypted_title = encrypt_title(title, level=2)  # تشفير الاسم في المنشور
+            encrypted_title = encrypt_title(title, level=2)
             pub_caption = f"🎬 <b>{encrypted_title}</b>\n\n<b>الحلقة: [{ep_num}]</b>"
             pub_markup = InlineKeyboardMarkup([[
                 InlineKeyboardButton("▶️ مشاهدة", url=f"https://t.me/{username}?start={video_id}")
