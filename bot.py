@@ -155,14 +155,17 @@ async def show_episode(client, message, current_vid):
     
     title, current_ep = video_info[0]
     
+    # تحديث المشاهدات
     db_query("UPDATE videos SET views = views + 1, last_view = NOW() WHERE v_id = %s", (current_vid,), fetch=False)
     
+    # جلب جميع حلقات نفس المسلسل
     episodes = db_query("""
         SELECT v_id, ep_num FROM videos 
         WHERE title = %s AND status = 'posted' AND ep_num > 0 
         ORDER BY ep_num ASC
     """, (title,))
     
+    # بناء أزرار الحلقات الصالحة فقط
     btns, row = [], []
     seen_eps = set()
     
@@ -184,6 +187,7 @@ async def show_episode(client, message, current_vid):
     btns.append([InlineKeyboardButton("📢 قناة النشر", url=BACKUP_CHANNEL_LINK)])
     
     try:
+        # نسخ الفيديو من قناة المصدر
         await client.copy_message(
             chat_id=message.chat.id,
             from_chat_id=SOURCE_CHANNEL,
@@ -229,7 +233,7 @@ async def show_next_for_check(client, message, user_id):
         logging.error(f"Error in show_next_for_check: {e}")
         # إذا فشل إرسال الفيديو، نعرض رسالة خطأ
         await message.edit_text(
-            f"❌ **خطأ في جلب الفيديو**\n\n📺 {encrypt_title(title)} - حلقة {ep_num}\nID: {v_id}\n\nالخطأ: {str(e)[:100]}\n\n🔄 سيتم تخطي هذه الحلقة",
+            f"❌ **فشل في إرسال الفيديو**\n\n📺 {encrypt_title(title)} - حلقة {ep_num}\nID: {v_id}\n\nالخطأ: {str(e)[:200]}\n\n🔄 هل تريد المتابعة؟",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("▶️ متابعة", callback_data="next_check")
             ]])
@@ -427,62 +431,97 @@ async def stats_command(client, message):
     
     await message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
-# ===== معالج قناة المصدر =====
+# ===== معالج قناة المصدر (معدل بالكامل) =====
 @app.on_message(filters.chat(SOURCE_CHANNEL))
 async def handle_source(client, message):
     try:
         logging.info(f"📥 رسالة جديدة - ID: {message.id}, Type: {message.media}")
         
+        # فيديو
         if message.video or message.document:
-            v_id = str(message.id)
-            db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
-            db_query("INSERT INTO videos (v_id, status) VALUES (%s, 'waiting')", (v_id,), fetch=False)
-            await message.reply_text("✅ تم استلام الفيديو!\n📌 أرسل الآن البوستر مع اسم المسلسل:")
+            video_id = str(message.id)  # هذا هو ID الفيديو الحقيقي
+            # حذف أي بيانات سابقة لنفس الـ ID
+            db_query("DELETE FROM videos WHERE v_id = %s", (video_id,), fetch=False)
+            # إدخال الفيديو في حالة انتظار
+            db_query("INSERT INTO videos (v_id, status) VALUES (%s, 'waiting')", (video_id,), fetch=False)
+            await message.reply_text(
+                "✅ **تم استلام الفيديو!**\n"
+                "📌 أرسل الآن **البوستر** مع اسم المسلسل.\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"🎬 Video ID: `{video_id}`"
+            )
         
+        # بوستر
         elif message.photo:
+            # البحث عن آخر فيديو في حالة waiting
             res = db_query("SELECT v_id FROM videos WHERE status='waiting' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 1")
             if not res:
                 await message.reply_text("❌ لا يوجد فيديو في الانتظار. أرسل الفيديو أولاً.")
                 return
             
-            v_id = res[0][0]
+            video_id = res[0][0]  # هذا هو ID الفيديو الذي سنربط به البوستر
             title = message.caption or "مسلسل"
-            db_query("UPDATE videos SET title=%s, poster_id=%s, status='awaiting_ep' WHERE v_id=%s", 
-                    (title, message.photo.file_id, v_id), fetch=False)
-            await message.reply_text(f"📌 تم حفظ البوستر لـ: {title}\n🔢 أرسل رقم الحلقة:")
+            
+            # تحديث سجل الفيديو بمعلومات البوستر
+            db_query(
+                "UPDATE videos SET title=%s, poster_id=%s, status='awaiting_ep' WHERE v_id=%s",
+                (title, message.photo.file_id, video_id),
+                fetch=False
+            )
+            
+            await message.reply_text(
+                f"📌 **تم حفظ البوستر** لـ: {title}\n"
+                f"🔢 أرسل الآن **رقم الحلقة** فقط:\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"🎬 Video ID: `{video_id}`"
+            )
         
+        # رقم الحلقة
         elif message.text and message.text.isdigit():
             res = db_query("SELECT v_id, title, poster_id FROM videos WHERE status='awaiting_ep' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 1")
             if not res:
                 await message.reply_text("❌ لا يوجد فيديو في انتظار رقم الحلقة.")
                 return
             
-            v_id, title, p_id = res[0]
+            video_id, title, poster_id = res[0]
             ep_num = int(message.text)
             
-            # حذف أي إدخال سابق بنفس العنوان ورقم الحلقة
+            # حذف أي إدخال سابق بنفس العنوان ورقم الحلقة (لمنع التكرار)
             db_query("DELETE FROM videos WHERE title = %s AND ep_num = %s AND v_id != %s", 
-                    (title, ep_num, v_id), fetch=False)
+                    (title, ep_num, video_id), fetch=False)
             
-            db_query("UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s", (ep_num, v_id), fetch=False)
+            # تحديث حالة الفيديو إلى منشور
+            db_query(
+                "UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s",
+                (ep_num, video_id),
+                fetch=False
+            )
             
+            # النشر في القناة العامة (باستخدام البوستر)
             username = (await app.get_me()).username
             pub_caption = f"🎬 <b>{encrypt_title(title)}</b>\n\n<b>الحلقة: [{ep_num}]</b>"
             pub_markup = InlineKeyboardMarkup([[
-                InlineKeyboardButton("▶️ مشاهدة", url=f"https://t.me/{username}?start={v_id}")
+                InlineKeyboardButton("▶️ مشاهدة", url=f"https://t.me/{username}?start={video_id}")
             ]])
             
+            # ننشر البوستر مع رابط الفيديو
             await client.send_photo(
                 chat_id=PUBLIC_POST_CHANNEL,
-                photo=p_id,
+                photo=poster_id,
                 caption=pub_caption,
                 reply_markup=pub_markup
             )
             
-            await message.reply_text(f"✅ تم النشر: {title} - حلقة {ep_num}")
+            await message.reply_text(
+                f"✅ **تم النشر بنجاح!**\n"
+                f"🎬 {title} - حلقة {ep_num}\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"📺 Video ID: `{video_id}`"
+            )
     
     except Exception as e:
-        logging.error(f"خطأ: {e}")
+        logging.error(f"خطأ في معالج المصدر: {e}")
+        await message.reply_text(f"❌ حدث خطأ: {str(e)[:100]}")
 
 # ===== تشغيل البوت =====
 if __name__ == "__main__":
