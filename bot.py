@@ -1,4 +1,4 @@
-Import os
+import os
 import psycopg2
 import logging
 from datetime import datetime
@@ -55,6 +55,14 @@ def encrypt_title(title):
     if len(title) <= 6:
         return title
     return title[:3] + "..." + title[-3:]
+
+async def is_valid_video(client, v_id):
+    """التحقق من وجود الفيديو في قناة المصدر"""
+    try:
+        msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
+        return msg and not msg.empty
+    except:
+        return False
 
 # ===== معالج بدء البوت (عبر الرابط) =====
 @app.on_message(filters.command("start") & filters.private)
@@ -139,6 +147,11 @@ async def handle_callback(client, callback_query: CallbackQuery):
         if data.startswith("ep_"):
             v_id = data.replace("ep_", "")
             
+            # التحقق من وجود الفيديو قبل العرض
+            if not await is_valid_video(client, v_id):
+                await callback_query.answer("❌ هذه الحلقة غير متوفرة (سيتم حذفها قريباً)", show_alert=True)
+                return
+            
             # حذف الرسالة القديمة
             await callback_query.message.delete()
             
@@ -153,6 +166,78 @@ async def handle_callback(client, callback_query: CallbackQuery):
         await callback_query.answer("حدث خطأ", show_alert=True)
 
 # ===== أوامر المدير =====
+
+@app.on_message(filters.command("fix") & filters.private)
+async def fix_command(client, message):
+    """أمر حذف الإدخالات التي لا تحتوي على فيديوهات"""
+    if message.from_user.id != ADMIN_ID:
+        return await message.reply_text("❌ هذا الأمر للمدير فقط")
+    
+    status_msg = await message.reply_text("🔍 جاري البحث عن الإدخالات غير الصالحة...")
+    
+    # جلب جميع الإدخالات
+    all_entries = db_query("SELECT v_id, title, ep_num FROM videos WHERE status = 'posted'")
+    
+    deleted = 0
+    invalid_list = []
+    
+    for v_id, title, ep_num in all_entries:
+        # التحقق من وجود الفيديو في المصدر
+        if not await is_valid_video(client, v_id):
+            db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
+            deleted += 1
+            if len(invalid_list) < 10:
+                invalid_list.append(f"• {encrypt_title(title)} - حلقة {ep_num}")
+    
+    if deleted > 0:
+        report = f"✅ **تم الحذف بنجاح!**\n\n"
+        report += f"📊 **الإحصائيات:**\n"
+        report += f"• تم حذف {deleted} إدخال لا يحتوي على فيديو\n\n"
+        
+        if invalid_list:
+            report += "**المحذوفات:**\n" + "\n".join(invalid_list)
+            if deleted > 10:
+                report += f"\n... و{deleted - 10} إدخالات أخرى"
+    else:
+        report = f"✅ **لا توجد إدخالات غير صالحة!**\n\n"
+        report += f"📊 جميع الإدخالات الـ {len(all_entries)} تحتوي على فيديوهات."
+    
+    await status_msg.edit_text(report)
+
+@app.on_message(filters.command("check") & filters.private)
+async def check_command(client, message):
+    """أمر لعرض الإدخالات غير الصالحة بدون حذفها"""
+    if message.from_user.id != ADMIN_ID:
+        return await message.reply_text("❌ هذا الأمر للمدير فقط")
+    
+    status_msg = await message.reply_text("🔍 جاري فحص قاعدة البيانات...")
+    
+    all_entries = db_query("SELECT v_id, title, ep_num FROM videos WHERE status = 'posted'")
+    
+    valid = []
+    invalid = []
+    
+    for v_id, title, ep_num in all_entries:
+        if await is_valid_video(client, v_id):
+            valid.append((v_id, title, ep_num))
+        else:
+            invalid.append((v_id, title, ep_num))
+    
+    report = f"📊 **تقرير الفحص**\n\n"
+    report += f"✅ إجمالي الإدخالات: {len(all_entries)}\n"
+    report += f"✅ صالحة: {len(valid)}\n"
+    report += f"❌ غير صالحة: {len(invalid)}\n\n"
+    
+    if invalid:
+        report += "**الإدخالات غير الصالحة (التي سيتم حذفها):**\n"
+        for i, (v_id, title, ep_num) in enumerate(invalid[:10], 1):
+            report += f"{i}. {encrypt_title(title)} - حلقة {ep_num}\n"
+        if len(invalid) > 10:
+            report += f"... و{len(invalid) - 10} إدخالات أخرى\n"
+        report += "\nاستخدم /fix لحذفها"
+    
+    await status_msg.edit_text(report)
+
 @app.on_message(filters.command("id") & filters.private)
 async def id_command(client, message):
     await message.reply_text(f"معرفك: `{message.from_user.id}`")
