@@ -31,64 +31,69 @@ def db_query(query, params=(), fetch=True):
         logging.error(f"DB Error: {e}")
         return []
 
-# ===== [2] دالة استخراج الرقم المطورة جداً =====
 def extract_ep_num(text):
     if not text: return 0
-    # يبحث عن الرقم بعد الكلمة مهما كانت الرموز الفاصلة
     pattern = r"(?:حلقه|حلقة|الحلقة|الحلقه|رقم|الحلقہ)\s*[:\-\s!\[]*(\d+)"
     match = re.search(pattern, text, re.IGNORECASE)
-    if match:
-        return int(match.group(1))
-    
-    # بحث عن الرقم داخل [ ]
+    if match: return int(match.group(1))
     bracket_match = re.search(r"\[(\d+)\]", text)
-    if bracket_match:
-        return int(bracket_match.group(1))
-    
+    if bracket_match: return int(bracket_match.group(1))
     return 0
 
-# ===== [3] عرض الحلقة =====
+# ===== [2] عرض الحلقة مع أزرار التنقل =====
 async def show_episode(client, message, v_id):
-    # جلب البيانات
     res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
     
-    # إذا كانت الحلقة تظهر 0، نجبر البوت على إعادة القراءة من المصدر
-    force_update = False
-    if res and res[0][1] == 0:
-        force_update = True
-
-    if not res or force_update:
+    if not res or res[0][1] == 0:
         try:
             source_msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
             if source_msg and (source_msg.caption or source_msg.text):
                 raw_text = source_msg.caption or source_msg.text
                 title = raw_text.split('\n')[0][:50]
                 ep = extract_ep_num(raw_text)
-                
-                # تحديث البيانات في القاعدة لضمان الإصلاح الدائم
-                db_query("""
-                    INSERT INTO videos (v_id, title, ep_num, status) VALUES (%s, %s, %s, 'posted')
-                    ON CONFLICT (v_id) DO UPDATE SET ep_num = EXCLUDED.ep_num, title = EXCLUDED.title
-                """, (v_id, title, ep), fetch=False)
-            else:
-                title, ep = (res[0][0], 0) if res else ("فيديو", 0)
-        except:
-            if not res: return await message.reply_text("❌ لم يتم العثور على الحلقة.")
-            title, ep = res[0]
-    else:
-        title, ep = res[0]
+                db_query("INSERT INTO videos (v_id, title, ep_num, status) VALUES (%s, %s, %s, 'posted') ON CONFLICT (v_id) DO UPDATE SET ep_num = EXCLUDED.ep_num, title = EXCLUDED.title", (v_id, title, ep), fetch=False)
+                res = [(title, ep)]
+        except: pass
 
+    if not res:
+        return await message.reply_text("❌ لم يتم العثور على الحلقة.")
+
+    title, ep = res[0]
+    
+    # جلب الحلقات الأخرى لنفس المسلسل (5 في كل سطر)
+    other_eps = db_query("SELECT ep_num, v_id FROM videos WHERE title = %s AND status = 'posted' ORDER BY ep_num ASC", (title,))
+    
+    keyboard = []
+    if other_eps:
+        row = []
+        me = await client.get_me()
+        for o_ep, o_vid in other_eps:
+            # زر لكل حلقة يفتحها عبر البوت
+            row.append(InlineKeyboardButton(f"{o_ep}", url=f"https://t.me/{me.username}?start={o_vid}"))
+            if len(row) == 5: # 5 أرقام في كل سطر كما طلبت
+                keyboard.append(row)
+                row = []
+        if row: keyboard.append(row)
+
+    # زر القناة الاحتياطية في الأسفل
+    keyboard.append([InlineKeyboardButton("🔗 القناة الاحتياطية", url=BACKUP_CHANNEL_LINK)])
+
+    # النص الجديد المخفي منه الرموز القديمة (فقط الاسم والحلقة)
+    caption = f"<b>{title} - الحلقة {ep}</b>"
+    
     try:
-        caption = f"<b>📺 {title}</b>\n<b>🎬 الحلقة رقم: {ep}</b>\n━━━━━━━━━━━━━━━"
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 اشترك بالقناه الإحتياطيه", url=BACKUP_CHANNEL_LINK)]])
-        await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), caption=caption, reply_markup=markup)
-        
+        await client.copy_message(
+            chat_id=message.chat.id,
+            from_chat_id=SOURCE_CHANNEL,
+            message_id=int(v_id),
+            caption=caption,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         db_query("INSERT INTO views_log (v_id) VALUES (%s)", (v_id,), fetch=False)
-        db_query("UPDATE videos SET views = views + 1 WHERE v_id = %s", (v_id,), fetch=False)
     except Exception as e:
         await message.reply_text("⚠️ فشل إرسال الفيديو.")
 
-# ===== [4] الأوامر والنشر =====
+# ===== [3] الأوامر والنشر =====
 @app.on_message(filters.chat(SOURCE_CHANNEL))
 async def handle_source(client, message):
     if message.video or message.document:
@@ -115,7 +120,7 @@ async def start_cmd(client, message):
     if len(message.command) > 1:
         await show_episode(client, message, message.command[1])
     else:
-        await message.reply_text(f"👋 أهلاً بك يا محمد.")
+        await message.reply_text(f"👋 أهلاً بك يا محمد. أرسل لي رابط حلقة للمشاهدة.")
 
 if __name__ == "__main__":
     app.run()
