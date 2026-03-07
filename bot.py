@@ -17,9 +17,8 @@ SOURCE_CHANNEL = -1003547072209
 ADMIN_ID = 7720165591
 BACKUP_CHANNEL_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
 
-PUBLIC_CHANNELS = [
-    -1003554018307,
-]
+# ✅ قناة النشر الوحيدة (واحدة فقط)
+PUBLISH_CHANNEL = -1003554018307  # <- تم التعديل هنا
 
 app = Client("railway_final_pro", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -189,6 +188,9 @@ async def complete_and_publish(client, v_id, data):
         series_name = data['series_name']
         ep_num = data['ep_num']
         
+        # تنظيف اسم المسلسل من الأرقام الزائدة
+        clean_title = re.sub(r'\s+\d+$', '', series_name)
+        
         # حفظ في قاعدة البيانات
         db_query("""
             INSERT INTO videos (v_id, title, ep_num, status, poster_id) 
@@ -197,7 +199,7 @@ async def complete_and_publish(client, v_id, data):
             title = EXCLUDED.title,
             ep_num = EXCLUDED.ep_num,
             poster_id = EXCLUDED.poster_id
-        """, (v_id, series_name, ep_num, str(data['poster_message_id'])), fetch=False)
+        """, (v_id, clean_title, ep_num, str(data['poster_message_id'])), fetch=False)
         
         # إنشاء زر المشاهدة
         me = await client.get_me()
@@ -205,42 +207,48 @@ async def complete_and_publish(client, v_id, data):
             InlineKeyboardButton("🎬 مشاهدة الحلقة", url=f"https://t.me/{me.username}?start={v_id}")
         ]])
         
-        # النشر في جميع قنوات النشر
-        for channel_id in PUBLIC_CHANNELS:
-            try:
-                # نشر البوستر أولاً
-                await client.copy_message(
-                    channel_id,
-                    SOURCE_CHANNEL,
-                    data['poster_message_id'],
-                    caption=f"🎬 {series_name}\nالحلقة {ep_num}"
-                )
-                
-                # نشر الفيديو
-                await client.copy_message(
-                    channel_id,
-                    SOURCE_CHANNEL,
-                    int(v_id),
-                    caption=f"🎬 {series_name} - الحلقة {ep_num}",
-                    reply_markup=watch_button
-                )
-                
-            except Exception as e:
-                logging.error(f"خطأ في النشر للقناة {channel_id}: {e}")
+        # ✅ النشر في قناة واحدة فقط
+        channel_id = PUBLISH_CHANNEL
         
-        # إرسال تأكيد في قناة المصدر
-        await client.send_message(
-            SOURCE_CHANNEL,
-            f"✅ **تم النشر بنجاح!**\n"
-            f"المسلسل: {series_name}\n"
-            f"رقم الحلقة: {ep_num}\n"
-            f"تم النشر في {len(PUBLIC_CHANNELS)} قنوات"
-        )
+        try:
+            # نشر البوستر أولاً
+            await client.copy_message(
+                channel_id,
+                SOURCE_CHANNEL,
+                data['poster_message_id'],
+                caption=f"🎬 {clean_title}\nالحلقة {ep_num}"
+            )
+            
+            # نشر الفيديو
+            await client.copy_message(
+                channel_id,
+                SOURCE_CHANNEL,
+                int(v_id),
+                caption=f"🎬 {clean_title} - الحلقة {ep_num}",
+                reply_markup=watch_button
+            )
+            
+            # ✅ تم النشر بنجاح
+            await client.send_message(
+                SOURCE_CHANNEL,
+                f"✅ **تم النشر بنجاح!**\n"
+                f"المسلسل: {clean_title}\n"
+                f"رقم الحلقة: {ep_num}\n"
+                f"تم النشر في قناة واحدة"
+            )
+            
+            logging.info(f"✅ تم نشر الحلقة {v_id}: {clean_title} - حلقة {ep_num}")
+            
+        except Exception as e:
+            logging.error(f"خطأ في النشر للقناة: {e}")
+            await client.send_message(
+                SOURCE_CHANNEL,
+                f"❌ حدث خطأ أثناء النشر: {e}\nالرجاء التأكد من أن البوت مشرف في القناة"
+            )
+            return
         
         # حذف البيانات المؤقتة
         del pending_posts[v_id]
-        
-        logging.info(f"✅ تم نشر الحلقة {v_id}: {series_name} - حلقة {ep_num}")
         
     except Exception as e:
         logging.error(f"خطأ في النشر: {e}")
@@ -326,7 +334,7 @@ async def smart_start(client, message):
 1️⃣ ارفع الفيديو
 2️⃣ ارفع البوستر
 3️⃣ اكتب رقم الحلقة
-🤖 البوت ينشر تلقائياً في 4 قنوات!
+🤖 البوت ينشر تلقائياً في قناة واحدة!
 
 🆘 @Mohsen_7e"""
         await message.reply_text(welcome_text)
@@ -408,7 +416,20 @@ async def smart_stats(client, message):
     
     await message.reply_text(text)
 
-# ===== [12] التشغيل الرئيسي =====
+# ===== [12] أمر اختبار النشر =====
+@app.on_message(filters.command("test_publish") & filters.user(ADMIN_ID))
+async def test_publish(client, message):
+    """اختبار النشر في القناة"""
+    try:
+        await client.send_message(
+            PUBLISH_CHANNEL,
+            "🧪 هذا اختبار للتأكد من أن البوت يستطيع النشر في القناة"
+        )
+        await message.reply_text("✅ تم إرسال رسالة اختبار بنجاح")
+    except Exception as e:
+        await message.reply_text(f"❌ فشل الإرسال: {e}")
+
+# ===== [13] التشغيل الرئيسي =====
 def main():
     print("🚀 تشغيل بوت التفاعل مع قناة المصدر...")
     init_database()
