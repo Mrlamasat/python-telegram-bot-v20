@@ -37,27 +37,50 @@ def db_query(query, params=(), fetch=True):
         logger.error(f"DB Error: {e}")
         return []
 
-# ===== [3] عرض الحلقة (الاعتماد الكلي على القاعدة للأزرار) =====
+# ===== [3] معالج استخراج البيانات الذكي =====
+def extract_data(raw_text):
+    # 1. استخراج رقم الحلقة (يبحث عن الرقم المرتبط بكلمة حلقة حصراً)
+    # يغطي: الحلقة: [16] ، الحلقة [11] ، الحلقة رقم: 7 ، الحلقة 2
+    ep_match = re.search(r"(?:الحلقة|حلقة)(?:\s+رقم)?[:\s!]*\[?(\d+)\]?", raw_text)
+    ep_num = int(ep_match.group(1)) if ep_match else 0
+    
+    # 2. استخراج الاسم وتنظيفه
+    lines = raw_text.split('\n')
+    title = "مسلسل غير مسمى"
+    for line in lines:
+        clean_line = line.strip()
+        if not clean_line: continue
+        # نأخذ السطر الذي يحتوي على 🎬 أو أول سطر لا يحتوي على كلمة "حلقة" أو "مدة"
+        if "🎬" in clean_line and "الحلقة" not in clean_line:
+            title = clean_line.replace("🎬", "").strip()
+            break
+        elif "الحلقة" not in clean_line and "المدة" not in clean_line and "الجودة" not in clean_line:
+            title = clean_line.strip()
+            break
+            
+    # تنظيف العنوان من الحروف المقطعة (و . ن . ن . س . ى -> وننسى)
+    title = re.sub(r"\s+\.\s+", "", title) # حذف " . "
+    title = title.replace(".", "").strip()
+    
+    return title, ep_num
+
+# ===== [4] عرض الحلقة =====
 async def show_episode(client, message, v_id, edit=False):
     v_id_str = str(v_id)
-    
-    # 1. جلب بيانات الحلقة من القاعدة
     res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id_str,))
     
     if not res:
-        # إذا كانت الحلقة قديمة وغير مسجلة، نجلبها ونسجلها
         try:
             source_msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
-            raw_text = source_msg.caption if source_msg.caption else "مسلسل غير مسمى"
-            # تنظيف الاسم: نأخذ السطر الأول ونحذف منه الأرقام
-            title = re.sub(r"\d+", "", raw_text.split('\n')[0]).replace("حلقة", "").replace("الحلقة", "").strip()
-            ep_num = 0 
-            db_query("INSERT INTO videos (v_id, title, ep_num, status) VALUES (%s, %s, %s, 'posted')", (v_id_str, title, ep_num), fetch=False)
+            raw_text = source_msg.caption if source_msg.caption else "مسلسل مجهول"
+            title, ep_num = extract_data(raw_text)
+            
+            db_query("INSERT INTO videos (v_id, title, ep_num, status) VALUES (%s, %s, %s, 'posted')", 
+                     (v_id_str, title, ep_num), fetch=False)
         except: return
     else:
         title, ep_num = res[0]
 
-    # 2. جلب أزرار الحلقات المسجلة لهذا المسلسل (بناءً على الاسم والترتيب)
     all_eps = db_query("SELECT ep_num, v_id FROM videos WHERE title = %s AND status = 'posted' ORDER BY ep_num ASC", (title,))
     
     caption = f"<b>📺 {title}</b>\n<b>🎬 الحلقة رقم: {ep_num}</b>\n━━━━━━━━━━━━━━━"
@@ -65,10 +88,8 @@ async def show_episode(client, message, v_id, edit=False):
     buttons = []
     row = []
     for ep_n, ep_vid in all_eps:
-        # عرض رقم الحلقة أو ID إذا كان مجهولاً
         display = str(ep_n) if ep_n != 0 else f"?({ep_vid})"
         btn_text = f"• {display} •" if str(ep_vid) == v_id_str else display
-        
         row.append(InlineKeyboardButton(btn_text, callback_data=f"go_{ep_vid}"))
         if len(row) == 5:
             buttons.append(row)
@@ -77,14 +98,12 @@ async def show_episode(client, message, v_id, edit=False):
     buttons.append([InlineKeyboardButton("🔗 قناة الاحتياط", url=BACKUP_CHANNEL_LINK)])
 
     chat_id = message.message.chat.id if hasattr(message, "data") else message.chat.id
-    
     try:
         if edit and hasattr(message, "data"): await message.message.delete()
         await client.copy_message(chat_id, SOURCE_CHANNEL, int(v_id), caption=caption, reply_markup=InlineKeyboardMarkup(buttons))
-        db_query("UPDATE videos SET views = views + 1 WHERE v_id = %s", (v_id_str,), fetch=False)
     except Exception as e: logger.error(f"Copy Error: {e}")
 
-# ===== [4] معالجات الأوامر والنشر =====
+# ===== [5] الأوامر والنشر =====
 @app.on_callback_query(filters.regex(r"^go_"))
 async def nav_handler(client, query):
     v_id = query.data.split("_")[1]
@@ -96,13 +115,11 @@ async def set_data(client, message):
     if message.from_user.id != ADMIN_ID: return
     cmd = message.text.split(maxsplit=3)
     if len(cmd) < 3: return await message.reply_text("الصيغة: `/set ID الرقم` أو `/set ID الرقم الاسم`")
-    
-    v_id, new_ep = cmd[1], cmd[2]
     if len(cmd) == 4:
-        db_query("UPDATE videos SET ep_num = %s, title = %s WHERE v_id = %s", (new_ep, cmd[3], v_id), fetch=False)
+        db_query("UPDATE videos SET ep_num = %s, title = %s WHERE v_id = %s", (cmd[2], cmd[3], cmd[1]), fetch=False)
     else:
-        db_query("UPDATE videos SET ep_num = %s WHERE v_id = %s", (new_ep, v_id), fetch=False)
-    await message.reply_text("✅ تم التحديث بنجاح.")
+        db_query("UPDATE videos SET ep_num = %s WHERE v_id = %s", (cmd[2], cmd[1]), fetch=False)
+    await message.reply_text("✅ تم التحديث.")
 
 @app.on_message(filters.chat(SOURCE_CHANNEL))
 async def handle_source(client, message):
@@ -114,8 +131,11 @@ async def handle_source(client, message):
     elif message.text and message.text.isdigit():
         res = db_query("SELECT v_id, title, poster_id FROM videos WHERE status='awaiting_ep' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 1")
         if res:
-            v_id, title, p_id, ep = res[0][0], res[0][1], res[0][2], message.text
-            db_query("UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s", (ep, v_id), fetch=False)
+            v_id, raw_title, p_id = res[0]
+            # استخدام المعالج الذكي للنشر الجديد أيضاً
+            title, _ = extract_data(raw_title)
+            ep = message.text
+            db_query("UPDATE videos SET ep_num=%s, title=%s, status='posted' WHERE v_id=%s", (ep, title, v_id), fetch=False)
             me = await client.get_me()
             link = f"https://t.me/{me.username}?start={v_id}"
             await client.send_photo(PUBLIC_POST_CHANNEL, p_id, f"🎬 <b>{title}</b>\n<b>الحلقة: [{ep}]</b>\n<b>رابط المشاهدة:</b>\n{link}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة", url=link)]]))
