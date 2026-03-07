@@ -40,46 +40,52 @@ def extract_ep_num(text):
     if bracket_match: return int(bracket_match.group(1))
     return 0
 
-# ===== [2] عرض الحلقة مع أزرار التنقل =====
+# ===== [2] عرض الحلقة مع تصفية الأزرار الصفرية =====
 async def show_episode(client, message, v_id):
+    # جلب الحلقة الحالية
     res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
     
-    if not res or res[0][1] == 0:
+    title, ep = None, 0
+    if res:
+        title, ep = res[0]
+
+    # إذا كانت الحلقة غير موجودة أو رقمها 0، نحاول جلبها من المصدر وتصحيحها
+    if not res or ep == 0:
         try:
             source_msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
             if source_msg and (source_msg.caption or source_msg.text):
                 raw_text = source_msg.caption or source_msg.text
                 title = raw_text.split('\n')[0][:50]
                 ep = extract_ep_num(raw_text)
-                db_query("INSERT INTO videos (v_id, title, ep_num, status) VALUES (%s, %s, %s, 'posted') ON CONFLICT (v_id) DO UPDATE SET ep_num = EXCLUDED.ep_num, title = EXCLUDED.title", (v_id, title, ep), fetch=False)
-                res = [(title, ep)]
+                # تحديث قاعدة البيانات بالرقم الصحيح فوراً
+                db_query("""
+                    INSERT INTO videos (v_id, title, ep_num, status) VALUES (%s, %s, %s, 'posted')
+                    ON CONFLICT (v_id) DO UPDATE SET ep_num = EXCLUDED.ep_num, title = EXCLUDED.title
+                """, (v_id, title, ep), fetch=False)
         except: pass
 
-    if not res:
+    if not title:
         return await message.reply_text("❌ لم يتم العثور على الحلقة.")
 
-    title, ep = res[0]
-    
-    # جلب الحلقات الأخرى لنفس المسلسل (5 في كل سطر)
-    other_eps = db_query("SELECT ep_num, v_id FROM videos WHERE title = %s AND status = 'posted' ORDER BY ep_num ASC", (title,))
+    # جلب بقية حلقات المسلسل مع استبعاد أي حلقة رقمها 0
+    other_eps = db_query("SELECT ep_num, v_id FROM videos WHERE title = %s AND status = 'posted' AND ep_num > 0 ORDER BY ep_num ASC", (title,))
     
     keyboard = []
     if other_eps:
         row = []
         me = await client.get_me()
         for o_ep, o_vid in other_eps:
-            # زر لكل حلقة يفتحها عبر البوت
+            # إضافة الزر فقط إذا كان الرقم أكبر من 0
             row.append(InlineKeyboardButton(f"{o_ep}", url=f"https://t.me/{me.username}?start={o_vid}"))
-            if len(row) == 5: # 5 أرقام في كل سطر كما طلبت
+            if len(row) == 5:
                 keyboard.append(row)
                 row = []
         if row: keyboard.append(row)
 
-    # زر القناة الاحتياطية في الأسفل
     keyboard.append([InlineKeyboardButton("🔗 القناة الاحتياطية", url=BACKUP_CHANNEL_LINK)])
 
-    # النص الجديد المخفي منه الرموز القديمة (فقط الاسم والحلقة)
-    caption = f"<b>{title} - الحلقة {ep}</b>"
+    # النص المختصر
+    caption = f"<b>{title} - الحلقة {ep if ep > 0 else 'غير معرفة'}</b>"
     
     try:
         await client.copy_message(
@@ -93,7 +99,7 @@ async def show_episode(client, message, v_id):
     except Exception as e:
         await message.reply_text("⚠️ فشل إرسال الفيديو.")
 
-# ===== [3] الأوامر والنشر =====
+# ===== [3] نظام النشر =====
 @app.on_message(filters.chat(SOURCE_CHANNEL))
 async def handle_source(client, message):
     if message.video or message.document:
@@ -120,7 +126,7 @@ async def start_cmd(client, message):
     if len(message.command) > 1:
         await show_episode(client, message, message.command[1])
     else:
-        await message.reply_text(f"👋 أهلاً بك يا محمد. أرسل لي رابط حلقة للمشاهدة.")
+        await message.reply_text(f"👋 أهلاً بك يا محمد. البوت جاهز للخدمة.")
 
 if __name__ == "__main__":
     app.run()
