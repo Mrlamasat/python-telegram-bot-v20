@@ -21,8 +21,8 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
 
 SOURCE_CHANNEL_ID = -1003547072209 
-SOURCE_INVITE_LINK = "https://t.me/+PG_5IFEbruBmM2Y0" # الرابط الذي أرسلته
 BACKUP_CHANNEL_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
+ADMIN_ID = 7720165591 # معرفك الشخصي
 
 app = Client("railway_final_pro", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 api = FastAPI()
@@ -56,21 +56,13 @@ def db_query(query, params=(), fetch=True):
 def init_database():
     db_query("CREATE TABLE IF NOT EXISTS videos (v_id TEXT PRIMARY KEY, title TEXT, poster_id TEXT, ep_num INTEGER, status TEXT DEFAULT 'waiting', views INTEGER DEFAULT 0, last_view TIMESTAMP)", fetch=False)
 
-# ===== [3] نظام المزامنة الذكي بكسر حاجز الخصوصية =====
+# ===== [3] وظيفة المزامنة (تُستدعى عند التحويل) =====
 async def sync_missing_episodes():
-    await asyncio.sleep(20) 
-    logging.info(f"⏳ جاري محاولة الوصول للقناة الخاصة عبر الرابط...")
+    logging.info(f"⏳ بدء عملية المزامنة والاستعادة للقناة: {SOURCE_CHANNEL_ID}")
     try:
-        # المحاولة الأولى: الانضمام عبر الرابط لتعريف البوت بالـ Peer ID
-        try:
-            await app.join_chat(SOURCE_INVITE_LINK)
-            logging.info("🔗 تم استخدام رابط الدعوة بنجاح.")
-        except Exception as e:
-            logging.info(f"ℹ️ تنبيه بسيط عند الانضمام: {e}")
-
-        # المحاولة الثانية: الحصول على بيانات القناة
+        # محاولة التعرف على القناة بعد كسر الحاجز
         chat = await app.get_chat(SOURCE_CHANNEL_ID)
-        logging.info(f"✅ تم التعرف على القناة بنجاح: {chat.title}")
+        logging.info(f"✅ تم الاتصال بنجاح: {chat.title}")
 
         count = 0
         async for message in app.get_chat_history(chat.id, limit=1500):
@@ -89,40 +81,44 @@ async def sync_missing_episodes():
             db_query(f"UPDATE videos SET title = %s WHERE REPLACE(title, ' ', '') LIKE %s", (correct, f"%{clean_name}%"), fetch=False)
         
         logging.info(f"✅ اكتملت المزامنة! تم استعادة {count} حلقة.")
+        await app.send_message(ADMIN_ID, f"✅ تم استعادة {count} حلقة بنجاح وتحديث الموقع!")
     except Exception as e:
-        logging.error(f"❌ فشل المزامنة حتى مع الرابط: {e}")
+        logging.error(f"❌ فشل المزامنة: {e}")
+        await app.send_message(ADMIN_ID, f"❌ فشل المزامنة: {e}")
 
-def start_sync_loop():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(sync_missing_episodes())
-
-# ===== [4] الأوامر والـ API =====
-async def show_episode(client, message, v_id):
-    res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (str(v_id),))
-    if not res:
-        await message.reply_text("❌ جاري مزامنة بيانات هذه الحلقة، حاول مجدداً بعد ثوانٍ...")
-        return
-    title, ep = res[0]
-    caption = f"<b>📺 {title}</b>\n<b>🎬 الحلقة رقم: {ep}</b>"
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 القناة الإحتياطية", url=BACKUP_CHANNEL_LINK)]])
-    await client.copy_message(message.chat.id, SOURCE_CHANNEL_ID, int(v_id), caption=caption, reply_markup=markup)
-
-@api.get("/api/episodes")
-def get_episodes_for_web():
-    rows = db_query("SELECT v_id, title, ep_num FROM videos WHERE status='posted' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 50")
-    data = [{"id": base64.b64encode(str(r[0]).encode()).decode(), "title": str(r[1]), "episode": r[2]} for r in rows]
-    return JSONResponse(content=data)
-
+# ===== [4] الأوامر ومعالجة التحويل (تنشيط البوت) =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     if len(message.command) > 1:
         param = message.command[1]
         try: v_id = base64.b64decode(param).decode()
         except: v_id = param
-        await show_episode(client, message, v_id)
+        
+        res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (str(v_id),))
+        if not res:
+            await message.reply_text("❌ الحلقة مفقودة. حول لي أي رسالة من القناة المصدر لتنشيط المزامنة.")
+            return
+        title, ep = res[0]
+        caption = f"<b>📺 {title}</b>\n<b>🎬 الحلقة رقم: {ep}</b>"
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 القناة الإحتياطية", url=BACKUP_CHANNEL_LINK)]])
+        await client.copy_message(message.chat.id, SOURCE_CHANNEL_ID, int(v_id), caption=caption, reply_markup=markup)
     else:
-        await message.reply_text("👋 البوت يعمل ويقوم باستعادة حلقاتك الآن.")
+        await message.reply_text("👋 أهلاً يا محمد.\nلإصلاح الروابط واستعادة الـ 800 حلقة، قم بـ **تحويل (Forward)** لأي رسالة من قناتك المصدر إلى هنا الآن.")
+
+@app.on_message(filters.forwarded & filters.private)
+async def handle_activation(client, message):
+    if message.forward_from_chat and message.forward_from_chat.id == SOURCE_CHANNEL_ID:
+        await message.reply_text("🚀 تم كسر حاجز الخصوصية! جاري استعادة الـ 800 حلقة الآن... سأرسل لك إشعاراً عند الانتهاء.")
+        asyncio.create_task(sync_missing_episodes())
+    else:
+        await message.reply_text("⚠️ هذه الرسالة ليست من القناة المصدر الصحيحة.")
+
+# ===== [5] الـ API والتشغيل =====
+@api.get("/api/episodes")
+def get_episodes_for_web():
+    rows = db_query("SELECT v_id, title, ep_num FROM videos WHERE status='posted' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 100")
+    data = [{"id": base64.b64encode(str(r[0]).encode()).decode(), "title": str(r[1]), "episode": r[2]} for r in rows]
+    return JSONResponse(content=data)
 
 def run_api():
     uvicorn.run(api, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
@@ -130,5 +126,4 @@ def run_api():
 if __name__ == "__main__":
     init_database()
     threading.Thread(target=run_api, daemon=True).start()
-    threading.Thread(target=start_sync_loop, daemon=True).start()
     app.run()
