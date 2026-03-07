@@ -1,4 +1,4 @@
-import os, psycopg2, logging
+import os, psycopg2, logging, re
 from datetime import datetime
 from pyrogram import Client, filters, errors
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -19,7 +19,7 @@ ADMIN_ID = 7720165591
 
 app = Client("railway_final_pro", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ===== [2] قاعدة البيانات =====
+# ===== [2] دالة قاعدة البيانات =====
 def db_query(query, params=(), fetch=True):
     try:
         conn = psycopg2.connect(DATABASE_URL, sslmode="require")
@@ -32,70 +32,54 @@ def db_query(query, params=(), fetch=True):
         logging.error(f"DB Error: {e}")
         return []
 
-# ===== [3] نظام الإصلاح الديناميكي =====
-async def dynamic_fix_and_send(client, message, title, ep_num):
-    """يبحث عن الفيديو في القناة إذا فشل المعرف المخزن"""
-    logging.info(f"🔍 محاولة إصلاح ديناميكي لـ: {title} حلقة {ep_num}")
-    
-    # البحث في آخر 300 رسالة في قناة المصدر
-    async for msg in client.get_chat_history(SOURCE_CHANNEL, limit=300):
-        content = (msg.caption or msg.text or "").lower()
-        if title.lower() in content and str(ep_num) in content:
-            new_v_id = str(msg.id)
-            # تحديث القاعدة فوراً بالمعرف الجديد الصحيح
-            db_query("UPDATE videos SET v_id = %s WHERE title = %s AND ep_num = %s", (new_v_id, title, ep_num), fetch=False)
-            
-            # محاولة الإرسال بالمعرف الجديد
-            return await client.copy_message(
-                chat_id=message.chat.id,
-                from_chat_id=SOURCE_CHANNEL,
-                message_id=msg.id,
-                caption=f"<b>📺 {title}</b>\n<b>🎬 الحلقة رقم: {ep_num}</b>",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔗 القناة الاحتياطية", url=BACKUP_CHANNEL_LINK)]])
-            )
-    return None
-
+# ===== [3] عرض الحلقة (مع الإصلاح الديناميكي) =====
 async def show_episode(client, message, v_id):
+    # محاولة جلب البيانات من القاعدة
     res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
-    if not res:
-        await message.reply_text("❌ لم يتم العثور على بيانات الحلقة.")
-        return
     
-    title, ep = res[0]
-    
-    try:
-        # المحاولة الأولى: النسخ المباشر
-        await client.copy_message(
-            chat_id=message.chat.id,
-            from_chat_id=SOURCE_CHANNEL,
-            message_id=int(v_id),
-            caption=f"<b>📺 {title}</b>\n<b>🎬 الحلقة رقم: {ep}</b>",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔗 القناة الاحتياطية", url=BACKUP_CHANNEL_LINK)]])
-        )
-    except Exception as e:
-        logging.warning(f"⚠️ فشل الإرسال التقليدي ({e})، يبدأ الإصلاح الديناميكي...")
-        
-        # المحاولة الثانية: البحث التلقائي عن الفيديو وتصحيح المعرف
-        fixed = await dynamic_fix_and_send(client, message, title, ep)
-        
-        if not fixed:
-            # المحاولة الثالثة: التوجيه (Forward) كحل أخير
-            try:
-                await client.forward_messages(message.chat.id, SOURCE_CHANNEL, int(v_id))
-            except:
-                await message.reply_text("❌ عذراً، الفيديو غير متاح في قناة المصدر حالياً.")
-    
-    # تحديث الإحصائيات
-    db_query("INSERT INTO views_log (v_id) VALUES (%s)", (v_id,), fetch=False)
-    db_query("UPDATE videos SET views = views + 1, last_view = NOW() WHERE v_id = %s", (v_id,), fetch=False)
+    title, ep = None, None
 
-# ===== [4] بقية الأوامر (Stats / Source Handler / Start) بنفس منطقك =====
+    if not res:
+        # إصلاح ديناميكي: جلب البيانات من رسالة القناة مباشرة إذا لم تكن في القاعدة
+        try:
+            source_msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
+            if source_msg and (source_msg.caption or source_msg.text):
+                text = source_msg.caption or source_msg.text
+                title = text.split('\n')[0][:50] # أول سطر هو العنوان
+                ep_match = re.search(r"(\d+)", text)
+                ep = int(ep_match.group(1)) if ep_match else 0
+                # حفظها في القاعدة فوراً
+                db_query("INSERT INTO videos (v_id, title, ep_num, status) VALUES (%s, %s, %s, 'posted') ON CONFLICT DO NOTHING", 
+                         (v_id, title, ep), fetch=False)
+            else:
+                title, ep = "فيديو من المصدر", 0
+        except Exception as e:
+            logging.error(f"Fix Error: {e}")
+            return await message.reply_text("❌ لم يتم العثور على الفيديو في المصدر.")
+    else:
+        title, ep = res[0]
+
+    try:
+        # إرسال الفيديو للمستخدم
+        caption = f"<b>📺 {title}</b>\n<b>🎬 الحلقة رقم: {ep}</b>\n━━━━━━━━━━━━━━━"
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 اشترك بالقناه الإحتياطيه", url=BACKUP_CHANNEL_LINK)]])
+        
+        await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), caption=caption, reply_markup=markup)
+        
+        # سجل المشاهدة
+        db_query("INSERT INTO views_log (v_id) VALUES (%s)", (v_id,), fetch=False)
+        db_query("UPDATE videos SET views = views + 1, last_view = NOW() WHERE v_id = %s", (v_id,), fetch=False)
+    except Exception as e:
+        logging.error(f"Send Error: {e}")
+        await message.reply_text("⚠️ فشل إرسال الفيديو، قد يكون محذوفاً من المصدر.")
+
+# ===== [4] نظام النشر والإحصائيات =====
 @app.on_message(filters.command("stats") & filters.private)
 async def stats_command(client, message):
     if message.from_user.id != ADMIN_ID: return
     d24 = db_query("SELECT COUNT(*) FROM views_log WHERE viewed_at >= NOW() - INTERVAL '24 hours'")[0][0]
     u_count = db_query("SELECT COUNT(*) FROM users")[0][0]
-    await message.reply_text(f"📊 مشتركين: {u_count}\n👁️ مشاهدات 24س: {d24}")
+    await message.reply_text(f"📊 المشتركين: {u_count}\n👁️ مشاهدات 24 ساعة: {d24}")
 
 @app.on_message(filters.chat(SOURCE_CHANNEL))
 async def handle_source(client, message):
@@ -115,13 +99,15 @@ async def handle_source(client, message):
             me = await client.get_me()
             markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الحلقة", url=f"https://t.me/{me.username}?start={v_id}")]])
             await client.send_photo(PUBLIC_POST_CHANNEL, p_id, f"🎬 <b>{title}</b>\n<b>الحلقة: [{ep_num}]</b>", reply_markup=markup)
-            await message.reply_text(f"🚀 تم النشر!")
+            await message.reply_text(f"🚀 تم النشر بنجاح!")
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     db_query("INSERT INTO users (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (message.from_user.id,), fetch=False)
-    if len(message.command) > 1: await show_episode(client, message, message.command[1])
-    else: await message.reply_text(f"👋 أهلاً بك يا محمد. البوت جاهز.")
+    if len(message.command) > 1:
+        await show_episode(client, message, message.command[1])
+    else:
+        await message.reply_text(f"👋 أهلاً بك يا محمد. البوت يعمل وجاهز.")
 
 if __name__ == "__main__":
     app.run()
