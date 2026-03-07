@@ -52,45 +52,54 @@ def init_database():
 
 # ===== [3] عرض الحلقة =====
 async def show_episode(client, message, v_id):
-    res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
-    if not res: return
+    res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (str(v_id),))
+    if not res: 
+        await message.reply_text("❌ عذراً، لم يتم العثور على هذه الحلقة.")
+        return
     
     title, ep = res[0]
-    db_query("INSERT INTO views_log (v_id) VALUES (%s)", (v_id,), fetch=False)
-    db_query("UPDATE videos SET views = views + 1, last_view = NOW() WHERE v_id = %s", (v_id,), fetch=False)
+    db_query("INSERT INTO views_log (v_id) VALUES (%s)", (str(v_id),), fetch=False)
+    db_query("UPDATE videos SET views = views + 1, last_view = NOW() WHERE v_id = %s", (str(v_id),), fetch=False)
 
     caption = f"<b>📺 {title}</b>\n<b>🎬 الحلقة رقم: {ep}</b>\n━━━━━━━━━━━━━━━"
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 اضغط هنا للاشتراك بالقناه الإحتياطيه", url=BACKUP_CHANNEL_LINK)]])
     
-    await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), caption=caption, reply_markup=markup)
+    try:
+        await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), caption=caption, reply_markup=markup)
+    except Exception as e:
+        logging.error(f"Error copying message: {e}")
+        await message.reply_text("⚠️ حدث خطأ أثناء جلب الحلقة من القناة المصدر.")
 
-# ===== [4] نظام الـ API للموقع (الجسر) =====
+# ===== [4] نظام الـ API للموقع =====
 @api.get("/api/episodes")
 def get_episodes_for_web():
-    # جلب آخر 24 حلقة تم نشرها لعرضها في الموقع
     rows = db_query("SELECT v_id, title, ep_num FROM videos WHERE status='posted' ORDER BY v_id DESC LIMIT 24")
     data = []
     for r in rows:
         data.append({
-            "id": base64.b64encode(str(r[0]).encode()).decode(), # تشفير الـ ID لحماية القناة
+            "id": base64.b64encode(str(r[0]).encode()).decode(),
             "title": r[1],
             "episode": r[2]
         })
     return data
 
-# ===== [5] الأوامر والنشر =====
+# ===== [5] الأوامر =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     db_query("INSERT INTO users (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (message.from_user.id,), fetch=False)
+    
     if len(message.command) > 1:
+        param = message.command[1]
+        # محاولة فك التشفير، إذا فشل يعني أن الرابط قديم (أرقام فقط)
         try:
-            # محاولة فك تشفير المعرف القادم من الموقع
-            v_id = base64.b64decode(message.command[1]).decode()
-            await show_episode(client, message, v_id)
+            v_id = base64.b64decode(param).decode()
+            if not v_id.isdigit(): raise Exception() # تأكد أنه رقم بعد الفك
         except:
-            await show_episode(client, message, message.command[1])
+            v_id = param # استخدام البارامتر كما هو إذا لم يكن مشفراً
+            
+        await show_episode(client, message, v_id)
     else:
-        await message.reply_text(f"👋 أهلاً بك يا محمد.\nالبوت متصل الآن بالموقع الإلكتروني.")
+        await message.reply_text(f"👋 أهلاً بك يا محمد.\nالبوت جاهز للعمل ومتصل بالموقع.")
 
 @app.on_message(filters.chat(SOURCE_CHANNEL))
 async def handle_source(client, message):
@@ -108,19 +117,15 @@ async def handle_source(client, message):
             v_id, title, p_id = res[0]; ep_num = int(message.text)
             db_query("UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s", (ep_num, v_id), fetch=False)
             me = await client.get_me()
-            # الرابط هنا مشفر لحماية القناة
             encoded_id = base64.b64encode(str(v_id).encode()).decode()
-            markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ شاهد الآن في الموقع", url=f"https://t.me/{me.username}?start={encoded_id}")]])
+            markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ شاهد الآن", url=f"https://t.me/{me.username}?start={encoded_id}")]])
             await client.send_photo(PUBLIC_POST_CHANNEL, p_id, f"🎬 <b>{title}</b>\n<b>الحلقة: [{ep_num}]</b>", reply_markup=markup)
             await message.reply_text(f"🚀 تم النشر بنجاح!")
 
-# دالة تشغيل الجسر
 def run_api():
-    port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(api, host="0.0.0.0", port=port)
+    uvicorn.run(api, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
 if __name__ == "__main__":
     init_database()
-    # تشغيل الجسر والبوت معاً
     threading.Thread(target=run_api, daemon=True).start()
     app.run()
