@@ -192,7 +192,7 @@ async def publish_to_channel(client, v_id, data):
             InlineKeyboardButton("🎬 مشاهدة الحلقة", url=bot_link)
         ]])
         
-        # ✅ نشر البوستر في القناة - بدون اسم المسلسل!
+        # ✅ نشر البوستر في القناة - مع رقم الحلقة فقط
         sent_message = await client.copy_message(
             PUBLISH_CHANNEL,
             SOURCE_CHANNEL,
@@ -218,7 +218,8 @@ async def publish_to_channel(client, v_id, data):
         # ✅ إرسال تأكيد للمشرف مع رابط النشر
         await client.send_message(
             SOURCE_CHANNEL,
-            f"✅ **تم النشر بنجاح!**\n\n"
+            f"✅ **تم النشر بنجاح!**\n"
+            f"رقم الحلقة: {ep_num}\n"
             f"🔗 رابط المنشور: {post_link}"
         )
         
@@ -268,8 +269,8 @@ async def show_episode(client, message, v_id):
         
         keyboard.append([InlineKeyboardButton("🔗 القناة الاحتياطية", url=BACKUP_CHANNEL_LINK)])
         
-        # ✅ في البوت - إخفاء الاسم نهائياً (يظهر رمز فقط)
-        caption = f"<b>🎬</b>\n"
+        # ✅ في البوت - يظهر رقم الحلقة بوضوح
+        caption = f"<b>🎬 الحلقة {ep}</b>\n"
         if quality:
             caption += f"📺 الجودة: {quality}\n"
         if duration:
