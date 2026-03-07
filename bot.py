@@ -40,38 +40,56 @@ def db_query(query, params=(), fetch=True):
         logging.error(f"DB Error: {e}")
         return []
 
-# ===== [3] عرض الحلقة (مباشرة من البيانات التي رفعها Termux) =====
-async def show_episode(client, message, v_id):
-    # جلب بيانات الحلقة التي حقنها Termux في القاعدة
-    res = db_query("SELECT title FROM videos WHERE v_id = %s", (str(v_id),))
-    
-    title = res[0][0] if res else "حلقة مستعادة"
-    
+# ===== [3] وظيفة إرسال الحلقة =====
+async def send_video_safe(client, chat_id, v_id_str):
     try:
+        # التأكد من أن الـ ID هو رقم صحيح
+        video_message_id = int(v_id_str)
+        
+        res = db_query("SELECT title FROM videos WHERE v_id = %s", (str(video_message_id),))
+        title = res[0][0] if res else "حلقة مستعادة"
+        
         caption = f"<b>📺 {title}</b>"
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 القناة الإحتياطية", url=BACKUP_CHANNEL_LINK)]])
-        # إرسال الفيديو باستخدام رقم الـ ID الذي وفره Termux
-        await client.copy_message(message.chat.id, SOURCE_CHANNEL_ID, int(v_id), caption=caption, reply_markup=markup)
+        
+        await client.copy_message(chat_id, SOURCE_CHANNEL_ID, video_message_id, caption=caption, reply_markup=markup)
     except Exception as e:
         logging.error(f"Send Error: {e}")
-        await message.reply_text("❌ عذراً، تعذر جلب الفيديو. تأكد أن البوت لا يزال مشرفاً في القناة.")
+        return False
+    return True
 
-# ===== [4] الأوامر والـ API =====
+# ===== [4] الأوامر ومعالجة الروابط =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     if len(message.command) > 1:
         param = message.command[1]
-        try: v_id = base64.b64decode(param).decode()
-        except: v_id = param
-        await show_episode(client, message, v_id)
+        try:
+            # محاولة فك التشفير بأمان
+            v_id = base64.b64decode(param).decode()
+        except:
+            v_id = param
+            
+        success = await send_video_safe(client, message.chat.id, v_id)
+        if not success:
+            await message.reply_text("⚠️ لم يتمكن البوت من الوصول للحلقة. يرجى تحويل أي رسالة من القناة المصدر للبوت لتنشيطه.")
     else:
-        await message.reply_text("👋 البوت يعمل بنجاح! جميع الحلقات الـ 791 جاهزة للعرض.")
+        await message.reply_text("👋 البوت جاهز لعرض الحلقات المستعادة من Termux.")
+
+# معالجة التحويل (تنشيط القناة)
+@app.on_message(filters.forwarded & filters.private)
+async def handle_activation(client, message):
+    if message.forward_from_chat and message.forward_from_chat.id == SOURCE_CHANNEL_ID:
+        await message.reply_text("✅ ممتاز! تم تنشيط الاتصال بالقناة بنجاح. الآن جميع الروابط ستعمل.")
+    else:
+        await message.reply_text(f"معرف القناة المحولة: {message.forward_from_chat.id if message.forward_from_chat else 'غير معروف'}")
 
 @api.get("/api/episodes")
 def get_episodes_for_web():
-    # جلب الحلقات التي تم حقنها بواسطة Termux
     rows = db_query("SELECT v_id, title FROM videos WHERE status='posted' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 100")
-    data = [{"id": base64.b64encode(str(r[0]).encode()).decode(), "title": str(r[1])} for r in rows]
+    data = []
+    for r in rows:
+        encoded_id = base64.b64encode(str(r[0]).encode()).decode().replace('=', '')
+        data.append({"id": encoded_id, "title": str(r[1])})
     return JSONResponse(content=data)
 
 def run_api():
