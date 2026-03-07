@@ -1,8 +1,9 @@
-import os, psycopg2, logging, re, asyncio
+import os, psycopg2, logging, re, asyncio, time
 from datetime import datetime
 from pyrogram import Client, filters, errors
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
+from pyrogram.errors import FloodWait
 
 logging.basicConfig(level=logging.INFO)
 
@@ -136,7 +137,78 @@ async def start_cmd(client, message):
     if len(message.command) > 1:
         await show_episode(client, message, message.command[1])
     else:
-        await message.reply_text("👋 أهلاً بك يا محمد في بوت المشاهدة.")
+        await message.reply_text("👋 أهلاً بك في بوت المشاهدة.")
 
+# ===== [7] دالة معالجة Flood Wait =====
+async def handle_flood_wait(e):
+    wait_time = e.value  # عدد الثواني المطلوب الانتظار
+    logging.warning(f"⚠️ Flood wait required: {wait_time} seconds")
+    print(f"⚠️ توقف مؤقت: الانتظار {wait_time} ثانية بسبب ضغط الطلبات...")
+    await asyncio.sleep(wait_time)
+    return True
+
+# ===== [8] تشغيل البوت مع معالجة الأخطاء =====
+def main():
+    max_retries = 5
+    retry_count = 0
+    
+    print("🚀 بدء تشغيل البوت...")
+    
+    while retry_count < max_retries:
+        try:
+            # حذف ملف الجلسة القديم إذا كان موجوداً
+            session_file = "railway_final_pro.session"
+            if os.path.exists(session_file):
+                os.remove(session_file)
+                print("✅ تم حذف ملف الجلسة القديم")
+            
+            print(f"📡 محاولة تشغيل البوت رقم {retry_count + 1}")
+            
+            # التحقق من وجود التوكن
+            if not BOT_TOKEN:
+                print("❌ خطأ: BOT_TOKEN غير موجود في متغيرات البيئة")
+                return
+            
+            print(f"✅ API_ID: {API_ID}")
+            print(f"✅ تم تحميل BOT_TOKEN بنجاح")
+            
+            # تشغيل البوت
+            app.run()
+            break
+            
+        except FloodWait as e:
+            retry_count += 1
+            wait_time = e.value
+            print(f"⚠️ Flood Wait: الانتظار {wait_time} ثانية (محاولة {retry_count}/{max_retries})")
+            
+            # تنفيذ الانتظار بشكل غير متزامن
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(handle_flood_wait(e))
+                loop.close()
+            except:
+                # إذا فشل الانتظار غير المتزامن، استخدم الانتظار المتزامن
+                time.sleep(wait_time)
+            
+        except Exception as e:
+            retry_count += 1
+            print(f"❌ خطأ غير متوقع: {type(e).__name__}: {e}")
+            
+            if retry_count < max_retries:
+                wait_time = 30 * retry_count  # زيادة وقت الانتظار مع كل محاولة
+                print(f"⏳ الانتظار {wait_time} ثانية قبل إعادة المحاولة...")
+                time.sleep(wait_time)
+    
+    if retry_count >= max_retries:
+        print("❌ فشل تشغيل البوت بعد 5 محاولات")
+        print("📝 الرجاء التحقق من:")
+        print("1. صحة BOT_TOKEN في متغيرات البيئة")
+        print("2. عدم وجود عدة نسخ من البوت تعمل")
+        print("3. اتصال الإنترنت")
+    else:
+        print("✅ تم تشغيل البوت بنجاح!")
+
+# ===== [9] نقطة الدخول الرئيسية =====
 if __name__ == "__main__":
-    app.run()
+    main()
