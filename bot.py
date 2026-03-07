@@ -1,10 +1,14 @@
 import os
 import psycopg2
 import logging
+import base64
+import threading
 from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
+from fastapi import FastAPI
+import uvicorn
 
 logging.basicConfig(level=logging.INFO)
 
@@ -20,6 +24,7 @@ BACKUP_CHANNEL_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
 ADMIN_ID = 7720165591
 
 app = Client("railway_final_pro", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+api = FastAPI()
 
 # ===== [2] قاعدة البيانات =====
 def db_query(query, params=(), fetch=True):
@@ -51,7 +56,6 @@ async def show_episode(client, message, v_id):
     if not res: return
     
     title, ep = res[0]
-    # تسجيل المشاهدة في السجل اللحظي + العداد العام
     db_query("INSERT INTO views_log (v_id) VALUES (%s)", (v_id,), fetch=False)
     db_query("UPDATE videos SET views = views + 1, last_view = NOW() WHERE v_id = %s", (v_id,), fetch=False)
 
@@ -60,41 +64,34 @@ async def show_episode(client, message, v_id):
     
     await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), caption=caption, reply_markup=markup)
 
-# ===== [4] الإحصائيات الاحترافية (يدوي بطلبك) =====
-@app.on_message(filters.command("stats") & filters.private)
-async def stats_command(client, message):
-    if message.from_user.id != ADMIN_ID: return
-    
-    # أكثر 3 مسلسلات مشاهدة في آخر 24 ساعة
-    top_daily = db_query("""
-        SELECT v.title, COUNT(l.v_id) as d_views FROM views_log l
-        JOIN videos v ON l.v_id = v.v_id WHERE l.viewed_at >= NOW() - INTERVAL '24 hours'
-        GROUP BY v.title ORDER BY d_views DESC LIMIT 3
-    """)
+# ===== [4] نظام الـ API للموقع (الجسر) =====
+@api.get("/api/episodes")
+def get_episodes_for_web():
+    # جلب آخر 24 حلقة تم نشرها لعرضها في الموقع
+    rows = db_query("SELECT v_id, title, ep_num FROM videos WHERE status='posted' ORDER BY v_id DESC LIMIT 24")
+    data = []
+    for r in rows:
+        data.append({
+            "id": base64.b64encode(str(r[0]).encode()).decode(), # تشفير الـ ID لحماية القناة
+            "title": r[1],
+            "episode": r[2]
+        })
+    return data
 
-    h1 = db_query("SELECT COUNT(*) FROM views_log WHERE viewed_at >= NOW() - INTERVAL '1 hour'")[0][0]
-    d24 = db_query("SELECT COUNT(*) FROM views_log WHERE viewed_at >= NOW() - INTERVAL '24 hours'")[0][0]
-    u_count = db_query("SELECT COUNT(*) FROM users")[0][0]
-    total_views = db_query("SELECT SUM(views) FROM videos")[0][0] or 0
+# ===== [5] الأوامر والنشر =====
+@app.on_message(filters.command("start") & filters.private)
+async def start_cmd(client, message):
+    db_query("INSERT INTO users (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (message.from_user.id,), fetch=False)
+    if len(message.command) > 1:
+        try:
+            # محاولة فك تشفير المعرف القادم من الموقع
+            v_id = base64.b64decode(message.command[1]).decode()
+            await show_episode(client, message, v_id)
+        except:
+            await show_episode(client, message, message.command[1])
+    else:
+        await message.reply_text(f"👋 أهلاً بك يا محمد.\nالبوت متصل الآن بالموقع الإلكتروني.")
 
-    report = "<b>📊 تقرير الأداء الحالي</b>\n"
-    report += "━━━━━━━━━━━━━━━\n"
-    report += "<b>🔥 الأعلى مشاهدة (خلال اليوم):</b>\n"
-    if top_daily:
-        for i, (t, v) in enumerate(top_daily, 1):
-            report += f"{i}️⃣ {t} ⇦ <code>+{v}</code>\n"
-    else: report += "<i>لا توجد بيانات لليوم بعد.</i>\n"
-    
-    report += "━━━━━━━━━━━━━━━\n"
-    report += f"<b>📈 مشاهدات آخر ساعة:</b> <code>{h1}</code>\n"
-    report += f"<b>📅 مشاهدات آخر 24 ساعة:</b> <code>{d24}</code>\n"
-    report += f"<b>👁️ إجمالي المشاهدات:</b> <code>{total_views:,}</code>\n"
-    report += f"<b>👥 المشتركين:</b> <code>{u_count}</code>\n"
-    report += f"\n📅 {datetime.now().strftime('%Y-%m-%d | %H:%M')}"
-
-    await message.reply_text(report, parse_mode=ParseMode.HTML)
-
-# ===== [5] نظام النشر =====
 @app.on_message(filters.chat(SOURCE_CHANNEL))
 async def handle_source(client, message):
     if message.video or message.document:
@@ -111,16 +108,19 @@ async def handle_source(client, message):
             v_id, title, p_id = res[0]; ep_num = int(message.text)
             db_query("UPDATE videos SET ep_num=%s, status='posted' WHERE v_id=%s", (ep_num, v_id), fetch=False)
             me = await client.get_me()
-            markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ اضغط هنا لمشاهدة الحلقة كاملة", url=f"https://t.me/{me.username}?start={v_id}")]])
+            # الرابط هنا مشفر لحماية القناة
+            encoded_id = base64.b64encode(str(v_id).encode()).decode()
+            markup = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ شاهد الآن في الموقع", url=f"https://t.me/{me.username}?start={encoded_id}")]])
             await client.send_photo(PUBLIC_POST_CHANNEL, p_id, f"🎬 <b>{title}</b>\n<b>الحلقة: [{ep_num}]</b>", reply_markup=markup)
             await message.reply_text(f"🚀 تم النشر بنجاح!")
 
-@app.on_message(filters.command("start") & filters.private)
-async def start_cmd(client, message):
-    db_query("INSERT INTO users (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (message.from_user.id,), fetch=False)
-    if len(message.command) > 1: await show_episode(client, message, message.command[1])
-    else: await message.reply_text(f"👋 أهلاً بك يا محمد.\nالبوت يعمل وجاهز للنشر.")
+# دالة تشغيل الجسر
+def run_api():
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run(api, host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
     init_database()
+    # تشغيل الجسر والبوت معاً
+    threading.Thread(target=run_api, daemon=True).start()
     app.run()
