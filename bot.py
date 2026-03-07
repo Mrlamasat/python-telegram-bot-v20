@@ -3,7 +3,7 @@ from datetime import datetime
 from pyrogram import Client, filters, errors
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
-from pyrogram.errors import FloodWait
+from pyrogram.errors import FloodWait, ChannelInvalid, ChannelPrivate
 
 logging.basicConfig(level=logging.INFO)
 
@@ -43,158 +43,103 @@ def db_query(query, params=(), fetch=True):
         logging.error(f"DB Error: {e}")
         return []
 
-# ===== [3] دالة استخراج رقم الحلقة المتطورة =====
+# ===== [3] دالة استخراج رقم الحلقة من النص =====
 def extract_ep_num_simple(text):
-    """دالة متطورة لاستخراج رقم الحلقة من أي نص"""
+    """دالة لاستخراج رقم الحلقة من أي نص"""
     if not text:
         return 0
     
-    # تنظيف النص من الرموز غير المرئية
     text = str(text).strip()
     
-    # أنماط البحث عن رقم الحلقة (مرتبة من الأكثر تحديداً للأقل)
+    # أنماط البحث عن الأرقام
     patterns = [
-        # النمط الموجود في قناتك: الحلقة: [17]
-        r'الحلقة\s*[:]\s*\[(\d+)\]',
-        r'الحلقه\s*[:]\s*\[(\d+)\]',
-        r'الحلقة\s*\[(\d+)\]',
-        r'الحلقه\s*\[(\d+)\]',
-        
-        # أنماط مع أقواس متنوعة
-        r'\[(\d+)\]',           # [17]
-        r'\((\d+)\)',           # (17)
-        r'\{(\d+)\}',           # {17}
-        
-        # أنماط مع كلمات
-        r'(?:حلقه|حلقة|الحلقة|الحلقه)\s*[:\-\s]*(\d+)',
-        r'رقم\s*[:\-\s]*(\d+)',
-        r'#(\d+)',
-        
-        # أي رقم في النص (كملاذ أخير)
-        r'\b(\d+)\b'
+        r'\[(\d+)\]',
+        r'\((\d+)\)',
+        r'الحلقة\s+(\d+)',
+        r'الحلقه\s+(\d+)',
+        r'(\d+)'
     ]
     
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE | re.UNICODE)
         if match:
-            num = int(match.group(1))
-            # تجاهل الأرقام الكبيرة جداً (أكثر من 1000)
-            if num < 1000:
-                logging.info(f"✅ استخرجنا رقم {num} باستخدام نمط {pattern}")
-                return num
+            return int(match.group(1))
     
-    logging.warning(f"⚠️ لم نجد رقماً في النص: {text[:50]}...")
     return 0
 
-# ===== [4] دالة استخراج اسم المسلسل من النص =====
-def extract_title(text):
-    """تستخرج اسم المسلسل من النص (السطر الأول)"""
-    if not text:
-        return "فيديو"
-    # إزالة أي أرقام أو أقواس من نهاية السطر
-    first_line = text.strip().split('\n')[0]
-    # إزالة patterns مثل "الحلقة: [17]" من نهاية السطر
-    clean_title = re.sub(r'\s*(?:الحلقة|الحلقه)\s*[:]\s*\[\d+\]\s*$', '', first_line)
-    clean_title = re.sub(r'\s*\[\d+\]\s*$', '', clean_title)
-    return clean_title[:100]
-
-# ===== [5] دالة متطورة للبحث عن رقم الحلقة في جميع القنوات =====
-async def find_episode_number(client, v_id):
+# ===== [4] دالة استخراج اسم المسلسل ورقم الحلقة من التنسيق الجديد =====
+def extract_title_and_episode(text):
     """
-    تبحث عن رقم الحلقة في:
-    1. وصف قناة المصدر
-    2. قنوات النشر الأربعة (حيث يظهر الرقم قبل الضغط)
+    تستخرج اسم المسلسل ورقم الحلقة من نص مثل "المداح 13"
+    أو "المداح - 13" أو "المداح: 13"
+    """
+    if not text:
+        return None, 0
+    
+    # أخذ السطر الأول فقط
+    first_line = text.strip().split('\n')[0]
+    
+    # أنماط التنسيق الجديد (كلمات ثم رقم)
+    patterns = [
+        r'^(.+?)\s+(\d+)$',           # "المداح 13"
+        r'^(.+?)\s*-\s*(\d+)$',        # "المداح - 13"
+        r'^(.+?)\s*:\s*(\d+)$',        # "المداح: 13"
+        r'^(.+?)\s*:\s*\[(\d+)\]$',    # "المداح: [13]"
+        r'^(.+?)\s+\[(\d+)\]$',        # "المداح [13]"
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, first_line, re.UNICODE)
+        if match:
+            title = match.group(1).strip()
+            ep_num = int(match.group(2))
+            return title, ep_num
+    
+    # إذا لم يطابق النمط، نستخدم الطريقة القديمة
+    return None, 0
+
+# ===== [5] دالة البحث عن رقم الحلقة من قنوات النشر =====
+async def get_episode_from_channels(client, v_id):
+    """
+    تبحث عن رقم الحلقة في قنوات النشر
+    حيث يكون مكتوباً بجانب زر المشاهدة
     """
     try:
-        # 1️⃣ أولاً: البحث في قناة المصدر
-        source_msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
-        if source_msg and (source_msg.caption or source_msg.text):
-            text = source_msg.caption or source_msg.text
-            ep = extract_ep_num_simple(text)
-            if ep > 0:
-                logging.info(f"✅ وجدنا رقم {ep} في قناة المصدر")
-                return ep
-            else:
-                logging.info(f"🔍 لم نجد رقماً في نص المصدر: {text[:100]}")
-        
-        # 2️⃣ ثانياً: البحث في قنوات النشر الأربعة
-        logging.info("🔍 لم نجد في المصدر، نبحث في قنوات النشر...")
-        
         for channel_id in PUBLIC_CHANNELS:
             try:
-                async for post in client.get_chat_history(channel_id, limit=300):
+                async for post in client.get_chat_history(channel_id, limit=200):
                     if not post.reply_markup:
                         continue
                     
                     for row in post.reply_markup.inline_keyboard:
                         for btn in row:
                             if btn.url and f"start={v_id}" in btn.url:
-                                # وجدنا الزر، الآن نبحث عن رقم الحلقة
-                                logging.info(f"✅ وجدنا الزر في القناة {channel_id}")
-                                
-                                # نصوص محتملة للبحث
-                                search_texts = []
-                                
+                                # جمع كل النصوص المتاحة
+                                full_text = ""
                                 if post.caption:
-                                    search_texts.append(post.caption)
-                                    logging.info(f"📝 كابشن: {post.caption[:100]}")
+                                    full_text += post.caption + " "
                                 if post.text:
-                                    search_texts.append(post.text)
-                                    logging.info(f"📝 نص: {post.text[:100]}")
+                                    full_text += post.text + " "
                                 if post.reply_to_message:
                                     if post.reply_to_message.caption:
-                                        search_texts.append(post.reply_to_message.caption)
+                                        full_text += post.reply_to_message.caption + " "
                                     if post.reply_to_message.text:
-                                        search_texts.append(post.reply_to_message.text)
+                                        full_text += post.reply_to_message.text + " "
                                 
-                                # البحث في جميع النصوص
-                                for text in search_texts:
-                                    ep = extract_ep_num_simple(text)
-                                    if ep > 0:
-                                        logging.info(f"✅ وجدنا رقم {ep} في قناة النشر")
-                                        return ep
-                                        
-            except Exception as e:
-                logging.error(f"خطأ في البحث في القناة {channel_id}: {e}")
+                                # استخراج الرقم
+                                ep = extract_ep_num_simple(full_text)
+                                if ep > 0:
+                                    return ep
+            except:
                 continue
-        
-        # 3️⃣ ثالثاً: إذا لم نجد، نستخدم ترتيب الرسالة
-        try:
-            source_msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
-            if source_msg:
-                # البحث عن رسائل مشابهة في قناة المصدر
-                async for msg in client.get_chat_history(SOURCE_CHANNEL, limit=50):
-                    if msg.id < int(v_id) and (msg.caption or msg.text):
-                        # وجدنا رسالة أقدم، نحاول استخراج الرقم منها
-                        ep = extract_ep_num_simple(msg.caption or msg.text)
-                        if ep > 0:
-                            # نستخدم هذا الرقم + الفرق
-                            diff = int(v_id) - msg.id
-                            if diff < 10:  # فرق بسيط
-                                approx = ep + diff
-                                logging.info(f"⚠️ استخدمنا رقم تقريبي: {approx}")
-                                return approx
-        except:
-            pass
-        
-        # 4️⃣ رابعاً: آخر رقمين من المعرف
-        try:
-            approx = int(str(v_id)[-2:])
-            if approx == 0:
-                approx = 1
-            logging.info(f"⚠️ استخدمنا آخر رقمين: {approx}")
-            return approx
-        except:
-            return 1
-        
     except Exception as e:
-        logging.error(f"خطأ في find_episode_number: {e}")
-        return 1
+        logging.error(f"خطأ في get_episode_from_channels: {e}")
+    
+    return 0
 
 # ===== [6] دالة عرض الحلقة =====
 async def show_episode(client, message, v_id):
     try:
-        # جلب البيانات من قاعدة البيانات
         db_data = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
         
         if not db_data:
@@ -202,10 +147,8 @@ async def show_episode(client, message, v_id):
         
         title, ep = db_data[0]
         
-        # بناء لوحة المفاتيح
         keyboard = []
         
-        # فقط إذا كانت الأزرار مفعلة، نضيف أزرار الحلقات الأخرى
         if SHOW_MORE_BUTTONS:
             other_eps = db_query("""
                 SELECT ep_num, v_id FROM videos 
@@ -227,10 +170,8 @@ async def show_episode(client, message, v_id):
                 if row:
                     keyboard.append(row)
         
-        # زر القناة الاحتياطية يبقى دائمًا
         keyboard.append([InlineKeyboardButton("🔗 القناة الاحتياطية", url=BACKUP_CHANNEL_LINK)])
         
-        # إرسال الحلقة
         await client.copy_message(
             message.chat.id,
             SOURCE_CHANNEL,
@@ -239,51 +180,60 @@ async def show_episode(client, message, v_id):
             reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None
         )
         
-        # تسجيل المشاهدة
-        db_query(
-            "INSERT INTO views_log (v_id, user_id) VALUES (%s, %s)",
-            (v_id, message.from_user.id),
-            fetch=False
-        )
+        try:
+            db_query(
+                "INSERT INTO views_log (v_id, user_id) VALUES (%s, %s)",
+                (v_id, message.from_user.id),
+                fetch=False
+            )
+        except:
+            pass
         
     except Exception as e:
         logging.error(f"خطأ في show_episode: {e}")
-        await message.reply_text("⚠️ حدث خطأ أثناء إرسال الحلقة")
+        await message.reply_text("⚠️ حدث خطأ")
 
 # ===== [7] أمر البدء الذكي =====
 @app.on_message(filters.command("start") & filters.private)
 async def smart_start(client, message):
-    # تسجيل المستخدم
+    username = message.from_user.username or ""
     db_query(
-        "INSERT INTO users (user_id) VALUES (%s) ON CONFLICT DO NOTHING",
-        (message.from_user.id,),
+        "INSERT INTO users (user_id, username) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username",
+        (message.from_user.id, username),
         fetch=False
     )
     
     if len(message.command) > 1:
         v_id = message.command[1]
-        
-        # التحقق من وجود الحلقة في قاعدة البيانات
         db_data = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
         
         if not db_data:
-            # الحلقة غير موجودة → نجلبها ونصلحها تلقائياً
-            waiting_msg = await message.reply_text("🔄 جاري تحضير الحلقة لأول مرة...")
+            waiting_msg = await message.reply_text("🔄 جاري تحضير الحلقة...")
             
             try:
-                # جلب من قناة المصدر
                 source_msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
                 
                 if source_msg and (source_msg.caption or source_msg.text):
                     raw_text = source_msg.caption or source_msg.text
                     
-                    # استخراج اسم المسلسل من المصدر
-                    title = extract_title(raw_text)
+                    # محاولة استخراج من التنسيق الجديد أولاً
+                    title, ep_num = extract_title_and_episode(raw_text)
                     
-                    # البحث عن رقم الحلقة في جميع القنوات
-                    ep_num = await find_episode_number(client, v_id)
+                    if not title:
+                        title = raw_text.split('\n')[0][:100]
                     
-                    # حفظ في قاعدة البيانات
+                    if ep_num == 0:
+                        # البحث في قنوات النشر
+                        ep_num = await get_episode_from_channels(client, v_id)
+                    
+                    if ep_num == 0:
+                        await waiting_msg.edit_text(
+                            f"⚠️ لم أجد رقم الحلقة\n"
+                            f"المسلسل: {title}\n"
+                            f"الرجاء استخدام: /add {v_id} رقم_الحلقة {title}"
+                        )
+                        return
+                    
                     db_query("""
                         INSERT INTO videos (v_id, title, ep_num, status) 
                         VALUES (%s, %s, %s, 'posted')
@@ -292,49 +242,37 @@ async def smart_start(client, message):
                         ep_num = EXCLUDED.ep_num
                     """, (v_id, title, ep_num), fetch=False)
                     
-                    # إعلام المشرف
-                    await client.send_message(
-                        ADMIN_ID,
-                        f"✅ **تم إصلاح حلقة جديدة تلقائياً!**\n"
-                        f"المعرف: `{v_id}`\n"
-                        f"المسلسل: {title}\n"
-                        f"رقم الحلقة: {ep_num}"
-                    )
-                    
                     await waiting_msg.delete()
-                    # الآن نعرض الحلقة
                     await show_episode(client, message, v_id)
                 else:
-                    await waiting_msg.edit_text("❌ لم يتم العثور على الحلقة في قناة المصدر")
+                    await waiting_msg.edit_text("❌ الحلقة غير موجودة")
                     
             except Exception as e:
-                await waiting_msg.edit_text(f"❌ خطأ في تحضير الحلقة: {e}")
+                await waiting_msg.edit_text(f"❌ خطأ: {e}")
         else:
-            # الحلقة موجودة → نعرضها مباشرة
             await show_episode(client, message, v_id)
     else:
-        # رسالة الترحيب
         welcome_text = """👋 **أهلاً بك في بوت المشاهدة الذكي**
 
-📺 **ميزة ذكية:** 
-عندما تضغط على أي رابط لأول مرة، سيتم حفظه تلقائياً في قاعدة البيانات للمستقبل!
+📺 **طريقة العمل:**
+1. اكتب في وصف الفيديو: "اسم المسلسل رقم_الحلقة"
+2. استخدم /scan_source لتحديث كل الحلقات
 
-🆘 **للتواصل مع المطور:** @Mohsen_7e
-"""
+🆘 @Mohsen_7e"""
         await message.reply_text(welcome_text)
 
-# ===== [8] أمر التحكم في أزرار المزيد من الحلقات =====
+# ===== [8] أمر التحكم في الأزرار =====
 @app.on_message(filters.command("toggle_buttons") & filters.user(ADMIN_ID))
 async def toggle_buttons(client, message):
     global SHOW_MORE_BUTTONS
     SHOW_MORE_BUTTONS = not SHOW_MORE_BUTTONS
     status = "✅ مفعلة" if SHOW_MORE_BUTTONS else "❌ معطلة"
-    await message.reply_text(f"أزرار المزيد من الحلقات: {status}")
+    await message.reply_text(f"أزرار المزيد: {status}")
 
-# ===== [9] أمر مسح قناة المصدر وتحديث جميع الحلقات =====
+# ===== [9] الأمر الرئيسي لتحديث قاعدة البيانات =====
 @app.on_message(filters.command("scan_source") & filters.user(ADMIN_ID))
 async def scan_source_command(client, message):
-    msg = await message.reply_text("🔄 جاري فحص قناة المصدر بالكامل...")
+    msg = await message.reply_text("🔄 جاري فحص قناة المصدر...")
     
     stats = {
         'scanned': 0,
@@ -342,75 +280,76 @@ async def scan_source_command(client, message):
         'errors': 0
     }
     
-    # فحص آخر 500 رسالة في قناة المصدر
-    async for post in client.get_chat_history(SOURCE_CHANNEL, limit=500):
-        stats['scanned'] += 1
-        
-        try:
-            if not (post.caption or post.text):
-                continue
+    try:
+        async for post in client.get_chat_history(SOURCE_CHANNEL, limit=500):
+            stats['scanned'] += 1
+            
+            try:
+                if not (post.caption or post.text):
+                    continue
+                    
+                raw_text = post.caption or post.text
+                v_id = str(post.id)
                 
-            raw_text = post.caption or post.text
-            v_id = str(post.id)
+                # محاولة استخراج من التنسيق الجديد أولاً
+                title, ep_num = extract_title_and_episode(raw_text)
+                
+                if not title:
+                    title = raw_text.split('\n')[0][:100]
+                
+                if ep_num == 0:
+                    # البحث في قنوات النشر
+                    ep_num = await get_episode_from_channels(client, v_id)
+                
+                if ep_num > 0:
+                    db_query("""
+                        INSERT INTO videos (v_id, title, ep_num, status) 
+                        VALUES (%s, %s, %s, 'posted')
+                        ON CONFLICT (v_id) DO UPDATE SET 
+                        title = EXCLUDED.title,
+                        ep_num = EXCLUDED.ep_num
+                    """, (v_id, title, ep_num), fetch=False)
+                    stats['updated'] += 1
+                
+            except Exception as e:
+                stats['errors'] += 1
+                logging.error(f"خطأ: {e}")
             
-            # استخراج اسم المسلسل
-            title = extract_title(raw_text)
-            
-            # البحث عن رقم الحلقة في جميع القنوات
-            ep_num = await find_episode_number(client, v_id)
-            
-            # تحديث قاعدة البيانات
-            db_query("""
-                INSERT INTO videos (v_id, title, ep_num, status) 
-                VALUES (%s, %s, %s, 'posted')
-                ON CONFLICT (v_id) DO UPDATE SET 
-                title = EXCLUDED.title,
-                ep_num = EXCLUDED.ep_num
-            """, (v_id, title, ep_num), fetch=False)
-            
-            stats['updated'] += 1
-            
-        except Exception as e:
-            stats['errors'] += 1
-            logging.error(f"خطأ: {e}")
-        
-        # تحديث كل 50 رسالة
-        if stats['updated'] % 50 == 0 and stats['updated'] > 0:
-            await msg.edit_text(f"🔄 تم تحديث {stats['updated']} حلقة...")
+            if stats['updated'] % 50 == 0 and stats['updated'] > 0:
+                await msg.edit_text(f"🔄 تم تحديث {stats['updated']} حلقة...")
     
-    # إحصائيات بعد الانتهاء
+    except Exception as e:
+        await msg.edit_text(f"❌ خطأ: {e}")
+        return
+    
     total = db_query("SELECT COUNT(*) FROM videos")[0][0]
-    result = f"""✅ **تم فحص قناة المصدر**
+    result = f"""✅ **تم التحديث**
 
 📊 **الإحصائيات:**
 • رسائل ممسوحة: {stats['scanned']}
 • حلقات محدثة: {stats['updated']}
 • أخطاء: {stats['errors']}
 
-📁 **إجمالي الحلقات في قاعدة البيانات:** {total}
-
-🔘 **حالة أزرار المزيد:** {"مفعلة" if SHOW_MORE_BUTTONS else "معطلة"}
-"""
+📁 إجمالي الحلقات: {total}
+🔘 أزرار المزيد: {'مفعلة' if SHOW_MORE_BUTTONS else 'معطلة'}"""
     await msg.edit_text(result)
 
-# ===== [10] أمر إضافة حلقة جديدة يدوياً =====
+# ===== [10] أمر إضافة حلقة يدوياً =====
 @app.on_message(filters.command("add") & filters.user(ADMIN_ID))
 async def add_episode(client, message):
     command = message.text.split()
     if len(command) < 3:
-        return await message.reply_text("❌ استخدم: /add المعرف رقم_الحلقة اسم_المسلسل\nمثال: /add 3514 3 المداح")
+        return await message.reply_text("❌ استخدم: /add المعرف رقم_الحلقة اسم_المسلسل")
     
     v_id = command[1]
     ep_num = int(command[2])
     title = ' '.join(command[3:])
     
     try:
-        # التحقق من وجود الحلقة في قناة المصدر
         source_msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
         if not source_msg:
-            return await message.reply_text("❌ الحلقة غير موجودة في قناة المصدر")
+            return await message.reply_text("❌ الحلقة غير موجودة")
         
-        # حفظ في قاعدة البيانات
         db_query("""
             INSERT INTO videos (v_id, title, ep_num, status) 
             VALUES (%s, %s, %s, 'posted')
@@ -419,7 +358,7 @@ async def add_episode(client, message):
             ep_num = EXCLUDED.ep_num
         """, (v_id, title, ep_num), fetch=False)
         
-        await message.reply_text(f"✅ تم إضافة الحلقة\nالمسلسل: {title}\nرقم الحلقة: {ep_num}")
+        await message.reply_text(f"✅ تمت الإضافة\n{title} - حلقة {ep_num}")
         
     except Exception as e:
         await message.reply_text(f"❌ خطأ: {e}")
@@ -428,8 +367,9 @@ async def add_episode(client, message):
 @app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
 async def smart_stats(client, message):
     total = db_query("SELECT COUNT(*) FROM videos")[0][0]
+    users = db_query("SELECT COUNT(*) FROM users")[0][0]
+    views = db_query("SELECT COUNT(*) FROM views_log")[0][0]
     
-    # أكثر 10 مسلسلات
     top_series = db_query("""
         SELECT title, COUNT(*) as eps 
         FROM videos 
@@ -438,26 +378,15 @@ async def smart_stats(client, message):
         LIMIT 10
     """)
     
-    # آخر 5 حلقات مضافة
-    recent = db_query("""
-        SELECT v_id, title, ep_num, created_at 
-        FROM videos 
-        ORDER BY created_at DESC 
-        LIMIT 5
-    """)
-    
-    text = f"🤖 **إحصائيات البوت الذكي**\n\n"
-    text += f"📁 إجمالي الحلقات: {total}\n"
+    text = f"🤖 **الإحصائيات**\n\n"
+    text += f"📁 الحلقات: {total}\n"
+    text += f"👥 المستخدمين: {users}\n"
+    text += f"👀 المشاهدات: {views}\n"
     text += f"🔘 أزرار المزيد: {'مفعلة' if SHOW_MORE_BUTTONS else 'معطلة'}\n\n"
     text += "📊 **أكثر 10 مسلسلات:**\n"
     
     for title, count in top_series:
         text += f"• {title}: {count} حلقة\n"
-    
-    text += "\n🆕 **آخر 5 حلقات مضافة:**\n"
-    for v_id, title, ep, date in recent:
-        short_id = v_id[:10] + "..." if len(v_id) > 10 else v_id
-        text += f"• {title} - حلقة {ep} (ID: {short_id})\n"
     
     await message.reply_text(text)
 
@@ -473,15 +402,21 @@ async def quick_fix(client, message):
     try:
         source_msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
         if not source_msg:
-            return await message.reply_text("❌ الحلقة غير موجودة في قناة المصدر")
+            return await message.reply_text("❌ غير موجودة")
         
         raw_text = source_msg.caption or source_msg.text or ""
         
-        # استخراج اسم المسلسل
-        title = extract_title(raw_text)
+        # محاولة استخراج من التنسيق الجديد
+        title, ep_num = extract_title_and_episode(raw_text)
         
-        # البحث عن رقم الحلقة في جميع القنوات
-        ep_num = await find_episode_number(client, v_id)
+        if not title:
+            title = raw_text.split('\n')[0][:100]
+        
+        if ep_num == 0:
+            ep_num = await get_episode_from_channels(client, v_id)
+        
+        if ep_num == 0:
+            return await message.reply_text(f"⚠️ لم أجد الرقم، استخدم /add {v_id} رقم_الحلقة {title}")
         
         db_query("""
             INSERT INTO videos (v_id, title, ep_num, status) 
@@ -491,81 +426,12 @@ async def quick_fix(client, message):
             ep_num = EXCLUDED.ep_num
         """, (v_id, title, ep_num), fetch=False)
         
-        await message.reply_text(f"✅ تم إصلاح الحلقة {v_id}\nالمسلسل: {title}\nرقم الحلقة: {ep_num}")
+        await message.reply_text(f"✅ تم الإصلاح\n{title} - حلقة {ep_num}")
         
     except Exception as e:
         await message.reply_text(f"❌ خطأ: {e}")
 
-# ===== [13] أمر مزامنة قنوات النشر =====
-@app.on_message(filters.command("sync") & filters.user(ADMIN_ID))
-async def sync_all_channels(client, message):
-    msg = await message.reply_text("🔄 جاري مزامنة جميع القنوات...")
-    
-    stats = {
-        'total': 0,
-        'added': 0,
-        'errors': 0
-    }
-    
-    for idx, channel_id in enumerate(PUBLIC_CHANNELS, 1):
-        try:
-            await msg.edit_text(f"📡 فحص القناة {idx}/4...")
-            
-            async for post in client.get_chat_history(channel_id, limit=200):
-                if not post.reply_markup:
-                    continue
-                    
-                for row in post.reply_markup.inline_keyboard:
-                    for btn in row:
-                        if btn.url and "start=" in btn.url:
-                            stats['total'] += 1
-                            try:
-                                v_id = btn.url.split("start=")[1]
-                                
-                                # التحقق من وجودها في قاعدة البيانات
-                                exists = db_query("SELECT 1 FROM videos WHERE v_id = %s", (v_id,))
-                                if not exists:
-                                    source_msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
-                                    if source_msg and (source_msg.caption or source_msg.text):
-                                        raw_text = source_msg.caption or source_msg.text
-                                        title = extract_title(raw_text)
-                                        ep_num = await find_episode_number(client, v_id)
-                                        
-                                        db_query("""
-                                            INSERT INTO videos (v_id, title, ep_num, status) 
-                                            VALUES (%s, %s, %s, 'posted')
-                                        """, (v_id, title, ep_num), fetch=False)
-                                        stats['added'] += 1
-                                        
-                            except Exception as e:
-                                stats['errors'] += 1
-                                
-        except Exception as e:
-            continue
-    
-    total = db_query('SELECT COUNT(*) FROM videos')[0][0]
-    await msg.edit_text(f"""✅ **تمت المزامنة**
-
-📊 الإحصائيات:
-• روابط مكتشفة: {stats['total']}
-• حلقات جديدة: {stats['added']}
-• أخطاء: {stats['errors']}
-
-📁 إجمالي الحلقات: {total}
-🔘 أزرار المزيد: {'مفعلة' if SHOW_MORE_BUTTONS else 'معطلة'}""")
-
-# ===== [14] أمر مسح قاعدة البيانات =====
-@app.on_message(filters.command("reset") & filters.user(ADMIN_ID))
-async def reset_database(client, message):
-    confirm = await message.reply_text("⚠️ هل أنت متأكد؟ هذا سيمسح جميع البيانات!\nأرسل /reset_confirm لتأكيد")
-
-@app.on_message(filters.command("reset_confirm") & filters.user(ADMIN_ID))
-async def reset_confirm(client, message):
-    db_query("DELETE FROM videos", fetch=False)
-    db_query("DELETE FROM views_log", fetch=False)
-    await message.reply_text("✅ تم مسح جميع البيانات")
-
-# ===== [15] إنشاء الجداول تلقائياً =====
+# ===== [13] إنشاء الجداول =====
 def init_database():
     db_query("""
         CREATE TABLE IF NOT EXISTS videos (
@@ -580,6 +446,7 @@ def init_database():
     db_query("""
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
+            username TEXT,
             first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """, fetch=False)
@@ -593,20 +460,11 @@ def init_database():
         )
     """, fetch=False)
     
-    print("✅ تم التأكد من وجود الجداول في قاعدة البيانات")
+    print("✅ تم إنشاء الجداول")
 
-# ===== [16] معالجة Flood Wait =====
-async def handle_flood_wait(e):
-    wait_time = e.value
-    logging.warning(f"⚠️ Flood wait: {wait_time} seconds")
-    print(f"⏳ الانتظار {wait_time} ثانية...")
-    await asyncio.sleep(wait_time)
-    return True
-
-# ===== [17] التشغيل الرئيسي =====
+# ===== [14] التشغيل الرئيسي =====
 def main():
-    print("🚀 بدء تشغيل البوت الذكي...")
-    print("✅ تهيئة قاعدة البيانات...")
+    print("🚀 تشغيل البوت...")
     init_database()
     
     max_retries = 5
@@ -617,46 +475,31 @@ def main():
             session_file = "railway_final_pro.session"
             if os.path.exists(session_file):
                 os.remove(session_file)
-                print("✅ تم حذف ملف الجلسة القديم")
             
-            print(f"📡 محاولة التشغيل {retry_count + 1}/{max_retries}")
+            print(f"📡 محاولة {retry_count + 1}/{max_retries}")
             
             if not BOT_TOKEN:
-                print("❌ خطأ: BOT_TOKEN غير موجود")
+                print("❌ BOT_TOKEN غير موجود")
                 return
-            
-            print("✅ تم التحقق من التوكن")
-            print("🤖 تشغيل البوت الذكي...")
             
             app.run()
             break
             
         except FloodWait as e:
             retry_count += 1
-            print(f"⚠️ Flood wait: {e.value} ثانية")
-            
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(handle_flood_wait(e))
-                loop.close()
-            except:
-                time.sleep(e.value)
+            print(f"⏳ الانتظار {e.value} ثانية")
+            time.sleep(e.value)
                 
         except Exception as e:
             retry_count += 1
-            print(f"❌ خطأ: {type(e).__name__}: {e}")
-            
+            print(f"❌ خطأ: {e}")
             if retry_count < max_retries:
-                wait = 30 * retry_count
-                print(f"⏳ الانتظار {wait} ثانية...")
-                time.sleep(wait)
+                time.sleep(30 * retry_count)
     
     if retry_count >= max_retries:
-        print("❌ فشل تشغيل البوت بعد 5 محاولات")
+        print("❌ فشل التشغيل")
     else:
-        print("✅ تم تشغيل البوت الذكي بنجاح!")
+        print("✅ تم التشغيل بنجاح!")
 
-# ===== [18] نقطة الدخول =====
 if __name__ == "__main__":
     main()
