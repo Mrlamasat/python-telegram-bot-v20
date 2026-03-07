@@ -87,13 +87,22 @@ def db_query(query, params=(), fetch=True):
 
 # ===== [3] إنشاء الجداول =====
 def init_database():
-    db_query("DROP TABLE IF EXISTS views_log", fetch=False)
+    # أولاً: التحقق من وجود الجدول وإضافة الأعمدة المفقودة
+    try:
+        # محاولة إضافة الأعمدة (إذا لم تكن موجودة)
+        db_query("ALTER TABLE videos ADD COLUMN IF NOT EXISTS encrypted_title TEXT", fetch=False)
+        db_query("ALTER TABLE videos ADD COLUMN IF NOT EXISTS quality TEXT", fetch=False)
+        db_query("ALTER TABLE videos ADD COLUMN IF NOT EXISTS duration TEXT", fetch=False)
+        logging.info("✅ تم تحديث هيكل الجدول")
+    except Exception as e:
+        logging.info(f"قد يكون الجدول غير موجود بعد: {e}")
     
+    # إنشاء الجدول إذا لم يكن موجوداً
     db_query("""
         CREATE TABLE IF NOT EXISTS videos (
             v_id TEXT PRIMARY KEY,
-            title TEXT,  -- الاسم الطبيعي (غير مشفر)
-            encrypted_title TEXT,  -- الاسم المشفر للنشر
+            title TEXT,
+            encrypted_title TEXT,
             ep_num INTEGER DEFAULT 0,
             status TEXT DEFAULT 'posted',
             quality TEXT,
@@ -272,10 +281,18 @@ async def publish_to_channel(client, v_id, data):
             f"❌ حدث خطأ أثناء النشر: {e}"
         )
 
-# ===== [8] دالة عرض الحلقة في البوت (بدون اسم أو مشفر) =====
+# ===== [8] دالة عرض الحلقة في البوت (مع معالجة الأعمدة المفقودة) =====
 async def show_episode(client, message, v_id):
     try:
-        db_data = db_query("SELECT title, encrypted_title, ep_num, quality, duration FROM videos WHERE v_id = %s", (v_id,))
+        # محاولة جلب البيانات مع الأعمدة الجديدة
+        try:
+            db_data = db_query("SELECT title, encrypted_title, ep_num, quality, duration FROM videos WHERE v_id = %s", (v_id,))
+        except:
+            # إذا فشل، جلب بدون الأعمدة الجديدة
+            db_data = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
+            # تحويل النتيجة إلى نفس التنسيق
+            if db_data:
+                db_data = [(db_data[0][0], db_data[0][0], db_data[0][1], None, None)]
         
         if not db_data:
             return await message.reply_text("❌ الحلقة غير متوفرة")
