@@ -19,7 +19,6 @@ ADMIN_ID = 7720165591
 
 app = Client("railway_final_pro", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ===== [2] قاعدة البيانات =====
 def db_query(query, params=(), fetch=True):
     try:
         conn = psycopg2.connect(DATABASE_URL, sslmode="require")
@@ -32,45 +31,49 @@ def db_query(query, params=(), fetch=True):
         logging.error(f"DB Error: {e}")
         return []
 
-# ===== [3] دالة استخراج رقم الحلقة بذكاء =====
+# ===== [2] دالة استخراج الرقم المطورة جداً =====
 def extract_ep_num(text):
     if not text: return 0
-    # نمط يبحث عن الرقم بعد الكلمات الدلالية أو داخل أقواس
-    # يغطي: حلقة: 2، حلقة [2]، الحلقة 2، رقم الحلقة 2
-    patterns = [
-        r"(?:حلقه|حلقة|الحلقة|الحلقه|رقم)\s*[:\-\s!]*\[?(\d+)\]?", 
-        r"\[(\d+)\]" # للبحث عن الرقم داخل أقواس مربعة مباشرة
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return int(match.group(1))
+    # يبحث عن الرقم بعد الكلمة مهما كانت الرموز الفاصلة
+    pattern = r"(?:حلقه|حلقة|الحلقة|الحلقه|رقم|الحلقہ)\s*[:\-\s!\[]*(\d+)"
+    match = re.search(pattern, text, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    
+    # بحث عن الرقم داخل [ ]
+    bracket_match = re.search(r"\[(\d+)\]", text)
+    if bracket_match:
+        return int(bracket_match.group(1))
+    
     return 0
 
-# ===== [4] عرض الحلقة =====
+# ===== [3] عرض الحلقة =====
 async def show_episode(client, message, v_id):
+    # جلب البيانات
     res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
     
-    title, ep = None, None
+    # إذا كانت الحلقة تظهر 0، نجبر البوت على إعادة القراءة من المصدر
+    force_update = False
+    if res and res[0][1] == 0:
+        force_update = True
 
-    if not res or (res[0][1] == 0): # إذا لم يوجد أو كان الرقم 0 نحاول الإصلاح
+    if not res or force_update:
         try:
             source_msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
             if source_msg and (source_msg.caption or source_msg.text):
-                text = source_msg.caption or source_msg.text
-                title = text.split('\n')[0][:50]
-                ep = extract_ep_num(text)
+                raw_text = source_msg.caption or source_msg.text
+                title = raw_text.split('\n')[0][:50]
+                ep = extract_ep_num(raw_text)
                 
-                # تحديث أو إدخال البيانات الصحيحة
+                # تحديث البيانات في القاعدة لضمان الإصلاح الدائم
                 db_query("""
                     INSERT INTO videos (v_id, title, ep_num, status) VALUES (%s, %s, %s, 'posted')
-                    ON CONFLICT (v_id) DO UPDATE SET title = EXCLUDED.title, ep_num = EXCLUDED.ep_num
+                    ON CONFLICT (v_id) DO UPDATE SET ep_num = EXCLUDED.ep_num, title = EXCLUDED.title
                 """, (v_id, title, ep), fetch=False)
             else:
-                title, ep = res[0] if res else ("فيديو", 0)
-        except Exception as e:
-            logging.error(f"Fix Error: {e}")
-            if not res: return await message.reply_text("❌ لم يتم العثور على الفيديو.")
+                title, ep = (res[0][0], 0) if res else ("فيديو", 0)
+        except:
+            if not res: return await message.reply_text("❌ لم يتم العثور على الحلقة.")
             title, ep = res[0]
     else:
         title, ep = res[0]
@@ -78,25 +81,18 @@ async def show_episode(client, message, v_id):
     try:
         caption = f"<b>📺 {title}</b>\n<b>🎬 الحلقة رقم: {ep}</b>\n━━━━━━━━━━━━━━━"
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 اشترك بالقناه الإحتياطيه", url=BACKUP_CHANNEL_LINK)]])
-        
         await client.copy_message(message.chat.id, SOURCE_CHANNEL, int(v_id), caption=caption, reply_markup=markup)
         
         db_query("INSERT INTO views_log (v_id) VALUES (%s)", (v_id,), fetch=False)
-        db_query("UPDATE videos SET views = views + 1, last_view = NOW() WHERE v_id = %s", (v_id,), fetch=False)
+        db_query("UPDATE videos SET views = views + 1 WHERE v_id = %s", (v_id,), fetch=False)
     except Exception as e:
         await message.reply_text("⚠️ فشل إرسال الفيديو.")
 
-# ===== [5] الأوامر والنشر =====
-@app.on_message(filters.command("stats") & filters.private)
-async def stats_command(client, message):
-    if message.from_user.id != ADMIN_ID: return
-    u_count = db_query("SELECT COUNT(*) FROM users")[0][0]
-    await message.reply_text(f"📊 المشتركين: {u_count}")
-
+# ===== [4] الأوامر والنشر =====
 @app.on_message(filters.chat(SOURCE_CHANNEL))
 async def handle_source(client, message):
     if message.video or message.document:
-        db_query("INSERT INTO videos (v_id, status) VALUES (%s, 'waiting') ON CONFLICT (v_id) DO NOTHING", (str(message.id),), fetch=False)
+        db_query("INSERT INTO videos (v_id, status) VALUES (%s, 'waiting') ON CONFLICT DO NOTHING", (str(message.id),), fetch=False)
         await message.reply_text(f"✅ تم استلام فيديو {message.id}")
     elif message.photo:
         res = db_query("SELECT v_id FROM videos WHERE status='waiting' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 1")
