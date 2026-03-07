@@ -2,7 +2,7 @@ import os, re, psycopg2, logging
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# إعداد السجلات لمراقبة أداء البوت
+# إعداد السجلات لمراقبة أداء البوت في Railway
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ def db_query(query, params=(), fetch=True):
         logger.error(f"Database Error: {e}")
         return []
 
-# إنشاء الجدول إذا لم يكن موجوداً لضمان استقرار التشغيل
+# إنشاء الجدول لضمان استقرار التشغيل وتخزين البيانات
 db_query("""
     CREATE TABLE IF NOT EXISTS videos (
         v_id TEXT PRIMARY KEY,
@@ -44,14 +44,14 @@ db_query("""
     )
 """, fetch=False)
 
-# ===== [3] معالجة طلبات المشاهدة (الأعضاء) =====
+# ===== [3] عرض الحلقة وترتيب الأزرار (للأعضاء) =====
 async def show_episode(client, message, v_id, edit=False):
     v_id_str = str(v_id)
-    # جلب البيانات من "ذاكرة" البوت (قاعدة البيانات)
+    # جلب البيانات من قاعدة البيانات
     res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id_str,))
     
     if not res:
-        # إذا كانت حلقة قديمة غير مسجلة، نحاول سحب الاسم من رسالة المصدر
+        # إذا كانت حلقة قديمة، نحاول جلب العنوان من قناة المصدر
         try:
             msg = await client.get_messages(SOURCE_CHANNEL, int(v_id_str))
             title = msg.caption.split('\n')[0] if msg.caption else "حلقة غير معرفة"
@@ -63,21 +63,22 @@ async def show_episode(client, message, v_id, edit=False):
     else:
         title, ep_num = res[0]
 
-    # جلب جميع الحلقات التي تحمل نفس الاسم (مرتبة تصاعدياً)
+    # جلب جميع حلقات المسلسل لترتيب الأزرار (1, 2, 3...)
     all_eps = db_query("SELECT ep_num, v_id FROM videos WHERE title = %s AND status = 'posted' ORDER BY ep_num ASC", (title,))
     
     buttons = []
     row = []
     for e_num, e_vid in all_eps:
-        # تمييز الحلقة الحالية بنقاط
-        btn_text = f"• {e_num} •" if str(e_vid) == v_id_str else str(e_num)
+        # إذا كان رقم الحلقة 0، نظهر معرف الفيديو مؤقتاً لحين إصلاحه بـ /set
+        display_num = str(e_num) if e_num != 0 else f"?({e_vid})"
+        btn_text = f"• {display_num} •" if str(e_vid) == v_id_str else display_num
         row.append(InlineKeyboardButton(btn_text, callback_data=f"go_{e_vid}"))
         if len(row) == 5:
             buttons.append(row); row = []
     if row: buttons.append(row)
     buttons.append([InlineKeyboardButton("🔗 قناة الاحتياط", url=BACKUP_CHANNEL_LINK)])
 
-    caption = f"📺 <b>{title}</b>\n🎬 <b>الحلقة رقم: {ep_num}</b>"
+    caption = f"📺 <b>{title}</b>\n🎬 <b>الحلقة رقم: {ep_num if ep_num != 0 else 'غير محددة'}</b>"
     chat_id = message.message.chat.id if hasattr(message, "data") else message.chat.id
     
     try:
@@ -86,26 +87,26 @@ async def show_episode(client, message, v_id, edit=False):
     except Exception as e:
         logger.error(f"Copy Error: {e}")
 
-# ===== [4] سيناريو المصدر (بناء الذاكرة أثناء الرفع) =====
+# ===== [4] سيناريو المصدر (فيديو -> بوستر -> رقم الحلقة) =====
 @app.on_message(filters.chat(SOURCE_CHANNEL))
 async def handle_source_flow(client, message):
     try:
-        # الخطوة 1: استلام الفيديو
+        # 1. استلام الفيديو
         if message.video or message.document:
             raw_title = message.caption.strip() if message.caption else "غير مسمى"
             title = re.sub(r"\s+\.\s+", "", raw_title).replace(".", "").strip()
             db_query("INSERT INTO videos (v_id, title, status) VALUES (%s, %s, 'waiting_poster') ON CONFLICT (v_id) DO UPDATE SET title=EXCLUDED.title", (str(message.id), title), fetch=False)
-            await message.reply_text(f"✅ فيديو مسجل (ID: {message.id})\nبانتظار البوستر...")
+            await message.reply_text(f"✅ تم استلام فيديو: {title}\n(ID: {message.id})\nالآن أرسل البوستر.")
 
-        # الخطوة 2: استلام البوستر
+        # 2. استلام البوستر
         elif message.photo:
             res = db_query("SELECT v_id FROM videos WHERE status = 'waiting_poster' ORDER BY v_id DESC LIMIT 1")
             if res:
                 v_id = res[0][0]
                 db_query("UPDATE videos SET poster_id = %s, status = 'waiting_ep' WHERE v_id = %s", (message.photo.file_id, v_id), fetch=False)
-                await message.reply_text(f"🖼️ تم ربط البوستر بـ {v_id}\nأرسل رقم الحلقة الآن.")
+                await message.reply_text(f"🖼️ تم حفظ البوستر لـ {v_id}\nأرسل رقم الحلقة الآن.")
 
-        # الخطوة 3: استلام رقم الحلقة (النشر النهائي)
+        # 3. استلام الرقم والنشر النهائي
         elif message.text and message.text.isdigit():
             res = db_query("SELECT v_id, title, poster_id FROM videos WHERE status = 'waiting_ep' ORDER BY v_id DESC LIMIT 1")
             if res:
@@ -116,18 +117,18 @@ async def handle_source_flow(client, message):
                 me = await client.get_me()
                 link = f"https://t.me/{me.username}?start={v_id}"
                 
-                # إرسال المنشور لقناة النشر العامة
+                # النشر في قناة المنشورات العامة
                 await client.send_photo(
                     PUBLIC_POST_CHANNEL, 
                     p_id, 
                     caption=f"🎬 <b>{title}</b>\n📌 <b>الحلقة: {ep}</b>\n\n▶️ {link}",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الآن", url=link)]])
                 )
-                await message.reply_text("🚀 تم النشر بنجاح في القناة العامة!")
+                await message.reply_text(f"🚀 تم النشر بنجاح: {title} - حلقة {ep}")
     except Exception as e:
         logger.error(f"Source Flow Error: {e}")
 
-# ===== [5] الأوامر والتحكم =====
+# ===== [5] التحكم والأوامر =====
 @app.on_callback_query(filters.regex(r"^go_"))
 async def navigation_handler(c, q):
     await show_episode(c, q, q.data.split("_")[1], edit=True)
@@ -136,142 +137,20 @@ async def navigation_handler(c, q):
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(c, m):
     if len(m.command) > 1: await show_episode(c, m, m.command[1])
-    else: await m.reply_text("👋 النظام جاهز للعمل يا محمد.")
+    else: await m.reply_text(f"أهلاً بك يا محمد ({m.from_user.first_name})، النظام يعمل الآن بمحاذاة اليمين.")
 
 @app.on_message(filters.command("set") & filters.user(ADMIN_ID))
 async def manual_fix(c, m):
-    """لتصحيح الحلقات القديمة: /set [ID] [الرقم] [الاسم]"""
+    """لإصلاح الحلقات القديمة: /set [ID] [الرقم] [الاسم]"""
     try:
         args = m.text.split(maxsplit=3)
         v_id, ep, title = args[1], args[2], args[3]
+        title = re.sub(r"\s+\.\s+", "", title).replace(".", "").strip()
         db_query("UPDATE videos SET ep_num=%s, title=%s, status='posted' WHERE v_id=%s", (ep, title, v_id), fetch=False)
         db_query("INSERT INTO videos (v_id, title, ep_num, status) SELECT %s, %s, %s, 'posted' WHERE NOT EXISTS (SELECT 1 FROM videos WHERE v_id=%s)", (v_id, title, ep, v_id), fetch=False)
-        await m.reply_text(f"✅ تم تثبيت: {title} - حلقة {ep}")
+        await m.reply_text(f"✅ تم التحديث: {title} - حلقة {ep}")
     except:
         await m.reply_text("❌ الصيغة: `/set ID الرقم الاسم`")
 
 if __name__ == "__main__":
-    app.run()
-
-# ===== [3] نظام الربط الذكي (Search) =====
-async def sync_episode_data(client, v_id):
-    v_id = str(v_id)
-    # البحث في القناة العامة عن المنشور الأصلي باستخدام المعرف
-    try:
-        async for message in client.search_messages(PUBLIC_POST_CHANNEL, query=f"start={v_id}"):
-            if message.caption:
-                lines = message.caption.split('\n')
-                # استخراج الاسم: أول سطر
-                title = lines[0].replace("🎬", "").strip()
-                title = re.sub(r"\s+\.\s+", "", title).replace(".", "").strip()
-                
-                # استخراج الرقم: يبحث عن رقم بعد كلمة حلقة
-                ep_match = re.search(r"(?:الحلقة|حلقة).*?(\d+)", message.caption)
-                ep_num = int(ep_match.group(1)) if ep_match else 0
-                
-                db_query("""
-                    INSERT INTO videos (v_id, title, ep_num, status) 
-                    VALUES (%s, %s, %s, 'posted') 
-                    ON CONFLICT (v_id) DO UPDATE SET title=EXCLUDED.title, ep_num=EXCLUDED.ep_num, status='posted'
-                """, (v_id, title, ep_num), fetch=False)
-                return title, ep_num
-    except Exception as e:
-        logger.error(f"Search error: {e}")
-    return None, None
-
-# ===== [4] عرض الحلقة ومعالجة الأزرار =====
-async def show_episode(client, message, v_id, edit=False):
-    v_id = str(v_id)
-    res = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
-    
-    # إذا كانت البيانات ناقصة أو الحلقة جديدة، نستخدم الربط الذكي
-    if not res or res[0][1] == 0:
-        title, ep_num = await sync_episode_data(client, v_id)
-        if not title: title, ep_num = "حلقة غير معرفة", 0
-    else:
-        title, ep_num = res[0]
-
-    # جلب الحلقات (5 في كل سطر)
-    all_eps = db_query("SELECT ep_num, v_id FROM videos WHERE title = %s AND status = 'posted' ORDER BY ep_num ASC", (title,))
-    
-    buttons = []
-    row = []
-    for e_num, e_vid in all_eps:
-        btn_text = f"• {e_num} •" if str(e_vid) == v_id else str(e_num)
-        row.append(InlineKeyboardButton(btn_text, callback_data=f"go_{e_vid}"))
-        if len(row) == 5:
-            buttons.append(row); row = []
-    if row: buttons.append(row)
-    buttons.append([InlineKeyboardButton("🔗 قناة الاحتياط", url=BACKUP_CHANNEL_LINK)])
-
-    caption = f"📺 <b>{title}</b>\n🎬 <b>الحلقة رقم: {ep_num}</b>"
-    chat_id = message.message.chat.id if hasattr(message, "data") else message.chat.id
-    
-    try:
-        if edit and hasattr(message, "data"): await message.message.delete()
-        await client.copy_message(chat_id, SOURCE_CHANNEL, int(v_id), caption=caption, reply_markup=InlineKeyboardMarkup(buttons))
-    except Exception as e:
-        logger.error(f"Error: {e}")
-
-# ===== [5] سيناريو المصدر (فيديو -> بوستر -> رقم) =====
-@app.on_message(filters.chat(SOURCE_CHANNEL))
-async def handle_source(client, message):
-    try:
-        if message.video or message.document:
-            title = message.caption.strip() if message.caption else "غير مسمى"
-            db_query("INSERT INTO videos (v_id, title, status) VALUES (%s, %s, 'waiting_poster') ON CONFLICT (v_id) DO UPDATE SET title=EXCLUDED.title", (str(message.id), title), fetch=False)
-        
-        elif message.photo:
-            res = db_query("SELECT v_id FROM videos WHERE status = 'waiting_poster' ORDER BY v_id DESC LIMIT 1")
-            if res: db_query("UPDATE videos SET poster_id = %s, status = 'waiting_ep' WHERE v_id = %s", (message.photo.file_id, res[0][0]), fetch=False)
-        
-        elif message.text and message.text.isdigit():
-            res = db_query("SELECT v_id, title, poster_id FROM videos WHERE status = 'waiting_ep' ORDER BY v_id DESC LIMIT 1")
-            if res:
-                v_id, title, p_id = res[0]
-                ep = int(message.text)
-                db_query("UPDATE videos SET ep_num = %s, status = 'posted' WHERE v_id = %s", (ep, v_id), fetch=False)
-                me = await client.get_me()
-                link = f"https://t.me/{me.username}?start={v_id}"
-                await client.send_photo(PUBLIC_POST_CHANNEL, p_id, f"🎬 <b>{title}</b>\n📌 <b>الحلقة: {ep}</b>\n\n▶️ {link}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("▶️ مشاهدة الآن", url=link)]]))
-    except Exception as e:
-        logger.error(f"Error in handle_source: {e}")
-
-# ===== [6] التشغيل =====
-@app.on_callback_query(filters.regex(r"^go_"))
-async def navigation(c, q):
-    await show_episode(c, q, q.data.split("_")[1], edit=True)
-    await q.answer()
-
-@app.on_message(filters.command("start") & filters.private)
-async def start(c, m):
-    if len(m.command) > 1: await show_episode(c, m, m.command[1])
-    else: await m.reply_text("👋 النظام يعمل الآن يا محمد.")
-
-@app.on_message(filters.command("test") & filters.private)
-async def test(c, m):
-    """أمر اختبار للتأكد من صلاحية القنوات"""
-    try:
-        # اختبار قناة المصدر
-        source_chat = await c.get_chat(SOURCE_CHANNEL)
-        await m.reply_text(f"✅ قناة المصدر: {source_chat.title}")
-        
-        # اختبار قناة المنشورات
-        post_chat = await c.get_chat(PUBLIC_POST_CHANNEL)
-        await m.reply_text(f"✅ قناة المنشورات: {post_chat.title}")
-    except Exception as e:
-        await m.reply_text(f"❌ خطأ: {str(e)}")
-
-if __name__ == "__main__":
-    # إنشاء جدول قاعدة البيانات إذا لم يكن موجوداً
-    db_query("""
-        CREATE TABLE IF NOT EXISTS videos (
-            v_id TEXT PRIMARY KEY,
-            title TEXT,
-            ep_num INTEGER DEFAULT 0,
-            poster_id TEXT,
-            status TEXT DEFAULT 'waiting_poster'
-        )
-    """, fetch=False)
-    
     app.run()
