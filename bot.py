@@ -3,6 +3,7 @@ import psycopg2
 import logging
 import base64
 import threading
+import re
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from fastapi import FastAPI
@@ -40,12 +41,33 @@ def db_query(query, params=(), fetch=True):
         logging.error(f"DB Error: {e}")
         return []
 
-# ===== [3] وظيفة إرسال الحلقة =====
-async def send_video_safe(client, chat_id, v_id_str):
+# ===== [3] وظيفة فك التشفير الذكية =====
+def smart_decode(param):
+    # محاولة فك التشفير العادي
     try:
-        # التأكد من أن الـ ID هو رقم صحيح
-        video_message_id = int(v_id_str)
-        
+        # إضافة الحشوة المفقودة (Padding) إذا لزم الأمر
+        missing_padding = len(param) % 4
+        if missing_padding:
+            param += '=' * (4 - missing_padding)
+        decoded = base64.b64decode(param).decode('utf-8', errors='ignore')
+        # استخراج الأرقام فقط من النتيجة
+        numbers = re.findall(r'\d+', decoded)
+        return numbers[0] if numbers else None
+    except:
+        # إذا فشل التشفير، نحاول استخراج الأرقام مباشرة من النص (للحالات التي لا تشفر)
+        numbers = re.findall(r'\d+', param)
+        return numbers[0] if numbers else None
+
+# ===== [4] إرسال الحلقة =====
+async def send_video_safe(client, chat_id, raw_param):
+    v_id = smart_decode(raw_param)
+    
+    if not v_id:
+        logging.error(f"Could not extract ID from: {raw_param}")
+        return False
+
+    try:
+        video_message_id = int(v_id)
         res = db_query("SELECT title FROM videos WHERE v_id = %s", (str(video_message_id),))
         title = res[0][0] if res else "حلقة مستعادة"
         
@@ -53,43 +75,36 @@ async def send_video_safe(client, chat_id, v_id_str):
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 القناة الإحتياطية", url=BACKUP_CHANNEL_LINK)]])
         
         await client.copy_message(chat_id, SOURCE_CHANNEL_ID, video_message_id, caption=caption, reply_markup=markup)
+        return True
     except Exception as e:
-        logging.error(f"Send Error: {e}")
+        logging.error(f"Send Error for ID {v_id}: {e}")
         return False
-    return True
 
-# ===== [4] الأوامر ومعالجة الروابط =====
+# ===== [5] الأوامر =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     if len(message.command) > 1:
         param = message.command[1]
-        try:
-            # محاولة فك التشفير بأمان
-            v_id = base64.b64decode(param).decode()
-        except:
-            v_id = param
-            
-        success = await send_video_safe(client, message.chat.id, v_id)
+        success = await send_video_safe(client, message.chat.id, param)
         if not success:
-            await message.reply_text("⚠️ لم يتمكن البوت من الوصول للحلقة. يرجى تحويل أي رسالة من القناة المصدر للبوت لتنشيطه.")
+            await message.reply_text("⚠️ الرابط قديم جداً أو غير صالح. جرب فتح الحلقة من الموقع مباشرة.")
     else:
-        await message.reply_text("👋 البوت جاهز لعرض الحلقات المستعادة من Termux.")
+        await message.reply_text("👋 البوت جاهز. الروابط القديمة تم تحديث نظام معالجتها الآن.")
 
-# معالجة التحويل (تنشيط القناة)
 @app.on_message(filters.forwarded & filters.private)
 async def handle_activation(client, message):
     if message.forward_from_chat and message.forward_from_chat.id == SOURCE_CHANNEL_ID:
-        await message.reply_text("✅ ممتاز! تم تنشيط الاتصال بالقناة بنجاح. الآن جميع الروابط ستعمل.")
-    else:
-        await message.reply_text(f"معرف القناة المحولة: {message.forward_from_chat.id if message.forward_from_chat else 'غير معروف'}")
+        await message.reply_text("✅ تم تنشيط الاتصال بالقناة بنجاح!")
 
+# API للموقع
 @api.get("/api/episodes")
 def get_episodes_for_web():
-    rows = db_query("SELECT v_id, title FROM videos WHERE status='posted' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 100")
+    rows = db_query("SELECT v_id, title FROM videos WHERE status='posted' ORDER BY CAST(v_id AS INTEGER) DESC LIMIT 150")
     data = []
     for r in rows:
-        encoded_id = base64.b64encode(str(r[0]).encode()).decode().replace('=', '')
-        data.append({"id": encoded_id, "title": str(r[1])})
+        # تشفير نظيف بدون رموز غريبة للموقع الجديد
+        clean_id = base64.b64encode(str(r[0]).encode()).decode().replace('=', '')
+        data.append({"id": clean_id, "title": str(r[1])})
     return JSONResponse(content=data)
 
 def run_api():
