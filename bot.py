@@ -1,4 +1,88 @@
-import os, psycopg2, logging, re, asyncio, time
+# ===== [أمر جديد] جلب جميع الحلقات من قنوات النشر =====
+@app.on_message(filters.command("import_all") & filters.user(ADMIN_ID))
+async def import_all_episodes(client, message):
+    msg = await message.reply_text("🔄 جاري جلب جميع الحلقات من قنوات النشر الأربعة...")
+    
+    stats = {
+        'total': 0,
+        'new': 0,
+        'updated': 0,
+        'errors': 0
+    }
+    
+    channel_names = ["القناة 1", "القناة 2", "القناة 3", "القناة 4"]
+    
+    for idx, channel_id in enumerate(PUBLIC_CHANNELS):
+        await msg.edit_text(f"📡 فحص {channel_names[idx]}...")
+        
+        try:
+            # التأكد من أن البوت عضو في القناة
+            await client.get_chat(channel_id)
+            
+            # جلب آخر 1000 رسالة من القناة
+            async for post in client.get_chat_history(channel_id, limit=1000):
+                if not post.reply_markup:
+                    continue
+                    
+                for row in post.reply_markup.inline_keyboard:
+                    for btn in row:
+                        if btn.url and "start=" in btn.url:
+                            stats['total'] += 1
+                            try:
+                                v_id = btn.url.split("start=")[1]
+                                
+                                # جلب بيانات الحلقة من قناة المصدر
+                                source_msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
+                                
+                                if source_msg and (source_msg.caption or source_msg.text):
+                                    raw_text = source_msg.caption or source_msg.text
+                                    
+                                    # استخراج اسم المسلسل (أول سطر)
+                                    title = raw_text.split('\n')[0][:100]
+                                    
+                                    # استخراج رقم الحلقة باستخدام الدالة الذكية
+                                    ep_num = await get_episode_number(client, int(v_id))
+                                    
+                                    # إدخال في قاعدة البيانات
+                                    result = db_query("""
+                                        INSERT INTO videos (v_id, title, ep_num, status) 
+                                        VALUES (%s, %s, %s, 'posted')
+                                        ON CONFLICT (v_id) DO UPDATE SET 
+                                        title = EXCLUDED.title,
+                                        ep_num = EXCLUDED.ep_num
+                                        RETURNING (xmax = 0) AS inserted
+                                    """, (v_id, title, ep_num), fetch=True)
+                                    
+                                    if result and result[0][0]:
+                                        stats['new'] += 1
+                                    else:
+                                        stats['updated'] += 1
+                                    
+                                else:
+                                    stats['errors'] += 1
+                                    
+                            except Exception as e:
+                                stats['errors'] += 1
+                                logging.error(f"خطأ: {e}")
+                                
+        except Exception as e:
+            await msg.edit_text(f"❌ خطأ في {channel_names[idx]}: {e}")
+            continue
+    
+    # عرض النتائج
+    result_text = f"""✅ **تم الانتهاء من الاستيراد**
+
+📊 **الإحصائيات:**
+• إجمالي الحلقات المكتشفة: {stats['total']}
+• حلقات جديدة: {stats['new']}
+• حلقات محدثة: {stats['updated']}
+• أخطاء: {stats['errors']}
+
+📁 **إجمالي الحلقات في قاعدة البيانات الآن:** {db_query('SELECT COUNT(*) FROM videos')[0][0]}
+"""
+    
+    await msg.edit_text(result_text)
+    import os, psycopg2, logging, re, asyncio, time
 from datetime import datetime
 from pyrogram import Client, filters, errors
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
