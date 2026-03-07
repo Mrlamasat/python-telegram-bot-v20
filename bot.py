@@ -17,8 +17,8 @@ SOURCE_CHANNEL = -1003547072209
 ADMIN_ID = 7720165591
 BACKUP_CHANNEL_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
 
-# ✅ قناة النشر الوحيدة (واحدة فقط)
-PUBLISH_CHANNEL = -1003554018307  # <- تم التعديل هنا
+# قناة النشر الوحيدة
+PUBLISH_CHANNEL = -1003554018307
 
 app = Client("railway_final_pro", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -51,6 +51,7 @@ def init_database():
             ep_num INTEGER DEFAULT 0,
             status TEXT DEFAULT 'posted',
             quality TEXT,
+            duration TEXT,
             poster_id TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -83,27 +84,37 @@ def extract_series_name(text):
         return "مسلسل"
     return text.strip().split('\n')[0][:100]
 
-# ===== [5] مراقبة قناة المصدر =====
+# ===== [5] دالة حساب مدة الفيديو =====
+def format_duration(seconds):
+    """تحويل الثواني إلى دقائق"""
+    minutes = seconds // 60
+    return f"{minutes} دقيقة"
+
+# ===== [6] مراقبة قناة المصدر =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.channel)
 async def monitor_source_channel(client, message):
     """
     تراقب قناة المصدر وتتفاعل مع:
     1. الفيديو الجديد
     2. البوستر الجديد
-    3. رسالة رقم الحلقة
+    3. رسالة رقم الحلقة والجودة
     """
     try:
         # الحالة 1: تم رفع فيديو جديد
         if message.video:
             v_id = str(message.id)
             
-            # استخراج اسم المسلسل من الوصف (إذا كان موجوداً)
+            # استخراج اسم المسلسل من الوصف
             series_name = extract_series_name(message.caption or "")
+            
+            # استخراج مدة الفيديو
+            duration = format_duration(message.video.duration) if message.video.duration else "45 دقيقة"
             
             # تخزين معلومات الفيديو مؤقتاً
             pending_posts[v_id] = {
                 'video_id': v_id,
                 'series_name': series_name,
+                'duration': duration,
                 'status': 'waiting_for_poster',
                 'video_message_id': message.id
             }
@@ -111,7 +122,7 @@ async def monitor_source_channel(client, message):
             # تفاعل: نطلب رفع البوستر
             await client.send_message(
                 SOURCE_CHANNEL,
-                f"🖼 **الخطوة التالية:**\nالرجاء رفع **البوستر** الخاص بـ {series_name}\n(سيتم النشر تلقائياً بعد اكتمال البيانات)"
+                f"🖼 **الخطوة التالية:**\nالرجاء رفع **البوستر** الخاص بـ {series_name}"
             )
             
             logging.info(f"📹 تم رفع فيديو جديد {v_id} - ننتظر البوستر")
@@ -125,127 +136,114 @@ async def monitor_source_channel(client, message):
                     # تخزين البوستر
                     data['poster_id'] = message.id
                     data['poster_message_id'] = message.id
-                    data['status'] = 'waiting_for_episode'
+                    data['status'] = 'waiting_for_details'
                     
-                    # تفاعل: نطلب رقم الحلقة
+                    # تفاعل: نطلب رقم الحلقة والجودة
                     await client.send_message(
                         SOURCE_CHANNEL,
-                        f"🔢 **الخطوة التالية:**\nالرجاء إرسال **رقم الحلقة** لـ {data['series_name']}\nمثال: `13`"
+                        f"🔢 **الخطوة التالية:**\nالرجاء إرسال **رقم الحلقة والجودة** لـ {data['series_name']}\nمثال: `18 1080p`"
                     )
                     
-                    logging.info(f"🖼 تم رفع بوستر للفيديو {v_id} - ننتظر رقم الحلقة")
+                    logging.info(f"🖼 تم رفع بوستر للفيديو {v_id} - ننتظر التفاصيل")
                     return
             
-            # إذا لم نجد فيديو في الانتظار
             await client.send_message(
                 SOURCE_CHANNEL,
-                "⚠️ تم رفع صورة ولكن لا يوجد فيديو في انتظار البوستر.\nالرجاء رفع الفيديو أولاً."
+                "⚠️ تم رفع صورة ولكن لا يوجد فيديو في انتظار البوستر."
             )
             return
 
-        # الحالة 3: تم إرسال رسالة نصية (رقم الحلقة)
+        # الحالة 3: تم إرسال رسالة نصية (رقم الحلقة والجودة)
         if message.text and not message.text.startswith('/'):
-            # نبحث عن فيديو في انتظار رقم الحلقة
+            # نبحث عن فيديو في انتظار التفاصيل
             for v_id, data in list(pending_posts.items()):
-                if data['status'] == 'waiting_for_episode':
-                    # استخراج رقم الحلقة من النص
+                if data['status'] == 'waiting_for_details':
+                    # استخراج رقم الحلقة والجودة من النص
                     text = message.text.strip()
-                    numbers = re.findall(r'\d+', text)
                     
-                    if numbers:
-                        ep_num = int(numbers[0])
-                        data['ep_num'] = ep_num
+                    # نمط: رقم + جودة (مثال: 18 1080p)
+                    match = re.search(r'(\d+)(?:\s+)?(.+)?', text)
+                    
+                    if match:
+                        ep_num = int(match.group(1))
+                        quality = match.group(2) if match.group(2) else "HD"
                         
-                        # ✅ اكتملت البيانات - نبدأ النشر
-                        await complete_and_publish(client, v_id, data)
+                        data['ep_num'] = ep_num
+                        data['quality'] = quality
+                        
+                        # ✅ اكتملت البيانات - نبدأ النشر في القناة (بوستر فقط)
+                        await publish_to_channel(client, v_id, data)
                         return
                     else:
                         await client.send_message(
                             SOURCE_CHANNEL,
-                            "❌ لم أجد رقم صحيح. الرجاء إرسال رقم الحلقة فقط (مثال: 13)"
+                            "❌ صيغة غير صحيحة. الرجاء إرسال: رقم_الحلقة الجودة\nمثال: `18 1080p`"
                         )
                         return
             
-            # إذا لم نجد فيديو في الانتظار
             await client.send_message(
                 SOURCE_CHANNEL,
-                "📝 تم استلام النص ولكن لا توجد حلقة في انتظار الرقم."
+                "📝 تم استلام النص ولكن لا توجد حلقة في انتظار التفاصيل."
             )
             
     except Exception as e:
         logging.error(f"خطأ في مراقبة القناة: {e}")
 
-# ===== [6] دالة النشر بعد اكتمال البيانات =====
-async def complete_and_publish(client, v_id, data):
-    """تنشر الحلقة بعد اكتمال جميع البيانات"""
+# ===== [7] دالة النشر في القناة (بوستر فقط) =====
+async def publish_to_channel(client, v_id, data):
+    """تنشر البوستر فقط في القناة مع رابط البوت"""
     try:
-        # جلب الفيديو من قناة المصدر
-        video_msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
-        
-        # جلب البوستر من قناة المصدر
-        poster_msg = await client.get_messages(SOURCE_CHANNEL, data['poster_message_id'])
-        
         series_name = data['series_name']
         ep_num = data['ep_num']
+        quality = data['quality']
+        duration = data['duration']
         
-        # تنظيف اسم المسلسل من الأرقام الزائدة
+        # تنظيف اسم المسلسل
         clean_title = re.sub(r'\s+\d+$', '', series_name)
         
         # حفظ في قاعدة البيانات
         db_query("""
-            INSERT INTO videos (v_id, title, ep_num, status, poster_id) 
-            VALUES (%s, %s, %s, 'posted', %s)
+            INSERT INTO videos (v_id, title, ep_num, quality, duration, status, poster_id) 
+            VALUES (%s, %s, %s, %s, %s, 'posted', %s)
             ON CONFLICT (v_id) DO UPDATE SET 
             title = EXCLUDED.title,
             ep_num = EXCLUDED.ep_num,
+            quality = EXCLUDED.quality,
+            duration = EXCLUDED.duration,
             poster_id = EXCLUDED.poster_id
-        """, (v_id, clean_title, ep_num, str(data['poster_message_id'])), fetch=False)
+        """, (v_id, clean_title, ep_num, quality, duration, str(data['poster_message_id'])), fetch=False)
+        
+        # إنشاء رابط البوت
+        me = await client.get_me()
+        bot_link = f"https://t.me/{me.username}?start={v_id}"
         
         # إنشاء زر المشاهدة
-        me = await client.get_me()
         watch_button = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🎬 مشاهدة الحلقة", url=f"https://t.me/{me.username}?start={v_id}")
+            InlineKeyboardButton("🎬 مشاهدة الحلقة", url=bot_link)
         ]])
         
-        # ✅ النشر في قناة واحدة فقط
-        channel_id = PUBLISH_CHANNEL
+        # ✅ نشر البوستر فقط في القناة (بدون فيديو)
+        await client.copy_message(
+            PUBLISH_CHANNEL,
+            SOURCE_CHANNEL,
+            data['poster_message_id'],
+            caption=f"🎬 {clean_title}\nالحلقة {ep_num}\n{quality} | {duration}",
+            reply_markup=watch_button
+        )
         
-        try:
-            # نشر البوستر أولاً
-            await client.copy_message(
-                channel_id,
-                SOURCE_CHANNEL,
-                data['poster_message_id'],
-                caption=f"🎬 {clean_title}\nالحلقة {ep_num}"
-            )
-            
-            # نشر الفيديو
-            await client.copy_message(
-                channel_id,
-                SOURCE_CHANNEL,
-                int(v_id),
-                caption=f"🎬 {clean_title} - الحلقة {ep_num}",
-                reply_markup=watch_button
-            )
-            
-            # ✅ تم النشر بنجاح
-            await client.send_message(
-                SOURCE_CHANNEL,
-                f"✅ **تم النشر بنجاح!**\n"
-                f"المسلسل: {clean_title}\n"
-                f"رقم الحلقة: {ep_num}\n"
-                f"تم النشر في قناة واحدة"
-            )
-            
-            logging.info(f"✅ تم نشر الحلقة {v_id}: {clean_title} - حلقة {ep_num}")
-            
-        except Exception as e:
-            logging.error(f"خطأ في النشر للقناة: {e}")
-            await client.send_message(
-                SOURCE_CHANNEL,
-                f"❌ حدث خطأ أثناء النشر: {e}\nالرجاء التأكد من أن البوت مشرف في القناة"
-            )
-            return
+        # ✅ تم النشر بنجاح
+        await client.send_message(
+            SOURCE_CHANNEL,
+            f"✅ **تم النشر بنجاح!**\n"
+            f"المسلسل: {clean_title}\n"
+            f"رقم الحلقة: {ep_num}\n"
+            f"الجودة: {quality}\n"
+            f"المدة: {duration}\n\n"
+            f"📢 تم نشر البوستر فقط في القناة\n"
+            f"🔗 رابط المشاهدة: {bot_link}"
+        )
+        
+        logging.info(f"✅ تم نشر البوستر للحلقة {v_id}: {clean_title} - حلقة {ep_num}")
         
         # حذف البيانات المؤقتة
         del pending_posts[v_id]
@@ -257,15 +255,15 @@ async def complete_and_publish(client, v_id, data):
             f"❌ حدث خطأ أثناء النشر: {e}"
         )
 
-# ===== [7] دالة عرض الحلقة =====
+# ===== [8] دالة عرض الحلقة في البوت =====
 async def show_episode(client, message, v_id):
     try:
-        db_data = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
+        db_data = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id = %s", (v_id,))
         
         if not db_data:
             return await message.reply_text("❌ الحلقة غير موجودة")
         
-        title, ep = db_data[0]
+        title, ep, quality, duration = db_data[0]
         
         keyboard = []
         
@@ -292,11 +290,19 @@ async def show_episode(client, message, v_id):
         
         keyboard.append([InlineKeyboardButton("🔗 القناة الاحتياطية", url=BACKUP_CHANNEL_LINK)])
         
+        # إنشاء النص مع التفاصيل
+        caption = f"<b>{title} - الحلقة {ep}</b>\n"
+        if quality:
+            caption += f"📺 الجودة: {quality}\n"
+        if duration:
+            caption += f"⏱ المدة: {duration}"
+        
+        # إرسال الفيديو من قناة المصدر (الفيديو يظهر هنا فقط في البوت)
         await client.copy_message(
             message.chat.id,
             SOURCE_CHANNEL,
             int(v_id),
-            caption=f"<b>{title} - الحلقة {ep}</b>",
+            caption=caption,
             reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None
         )
         
@@ -314,7 +320,7 @@ async def show_episode(client, message, v_id):
         logging.error(f"خطأ: {e}")
         await message.reply_text("⚠️ حدث خطأ")
 
-# ===== [8] أمر البدء =====
+# ===== [9] أمر البدء =====
 @app.on_message(filters.command("start") & filters.private)
 async def smart_start(client, message):
     username = message.from_user.username or ""
@@ -328,18 +334,15 @@ async def smart_start(client, message):
         v_id = message.command[1]
         await show_episode(client, message, v_id)
     else:
-        welcome_text = """👋 **بوت النشر التلقائي**
+        welcome_text = """👋 **بوت المشاهدة الخاص**
 
-⚡ **طريقة العمل في قناة المصدر:**
-1️⃣ ارفع الفيديو
-2️⃣ ارفع البوستر
-3️⃣ اكتب رقم الحلقة
-🤖 البوت ينشر تلقائياً في قناة واحدة!
+🎬 **جميع الحلقات متاحة هنا فقط**
+⚡ **مشاهدة آمنة وخاصة**
 
 🆘 @Mohsen_7e"""
         await message.reply_text(welcome_text)
 
-# ===== [9] أمر التحكم في الأزرار =====
+# ===== [10] أمر التحكم في الأزرار =====
 @app.on_message(filters.command("toggle_buttons") & filters.user(ADMIN_ID))
 async def toggle_buttons(client, message):
     global SHOW_MORE_BUTTONS
@@ -347,7 +350,7 @@ async def toggle_buttons(client, message):
     status = "✅ مفعلة" if SHOW_MORE_BUTTONS else "❌ معطلة"
     await message.reply_text(f"أزرار المزيد: {status}")
 
-# ===== [10] أمر فحص القناة =====
+# ===== [11] أمر فحص القناة =====
 @app.on_message(filters.command("scan_source") & filters.user(ADMIN_ID))
 async def scan_source_command(client, message):
     msg = await message.reply_text("🔄 جاري فحص قناة المصدر...")
@@ -366,7 +369,6 @@ async def scan_source_command(client, message):
                 v_id = str(post.id)
                 title = extract_series_name(raw_text)
                 
-                # محاولة استخراج رقم الحلقة من النص
                 numbers = re.findall(r'\d+', raw_text)
                 ep_num = int(numbers[0]) if numbers else 0
                 
@@ -401,7 +403,7 @@ async def scan_source_command(client, message):
 📁 إجمالي الحلقات: {total}"""
     await msg.edit_text(result)
 
-# ===== [11] أمر الإحصائيات =====
+# ===== [12] أمر الإحصائيات =====
 @app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
 async def smart_stats(client, message):
     total = db_query("SELECT COUNT(*) FROM videos")[0][0]
@@ -416,22 +418,29 @@ async def smart_stats(client, message):
     
     await message.reply_text(text)
 
-# ===== [12] أمر اختبار النشر =====
+# ===== [13] أمر اختبار النشر =====
 @app.on_message(filters.command("test_publish") & filters.user(ADMIN_ID))
 async def test_publish(client, message):
     """اختبار النشر في القناة"""
     try:
-        await client.send_message(
+        me = await client.get_me()
+        test_button = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🧪 اختبار", url=f"https://t.me/{me.username}?start=test")
+        ]])
+        
+        await client.send_photo(
             PUBLISH_CHANNEL,
-            "🧪 هذا اختبار للتأكد من أن البوت يستطيع النشر في القناة"
+            "https://telegra.ph/file/placeholder.jpg",  # ضع صورة افتراضية
+            caption="🧪 هذا اختبار لشكل المنشور\nHD | 45 دقيقة",
+            reply_markup=test_button
         )
         await message.reply_text("✅ تم إرسال رسالة اختبار بنجاح")
     except Exception as e:
         await message.reply_text(f"❌ فشل الإرسال: {e}")
 
-# ===== [13] التشغيل الرئيسي =====
+# ===== [14] التشغيل الرئيسي =====
 def main():
-    print("🚀 تشغيل بوت التفاعل مع قناة المصدر...")
+    print("🚀 تشغيل بوت الحماية والنشر الآمن...")
     init_database()
     
     max_retries = 5
