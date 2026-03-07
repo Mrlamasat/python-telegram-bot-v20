@@ -19,9 +19,6 @@ BACKUP_CHANNEL_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
 
 PUBLIC_CHANNELS = [
     -1003554018307,
-    -1003790915936,
-    -1003678294148,
-    -1003690441303
 ]
 
 app = Client("railway_final_pro", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
