@@ -26,51 +26,6 @@ app = Client("railway_final_pro", api_id=API_ID, api_hash=API_HASH, bot_token=BO
 SHOW_MORE_BUTTONS = False
 pending_posts = {}
 
-# ===== [1.2] نظام التشفير =====
-ENCRYPTION_LEVEL = "HIGH"  # Levels: LOW, MEDIUM, HIGH
-HIDE_TITLE_IN_BOT = True   # إخفاء الاسم في البوت نهائياً
-
-# كلمات عشوائية للتشفير
-random_words = ["شاهد", "حصري", "جديد", "متابعة", "قريباً", "الان", "مميز", "حلقة"]
-
-def encrypt_title(title, level="MEDIUM"):
-    """
-    تشفير اسم المسلسل بثلاث مستويات
-    """
-    if not title:
-        return title
-    
-    if level == "LOW":
-        # مستوى منخفض: إضافة فواصل بين الأحرف
-        return " ".join(title)
-    
-    elif level == "MEDIUM":
-        # مستوى متوسط: تشفير الكلمات
-        words = title.split()
-        encrypted = []
-        for word in words:
-            if len(word) > 2:
-                # قلب الكلمة وإضافة رقم عشوائي
-                reversed_word = word[::-1]
-                encrypted.append(reversed_word)
-            else:
-                encrypted.append(word)
-        return " ".join(encrypted)
-    
-    elif level == "HIGH":
-        # مستوى عالي: استبدال كامل
-        return f"🎬 {random.choice(random_words)} {random.randint(1,999)}"
-    
-    return title
-
-def hide_title_for_bot():
-    """
-    إخفاء الاسم تماماً في البوت
-    """
-    if HIDE_TITLE_IN_BOT:
-        return "🎬"  # رمز فقط بدون اسم
-    return "المحتوى"
-
 # ===== [2] دوال قاعدة البيانات =====
 def db_query(query, params=(), fetch=True):
     try:
@@ -87,22 +42,16 @@ def db_query(query, params=(), fetch=True):
 
 # ===== [3] إنشاء الجداول =====
 def init_database():
-    # أولاً: التحقق من وجود الجدول وإضافة الأعمدة المفقودة
     try:
-        # محاولة إضافة الأعمدة (إذا لم تكن موجودة)
-        db_query("ALTER TABLE videos ADD COLUMN IF NOT EXISTS encrypted_title TEXT", fetch=False)
         db_query("ALTER TABLE videos ADD COLUMN IF NOT EXISTS quality TEXT", fetch=False)
         db_query("ALTER TABLE videos ADD COLUMN IF NOT EXISTS duration TEXT", fetch=False)
-        logging.info("✅ تم تحديث هيكل الجدول")
-    except Exception as e:
-        logging.info(f"قد يكون الجدول غير موجود بعد: {e}")
+    except:
+        pass
     
-    # إنشاء الجدول إذا لم يكن موجوداً
     db_query("""
         CREATE TABLE IF NOT EXISTS videos (
             v_id TEXT PRIMARY KEY,
             title TEXT,
-            encrypted_title TEXT,
             ep_num INTEGER DEFAULT 0,
             status TEXT DEFAULT 'posted',
             quality TEXT,
@@ -134,7 +83,6 @@ def init_database():
 
 # ===== [4] دالة استخراج اسم المسلسل الطبيعي =====
 def extract_series_name(text):
-    """تستخرج اسم المسلسل من أول سطر"""
     if not text:
         return "مسلسل"
     return text.strip().split('\n')[0][:100]
@@ -153,13 +101,9 @@ async def monitor_source_channel(client, message):
             series_name = extract_series_name(message.caption or "")
             duration = format_duration(message.video.duration) if message.video.duration else "45 دقيقة"
             
-            # تشفير الاسم حسب المستوى المختار
-            encrypted_name = encrypt_title(series_name, ENCRYPTION_LEVEL)
-            
             pending_posts[v_id] = {
                 'video_id': v_id,
-                'series_name': series_name,  # الاسم الطبيعي
-                'encrypted_name': encrypted_name,  # الاسم المشفر
+                'series_name': series_name,
                 'duration': duration,
                 'status': 'waiting_for_poster',
                 'video_message_id': message.id
@@ -220,27 +164,25 @@ async def monitor_source_channel(client, message):
     except Exception as e:
         logging.error(f"خطأ في مراقبة القناة: {e}")
 
-# ===== [7] دالة النشر في القناة (باسم مشفر) =====
+# ===== [7] دالة النشر في القناة =====
 async def publish_to_channel(client, v_id, data):
     try:
-        series_name = data['series_name']  # الاسم الطبيعي (للقاعدة)
-        encrypted_name = data['encrypted_name']  # الاسم المشفر (للقناة)
+        series_name = data['series_name']
         ep_num = data['ep_num']
         quality = data['quality']
         duration = data['duration']
         
-        # حفظ الاسم الطبيعي فقط في قاعدة البيانات
+        # حفظ في قاعدة البيانات
         db_query("""
-            INSERT INTO videos (v_id, title, encrypted_title, ep_num, quality, duration, status, poster_id) 
-            VALUES (%s, %s, %s, %s, %s, %s, 'posted', %s)
+            INSERT INTO videos (v_id, title, ep_num, quality, duration, status, poster_id) 
+            VALUES (%s, %s, %s, %s, %s, 'posted', %s)
             ON CONFLICT (v_id) DO UPDATE SET 
             title = EXCLUDED.title,
-            encrypted_title = EXCLUDED.encrypted_title,
             ep_num = EXCLUDED.ep_num,
             quality = EXCLUDED.quality,
             duration = EXCLUDED.duration,
             poster_id = EXCLUDED.poster_id
-        """, (v_id, series_name, encrypted_name, ep_num, quality, duration, str(data['poster_message_id'])), fetch=False)
+        """, (v_id, series_name, ep_num, quality, duration, str(data['poster_message_id'])), fetch=False)
         
         # إنشاء رابط البوت
         me = await client.get_me()
@@ -250,27 +192,37 @@ async def publish_to_channel(client, v_id, data):
             InlineKeyboardButton("🎬 مشاهدة الحلقة", url=bot_link)
         ]])
         
-        # ✅ نشر البوستر مع الاسم المشفر
-        await client.copy_message(
+        # ✅ نشر البوستر في القناة - بدون اسم المسلسل!
+        sent_message = await client.copy_message(
             PUBLISH_CHANNEL,
             SOURCE_CHANNEL,
             data['poster_message_id'],
-            caption=f"🎬 {encrypted_name}\nالحلقة {ep_num}\n{quality} | {duration}",
+            caption=f"الحلقة {ep_num}\n{quality} | {duration}",
             reply_markup=watch_button
         )
         
-        # إرسال تأكيد للمشرف
+        # الحصول على رابط المنشور
+        channel_username = None
+        try:
+            chat = await client.get_chat(PUBLISH_CHANNEL)
+            if chat.username:
+                channel_username = chat.username
+        except:
+            pass
+        
+        if channel_username:
+            post_link = f"https://t.me/{channel_username}/{sent_message.id}"
+        else:
+            post_link = f"https://t.me/c/{str(PUBLISH_CHANNEL).replace('-100', '')}/{sent_message.id}"
+        
+        # ✅ إرسال تأكيد للمشرف مع رابط النشر
         await client.send_message(
             SOURCE_CHANNEL,
-            f"✅ **تم النشر بنجاح!**\n"
-            f"الاسم الطبيعي: {series_name}\n"
-            f"الاسم المشفر: {encrypted_name}\n"
-            f"رقم الحلقة: {ep_num}\n"
-            f"الجودة: {quality}\n\n"
-            f"🔒 **حماية عالية**: الاسم مشفر في القناة"
+            f"✅ **تم النشر بنجاح!**\n\n"
+            f"🔗 رابط المنشور: {post_link}"
         )
         
-        logging.info(f"✅ تم نشر البوستر للحلقة {v_id}: {series_name} (مشفر كـ {encrypted_name})")
+        logging.info(f"✅ تم نشر البوستر للحلقة {v_id}: {series_name} - حلقة {ep_num}")
         
         del pending_posts[v_id]
         
@@ -281,23 +233,15 @@ async def publish_to_channel(client, v_id, data):
             f"❌ حدث خطأ أثناء النشر: {e}"
         )
 
-# ===== [8] دالة عرض الحلقة في البوت (مع معالجة الأعمدة المفقودة) =====
+# ===== [8] دالة عرض الحلقة في البوت =====
 async def show_episode(client, message, v_id):
     try:
-        # محاولة جلب البيانات مع الأعمدة الجديدة
-        try:
-            db_data = db_query("SELECT title, encrypted_title, ep_num, quality, duration FROM videos WHERE v_id = %s", (v_id,))
-        except:
-            # إذا فشل، جلب بدون الأعمدة الجديدة
-            db_data = db_query("SELECT title, ep_num FROM videos WHERE v_id = %s", (v_id,))
-            # تحويل النتيجة إلى نفس التنسيق
-            if db_data:
-                db_data = [(db_data[0][0], db_data[0][0], db_data[0][1], None, None)]
+        db_data = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id = %s", (v_id,))
         
         if not db_data:
             return await message.reply_text("❌ الحلقة غير متوفرة")
         
-        title, encrypted_title, ep, quality, duration = db_data[0]
+        title, ep, quality, duration = db_data[0]
         
         keyboard = []
         
@@ -324,15 +268,8 @@ async def show_episode(client, message, v_id):
         
         keyboard.append([InlineKeyboardButton("🔗 القناة الاحتياطية", url=BACKUP_CHANNEL_LINK)])
         
-        # ✅ إخفاء الاسم تماماً في البوت إذا كان مفعلاً
-        if HIDE_TITLE_IN_BOT:
-            display_title = hide_title_for_bot()
-            caption = f"<b>{display_title}</b>\n"
-        else:
-            # استخدام الاسم المشفر في البوت
-            display_title = encrypted_title if encrypted_title else title
-            caption = f"<b>{display_title} - الحلقة {ep}</b>\n"
-        
+        # ✅ في البوت - إخفاء الاسم نهائياً (يظهر رمز فقط)
+        caption = f"<b>🎬</b>\n"
         if quality:
             caption += f"📺 الجودة: {quality}\n"
         if duration:
@@ -360,30 +297,7 @@ async def show_episode(client, message, v_id):
         logging.error(f"خطأ: {e}")
         await message.reply_text("⚠️ حدث خطأ")
 
-# ===== [9] أمر تغيير مستوى التشفير =====
-@app.on_message(filters.command("set_encryption") & filters.user(ADMIN_ID))
-async def set_encryption(client, message):
-    global ENCRYPTION_LEVEL
-    command = message.text.split()
-    if len(command) < 2:
-        return await message.reply_text("❌ استخدم: /set_encryption LOW/MEDIUM/HIGH")
-    
-    level = command[1].upper()
-    if level in ["LOW", "MEDIUM", "HIGH"]:
-        ENCRYPTION_LEVEL = level
-        await message.reply_text(f"✅ مستوى التشفير changed to {level}")
-    else:
-        await message.reply_text("❌ المستوى يجب أن يكون LOW, MEDIUM, أو HIGH")
-
-# ===== [10] أمر إخفاء الاسم في البوت =====
-@app.on_message(filters.command("toggle_hide") & filters.user(ADMIN_ID))
-async def toggle_hide(client, message):
-    global HIDE_TITLE_IN_BOT
-    HIDE_TITLE_IN_BOT = not HIDE_TITLE_IN_BOT
-    status = "✅ مفعل (الاسم مخفي)" if HIDE_TITLE_IN_BOT else "❌ معطل (الاسم يظهر)"
-    await message.reply_text(f"إخفاء الاسم في البوت: {status}")
-
-# ===== [11] أمر البدء =====
+# ===== [9] أمر البدء =====
 @app.on_message(filters.command("start") & filters.private)
 async def smart_start(client, message):
     username = message.from_user.username or ""
@@ -397,15 +311,14 @@ async def smart_start(client, message):
         v_id = message.command[1]
         await show_episode(client, message, v_id)
     else:
-        welcome_text = """👋 **بوت المشاهدة الآمن**
+        welcome_text = """👋 **بوت المشاهدة**
 
-🔒 **جميع المحتويات محمية**
-⚡ مشاهدة خاصة وآمنة
+⚡ مشاهدة آمنة وخاصة
 
 🆘 @Mohsen_7e"""
         await message.reply_text(welcome_text)
 
-# ===== [12] أوامر التحكم =====
+# ===== [10] أمر التحكم في الأزرار =====
 @app.on_message(filters.command("toggle_buttons") & filters.user(ADMIN_ID))
 async def toggle_buttons(client, message):
     global SHOW_MORE_BUTTONS
@@ -413,6 +326,7 @@ async def toggle_buttons(client, message):
     status = "✅ مفعلة" if SHOW_MORE_BUTTONS else "❌ معطلة"
     await message.reply_text(f"أزرار المزيد: {status}")
 
+# ===== [11] أمر فحص القناة =====
 @app.on_message(filters.command("scan_source") & filters.user(ADMIN_ID))
 async def scan_source_command(client, message):
     msg = await message.reply_text("🔄 جاري فحص قناة المصدر...")
@@ -430,20 +344,18 @@ async def scan_source_command(client, message):
                 raw_text = post.caption or post.text
                 v_id = str(post.id)
                 title = extract_series_name(raw_text)
-                encrypted = encrypt_title(title, ENCRYPTION_LEVEL)
                 
                 numbers = re.findall(r'\d+', raw_text)
                 ep_num = int(numbers[0]) if numbers else 0
                 
                 if ep_num > 0:
                     db_query("""
-                        INSERT INTO videos (v_id, title, encrypted_title, ep_num, status) 
-                        VALUES (%s, %s, %s, %s, 'posted')
+                        INSERT INTO videos (v_id, title, ep_num, status) 
+                        VALUES (%s, %s, %s, 'posted')
                         ON CONFLICT (v_id) DO UPDATE SET 
                         title = EXCLUDED.title,
-                        encrypted_title = EXCLUDED.encrypted_title,
                         ep_num = EXCLUDED.ep_num
-                    """, (v_id, title, encrypted, ep_num), fetch=False)
+                    """, (v_id, title, ep_num), fetch=False)
                     stats['updated'] += 1
                 
             except Exception as e:
@@ -464,12 +376,10 @@ async def scan_source_command(client, message):
 • حلقات محدثة: {stats['updated']}
 • أخطاء: {stats['errors']}
 
-📁 إجمالي الحلقات: {total}
-🔒 مستوى التشفير: {ENCRYPTION_LEVEL}
-👁 إخفاء الاسم في البوت: {'✅' if HIDE_TITLE_IN_BOT else '❌'}"""
+📁 إجمالي الحلقات: {total}"""
     await msg.edit_text(result)
 
-# ===== [13] أمر الإحصائيات =====
+# ===== [12] أمر الإحصائيات =====
 @app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
 async def smart_stats(client, message):
     total = db_query("SELECT COUNT(*) FROM videos")[0][0]
@@ -480,34 +390,13 @@ async def smart_stats(client, message):
     text += f"📁 الحلقات: {total}\n"
     text += f"👥 المستخدمين: {users}\n"
     text += f"👀 المشاهدات: {views}\n"
-    text += f"🔒 مستوى التشفير: {ENCRYPTION_LEVEL}\n"
-    text += f"👁 إخفاء الاسم في البوت: {'✅' if HIDE_TITLE_IN_BOT else '❌'}\n"
     text += f"🔘 أزرار المزيد: {'مفعلة' if SHOW_MORE_BUTTONS else 'معطلة'}"
     
     await message.reply_text(text)
 
-# ===== [14] أمر اختبار التشفير =====
-@app.on_message(filters.command("test_encrypt") & filters.user(ADMIN_ID))
-async def test_encrypt(client, message):
-    command = message.text.split()
-    if len(command) < 2:
-        return await message.reply_text("❌ استخدم: /test_encrypt اسم_المسلسل")
-    
-    test_name = ' '.join(command[1:])
-    low = encrypt_title(test_name, "LOW")
-    medium = encrypt_title(test_name, "MEDIUM")
-    high = encrypt_title(test_name, "HIGH")
-    
-    await message.reply_text(
-        f"🔍 **اختبار التشفير لـ:** {test_name}\n\n"
-        f"📊 LOW: `{low}`\n"
-        f"📊 MEDIUM: `{medium}`\n"
-        f"📊 HIGH: `{high}`"
-    )
-
-# ===== [15] التشغيل الرئيسي =====
+# ===== [13] التشغيل الرئيسي =====
 def main():
-    print("🚀 تشغيل بوت التشفير والحماية...")
+    print("🚀 تشغيل البوت...")
     init_database()
     
     max_retries = 5
