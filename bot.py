@@ -18,7 +18,7 @@ BACKUP_CHANNEL_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
 PUBLISH_CHANNEL = -1003554018307
 
 # ===== [1.1] التحكم في المزيد من الحلقات =====
-SHOW_MORE_BUTTONS = True  # تأكد أنه True
+SHOW_MORE_BUTTONS = True
 
 app = Client("railway_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -71,7 +71,7 @@ def init_database():
     
     print("✅ قاعدة البيانات جاهزة")
 
-# ===== [5] دوال الاستخراج =====
+# ===== [5] دوال الاستخراج المحسنة =====
 def extract_episode_number(text):
     if not text:
         return 0
@@ -79,17 +79,36 @@ def extract_episode_number(text):
     return int(nums[0]) if nums else 0
 
 def extract_series_name(text):
+    """استخراج اسم المسلسل مع تنظيف أفضل"""
     if not text:
-        return "مسلسل"
+        return "غير معروف"
+    
+    # إزالة الأرقام من النهاية
     clean = re.sub(r'\s*\d+\s*$', '', text.strip())
     clean = re.sub(r'^\d+\s*', '', clean)
-    if not clean:
-        return "مسلسل"
-    return clean.strip()[:50]
+    
+    # إزالة الرموز الخاصة
+    clean = re.sub(r'[^\w\s]', '', clean)
+    
+    # تنظيف المسافات الزائدة
+    clean = re.sub(r'\s+', ' ', clean).strip()
+    
+    if not clean or len(clean) < 2:
+        return "غير معروف"
+    
+    return clean[:50]
+
+def extract_series_from_video(text, v_id):
+    """استخراج اسم المسلسل مع استخدام v_id كبديل"""
+    series = extract_series_name(text)
+    if series == "غير معروف":
+        # استخدام آخر 3 أرقام من v_id كاسم مؤقت
+        return f"مسلسل {v_id[-3:]}"
+    return series
 
 # ===== [6] دالة أزرار الحلقات =====
 def get_episode_buttons(series_name, current_id, bot_user):
-    if not series_name:
+    if not series_name or series_name == "غير معروف":
         return []
     
     eps = db_query("""
@@ -98,7 +117,7 @@ def get_episode_buttons(series_name, current_id, bot_user):
         ORDER BY ep_num ASC LIMIT 50
     """, (series_name,))
     
-    if not eps:
+    if not eps or len(eps) < 2:  # تحتاج على الأقل حلقتين
         return []
     
     keyboard, row = [], []
@@ -112,7 +131,84 @@ def get_episode_buttons(series_name, current_id, bot_user):
         keyboard.append(row)
     return keyboard
 
-# ===== [7] أمر البدء =====
+# ===== [7] أمر إصلاح شامل =====
+@app.on_message(filters.command("fix_all") & filters.user(ADMIN_ID))
+async def fix_all(client, message):
+    msg = await message.reply_text("🔄 جاري الإصلاح الشامل...")
+    
+    # 1️⃣ إصلاح الفيديوهات التي ليس لها اسم مسلسل
+    videos = db_query("SELECT v_id FROM videos WHERE series_name IS NULL OR series_name = '' OR series_name = 'None'")
+    fixed = 0
+    
+    for (v_id,) in videos:
+        try:
+            source = await client.get_messages(SOURCE_CHANNEL, int(v_id))
+            if source and source.video:
+                series = extract_series_from_video(source.caption or "", v_id)
+                ep = extract_episode_number(source.caption or "")
+                if ep == 0:
+                    ep = 1
+                
+                db_query("""
+                    UPDATE videos 
+                    SET series_name = %s, ep_num = %s 
+                    WHERE v_id = %s
+                """, (series, ep, v_id), fetch=False)
+                fixed += 1
+        except:
+            continue
+    
+    await msg.edit_text(f"✅ تم إصلاح {fixed} فيديو")
+    
+    # 2️⃣ عرض إحصائيات بعد الإصلاح
+    stats = db_query("""
+        SELECT series_name, COUNT(*) as count 
+        FROM videos 
+        GROUP BY series_name 
+        ORDER BY count DESC 
+        LIMIT 10
+    """)
+    
+    result = "📊 **الإحصائيات بعد الإصلاح:**\n\n"
+    for name, count in stats:
+        result += f"• {name}: {count} حلقة\n"
+    
+    await message.reply_text(result)
+
+# ===== [8] أمر إصلاح حلقة محددة =====
+@app.on_message(filters.command("fix_one") & filters.user(ADMIN_ID))
+async def fix_one(client, message):
+    cmd = message.text.split()
+    if len(cmd) < 2:
+        await message.reply_text("❌ استخدم: /fix_one v_id")
+        return
+    
+    v_id = cmd[1]
+    
+    try:
+        source = await client.get_messages(SOURCE_CHANNEL, int(v_id))
+        if not source or not source.video:
+            return await message.reply_text("❌ الفيديو غير موجود")
+        
+        series = extract_series_from_video(source.caption or "", v_id)
+        ep = extract_episode_number(source.caption or "")
+        if ep == 0:
+            ep = 1
+        
+        db_query("""
+            INSERT INTO videos (v_id, series_name, ep_num) 
+            VALUES (%s, %s, %s)
+            ON CONFLICT (v_id) DO UPDATE SET 
+            series_name = EXCLUDED.series_name,
+            ep_num = EXCLUDED.ep_num
+        """, (v_id, series, ep), fetch=False)
+        
+        await message.reply_text(f"✅ تم إصلاح الحلقة {v_id}\nالمسلسل: {series}\nرقم الحلقة: {ep}")
+        
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ: {e}")
+
+# ===== [9] أمر البدء =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     db_query(
@@ -130,9 +226,11 @@ async def start_cmd(client, message):
         if not data:
             try:
                 source = await client.get_messages(SOURCE_CHANNEL, int(v_id))
-                if source and (source.video or source.document):
+                if source and source.video:
+                    series = extract_series_from_video(source.caption or "", v_id)
                     ep = extract_episode_number(source.caption or "")
-                    series = extract_series_name(source.caption or "")
+                    if ep == 0:
+                        ep = 1
                     
                     db_query("""
                         INSERT INTO videos (v_id, series_name, ep_num) 
@@ -146,12 +244,20 @@ async def start_cmd(client, message):
                 return await message.reply_text(f"⚠️ خطأ: {e}")
         else:
             current_series, current_ep = data[0]
-            if not current_series:
-                current_series = "مسلسل"
+            if not current_series or current_series == "None":
+                # محاولة إصلاح تلقائي
+                try:
+                    source = await client.get_messages(SOURCE_CHANNEL, int(v_id))
+                    if source and source.video:
+                        current_series = extract_series_from_video(source.caption or "", v_id)
+                        db_query("UPDATE videos SET series_name = %s WHERE v_id = %s", 
+                                (current_series, v_id), fetch=False)
+                except:
+                    current_series = "غير معروف"
 
         # توليد الأزرار
         keyboard = []
-        if SHOW_MORE_BUTTONS:
+        if SHOW_MORE_BUTTONS and current_series != "غير معروف":
             more_buttons = get_episode_buttons(current_series, v_id, me.username)
             if more_buttons:
                 keyboard.extend(more_buttons)
@@ -170,7 +276,7 @@ async def start_cmd(client, message):
     else:
         await message.reply_text("👋 أهلاً بك في بوت المشاهدة.")
 
-# ===== [8] أمر الإحصائيات =====
+# ===== [10] أمر الإحصائيات =====
 @app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
 async def stats_cmd(client, message):
     total = db_query("SELECT COUNT(*) FROM videos")[0][0]
@@ -194,12 +300,12 @@ async def stats_cmd(client, message):
     
     await message.reply_text(text)
 
-# ===== [9] أمر تشخيص الأزرار =====
-@app.on_message(filters.command("debug_buttons") & filters.user(ADMIN_ID))
-async def debug_buttons(client, message):
+# ===== [11] أمر تشخيص =====
+@app.on_message(filters.command("debug") & filters.user(ADMIN_ID))
+async def debug_cmd(client, message):
     cmd = message.text.split()
     if len(cmd) < 2:
-        await message.reply_text("❌ استخدم: /debug_buttons v_id")
+        await message.reply_text("❌ استخدم: /debug v_id")
         return
     
     v_id = cmd[1]
@@ -212,80 +318,23 @@ async def debug_buttons(client, message):
     series, ep = current[0]
     
     others = db_query("""
-        SELECT v_id, ep_num FROM videos 
+        SELECT COUNT(*) FROM videos 
         WHERE series_name = %s AND v_id != %s
-        ORDER BY ep_num ASC
     """, (series, v_id))
     
-    text = f"🔍 **تشخيص أزرار المزيد**\n\n"
-    text += f"📌 الحلقة الحالية:\n"
-    text += f"• v_id: {v_id}\n"
-    text += f"• المسلسل: {series}\n"
-    text += f"• رقم الحلقة: {ep}\n\n"
+    count = others[0][0] if others else 0
     
-    text += f"⚙️ الإعدادات:\n"
-    text += f"• SHOW_MORE_BUTTONS: {'✅ مفعل' if SHOW_MORE_BUTTONS else '❌ معطل'}\n\n"
+    text = f"🔍 **تشخيص الحلقة {v_id}**\n\n"
+    text += f"📌 المسلسل: {series}\n"
+    text += f"🔢 رقم الحلقة: {ep}\n"
+    text += f"📊 عدد الحلقات الأخرى: {count}\n"
+    text += f"⚙️ أزرار المزيد: {'✅ ستعمل' if count > 0 and SHOW_MORE_BUTTONS else '❌ لن تعمل'}\n"
     
-    text += f"📊 حلقات أخرى في نفس المسلسل: {len(others)}\n"
-    
-    if others:
-        text += "قائمة الحلقات الأخرى:\n"
-        for vid, ep_num in others[:10]:
-            text += f"• حلقة {ep_num} (v_id: {vid})\n"
-    else:
-        text += "❌ لا توجد حلقات أخرى لنفس المسلسل!\n"
-        text += "هذا هو سبب عدم ظهور الأزرار."
+    if series == "غير معروف" or series == "None":
+        text += "\n⚠️ المشكلة: اسم المسلسل غير صحيح!\n"
+        text += "استخدم /fix_one " + v_id + " لإصلاحها"
     
     await message.reply_text(text)
-
-# ===== [10] أمر توحيد أسماء المسلسلات =====
-@app.on_message(filters.command("fix_series") & filters.user(ADMIN_ID))
-async def fix_series_names(client, message):
-    msg = await message.reply_text("🔄 جاري توحيد أسماء المسلسلات...")
-    
-    all_series = db_query("""
-        SELECT DISTINCT series_name FROM videos 
-        WHERE series_name IS NOT NULL
-    """)
-    
-    fixed = 0
-    for (name,) in all_series:
-        if not name:
-            continue
-        
-        clean_name = re.sub(r'\s+', ' ', name.strip())
-        clean_name = re.sub(r'[^\w\s]', '', clean_name)
-        
-        if clean_name != name:
-            db_query("""
-                UPDATE videos SET series_name = %s 
-                WHERE series_name = %s
-            """, (clean_name, name), fetch=False)
-            fixed += 1
-    
-    await msg.edit_text(f"✅ تم توحيد {fixed} اسم مسلسل")
-
-# ===== [11] أمر إصلاح قاعدة البيانات =====
-@app.on_message(filters.command("fix_db") & filters.user(ADMIN_ID))
-async def fix_database(client, message):
-    msg = await message.reply_text("🔄 جاري إصلاح قاعدة البيانات...")
-    
-    videos = db_query("SELECT v_id FROM videos WHERE series_name IS NULL OR series_name = ''")
-    fixed = 0
-    
-    for (v_id,) in videos:
-        try:
-            source = await client.get_messages(SOURCE_CHANNEL, int(v_id))
-            if source and source.video:
-                series = extract_series_name(source.caption or "")
-                ep = extract_episode_number(source.caption or "")
-                db_query("UPDATE videos SET series_name = %s, ep_num = %s WHERE v_id = %s", 
-                        (series, ep, v_id), fetch=False)
-                fixed += 1
-        except:
-            continue
-    
-    await msg.edit_text(f"✅ تم إصلاح {fixed} فيديو")
 
 # ===== [12] أمر اختبار =====
 @app.on_message(filters.command("test") & filters.private)
