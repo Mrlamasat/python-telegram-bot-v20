@@ -1,9 +1,10 @@
-import os, psycopg2, logging, re, asyncio, time, random
-from datetime import datetime
+import os, psycopg2, logging, re, asyncio, time, json
+from datetime import datetime, timedelta
 from pyrogram import Client, filters, errors
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait, ChannelInvalid, ChannelPrivate
+from psycopg2 import pool
 
 logging.basicConfig(level=logging.INFO)
 
@@ -23,31 +24,94 @@ PUBLISH_CHANNEL = -1003554018307
 app = Client("railway_final_pro", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # ===== [1.1] متغيرات التحكم =====
-SHOW_MORE_BUTTONS = False  # يبدأ معطلاً
 pending_posts = {}
 
-# ===== [2] دوال قاعدة البيانات =====
+# ===== [2] نظام قاعدة البيانات المحسن (مع Connection Pool) =====
+class DatabasePool:
+    _instance = None
+    _pool = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(DatabasePool, cls).__new__(cls)
+            cls._instance._initialize_pool()
+        return cls._instance
+    
+    def _initialize_pool(self):
+        try:
+            self._pool = psycopg2.pool.SimpleConnectionPool(
+                1, 20,  # min 1, max 20 connections
+                dsn=DATABASE_URL,
+                sslmode="require"
+            )
+            logging.info("✅ تم إنشاء Connection Pool بنجاح")
+        except Exception as e:
+            logging.error(f"❌ فشل إنشاء Connection Pool: {e}")
+            self._pool = None
+    
+    def get_connection(self):
+        if self._pool:
+            return self._pool.getconn()
+        return psycopg2.connect(DATABASE_URL, sslmode="require")
+    
+    def return_connection(self, conn):
+        if self._pool:
+            self._pool.putconn(conn)
+        else:
+            conn.close()
+    
+    def close_all(self):
+        if self._pool:
+            self._pool.closeall()
+
+db_pool = DatabasePool()
+
 def db_query(query, params=(), fetch=True):
+    conn = None
     try:
-        conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+        conn = db_pool.get_connection()
         cur = conn.cursor()
         cur.execute(query, params)
-        res = cur.fetchall() if fetch else (conn.commit() or None)
+        res = cur.fetchall() if fetch else None
+        conn.commit()
         cur.close()
-        conn.close()
         return res
     except Exception as e:
         logging.error(f"DB Error: {e}")
         return []
+    finally:
+        if conn:
+            db_pool.return_connection(conn)
 
 # ===== [3] إنشاء الجداول =====
 def init_database():
-    try:
-        db_query("ALTER TABLE videos ADD COLUMN IF NOT EXISTS quality TEXT", fetch=False)
-        db_query("ALTER TABLE videos ADD COLUMN IF NOT EXISTS duration TEXT", fetch=False)
-    except:
-        pass
+    # إنشاء جدول الإعدادات (لتخزين حالة الأزرار)
+    db_query("""
+        CREATE TABLE IF NOT EXISTS bot_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """, fetch=False)
     
+    # إدراج قيمة افتراضية لأزرار المزيد
+    db_query("""
+        INSERT INTO bot_settings (key, value) 
+        VALUES ('show_more_buttons', 'false')
+        ON CONFLICT (key) DO NOTHING
+    """, fetch=False)
+    
+    # إنشاء جدول الطلبات المعلقة (بدلاً من الذاكرة)
+    db_query("""
+        CREATE TABLE IF NOT EXISTS pending_posts (
+            v_id TEXT PRIMARY KEY,
+            data TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP + INTERVAL '1 day'
+        )
+    """, fetch=False)
+    
+    # إنشاء جدول الفيديوهات
     db_query("""
         CREATE TABLE IF NOT EXISTS videos (
             v_id TEXT PRIMARY KEY,
@@ -62,6 +126,7 @@ def init_database():
         )
     """, fetch=False)
     
+    # إنشاء جدول المستخدمين
     db_query("""
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
@@ -70,6 +135,7 @@ def init_database():
         )
     """, fetch=False)
     
+    # إنشاء جدول المشاهدات
     db_query("""
         CREATE TABLE IF NOT EXISTS views_log (
             id SERIAL PRIMARY KEY,
@@ -81,18 +147,81 @@ def init_database():
     
     print("✅ تم إنشاء الجداول بنجاح")
 
-# ===== [4] دالة استخراج اسم المسلسل الطبيعي =====
+# ===== [4] دوال إدارة حالة الأزرار (مخزنة في قاعدة البيانات) =====
+def get_show_more_buttons():
+    result = db_query("SELECT value FROM bot_settings WHERE key = 'show_more_buttons'")
+    if result and result[0][0] == 'true':
+        return True
+    return False
+
+def set_show_more_buttons(value):
+    str_value = 'true' if value else 'false'
+    db_query("UPDATE bot_settings SET value = %s, updated_at = CURRENT_TIMESTAMP WHERE key = 'show_more_buttons'", (str_value,), fetch=False)
+
+# ===== [5] دوال إدارة الطلبات المعلقة (بدلاً من الذاكرة) =====
+def save_pending_post(v_id, data):
+    db_query("""
+        INSERT INTO pending_posts (v_id, data, expires_at) 
+        VALUES (%s, %s, CURRENT_TIMESTAMP + INTERVAL '1 day')
+        ON CONFLICT (v_id) DO UPDATE SET 
+        data = EXCLUDED.data,
+        expires_at = EXCLUDED.expires_at
+    """, (v_id, json.dumps(data)), fetch=False)
+
+def get_pending_post(v_id):
+    result = db_query("SELECT data FROM pending_posts WHERE v_id = %s AND expires_at > CURRENT_TIMESTAMP", (v_id,))
+    if result:
+        return json.loads(result[0][0])
+    return None
+
+def delete_pending_post(v_id):
+    db_query("DELETE FROM pending_posts WHERE v_id = %s", (v_id,), fetch=False)
+
+def clean_expired_posts():
+    db_query("DELETE FROM pending_posts WHERE expires_at <= CURRENT_TIMESTAMP", fetch=False)
+
+# ===== [6] دالة استخراج اسم المسلسل =====
 def extract_series_name(text):
     if not text:
         return "مسلسل"
     return text.strip().split('\n')[0][:100]
 
-# ===== [5] دالة حساب مدة الفيديو =====
+# ===== [7] دالة حساب مدة الفيديو =====
 def format_duration(seconds):
     minutes = seconds // 60
     return f"{minutes} دقيقة"
 
-# ===== [6] مراقبة قناة المصدر =====
+# ===== [8] دالة إنشاء أزرار الحلقات (مع Pagination) =====
+def create_episode_buttons(title, current_v_id, me_username):
+    """إنشاء أزرار الحلقات مع Pagination (10 أزرار فقط)"""
+    other_eps = db_query("""
+        SELECT ep_num, v_id FROM videos 
+        WHERE title = %s AND ep_num > 0 AND v_id != %s
+        ORDER BY ep_num ASC
+        LIMIT 30
+    """, (title, current_v_id))
+    
+    if not other_eps:
+        return []
+    
+    keyboard = []
+    row = []
+    
+    for i, (o_ep, o_vid) in enumerate(other_eps, 1):
+        row.append(InlineKeyboardButton(
+            str(o_ep), 
+            url=f"https://t.me/{me_username}?start={o_vid}"
+        ))
+        if i % 5 == 0:
+            keyboard.append(row)
+            row = []
+    
+    if row:
+        keyboard.append(row)
+    
+    return keyboard
+
+# ===== [9] مراقبة قناة المصدر (معدلة لاستخدام قاعدة البيانات) =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.channel)
 async def monitor_source_channel(client, message):
     try:
@@ -101,13 +230,15 @@ async def monitor_source_channel(client, message):
             series_name = extract_series_name(message.caption or "")
             duration = format_duration(message.video.duration) if message.video.duration else "45 دقيقة"
             
-            pending_posts[v_id] = {
+            data = {
                 'video_id': v_id,
                 'series_name': series_name,
                 'duration': duration,
                 'status': 'waiting_for_poster',
                 'video_message_id': message.id
             }
+            
+            save_pending_post(v_id, data)
             
             await client.send_message(
                 SOURCE_CHANNEL,
@@ -116,11 +247,19 @@ async def monitor_source_channel(client, message):
             return
 
         if message.photo:
-            for v_id, data in list(pending_posts.items()):
-                if data['status'] == 'waiting_for_poster':
+            # تنظيف الطلبات المنتهية
+            clean_expired_posts()
+            
+            # البحث عن طلب معلق
+            all_pending = db_query("SELECT v_id, data FROM pending_posts WHERE expires_at > CURRENT_TIMESTAMP")
+            
+            for v_id, data_json in all_pending:
+                data = json.loads(data_json)
+                if data.get('status') == 'waiting_for_poster':
                     data['poster_id'] = message.id
                     data['poster_message_id'] = message.id
                     data['status'] = 'waiting_for_details'
+                    save_pending_post(v_id, data)
                     
                     await client.send_message(
                         SOURCE_CHANNEL,
@@ -135,36 +274,38 @@ async def monitor_source_channel(client, message):
             return
 
         if message.text and not message.text.startswith('/'):
-            for v_id, data in list(pending_posts.items()):
-                if data['status'] == 'waiting_for_details':
-                    text = message.text.strip()
-                    match = re.search(r'(\d+)(?:\s+)?(.+)?', text)
-                    
-                    if match:
-                        ep_num = int(match.group(1))
-                        quality = match.group(2) if match.group(2) else "HD"
-                        
+            text = message.text.strip()
+            match = re.search(r'(\d+)(?:\s+)?(.+)?', text)
+            
+            if match:
+                ep_num = int(match.group(1))
+                quality = match.group(2) if match.group(2) else "HD"
+                
+                # البحث عن طلب معلق في انتظار التفاصيل
+                all_pending = db_query("SELECT v_id, data FROM pending_posts WHERE expires_at > CURRENT_TIMESTAMP")
+                
+                for v_id, data_json in all_pending:
+                    data = json.loads(data_json)
+                    if data.get('status') == 'waiting_for_details':
                         data['ep_num'] = ep_num
                         data['quality'] = quality
-                        
                         await publish_to_channel(client, v_id, data)
                         return
-                    else:
-                        await client.send_message(
-                            SOURCE_CHANNEL,
-                            "❌ صيغة غير صحيحة. مثال: `18 1080p`"
-                        )
-                        return
-            
-            await client.send_message(
-                SOURCE_CHANNEL,
-                "📝 تم استلام النص ولكن لا توجد حلقة في انتظار التفاصيل."
-            )
+                
+                await client.send_message(
+                    SOURCE_CHANNEL,
+                    "📝 تم استلام النص ولكن لا توجد حلقة في انتظار التفاصيل."
+                )
+            else:
+                await client.send_message(
+                    SOURCE_CHANNEL,
+                    "❌ صيغة غير صحيحة. مثال: `18 1080p`"
+                )
             
     except Exception as e:
         logging.error(f"خطأ في مراقبة القناة: {e}")
 
-# ===== [7] دالة النشر في القناة =====
+# ===== [10] دالة النشر في القناة =====
 async def publish_to_channel(client, v_id, data):
     try:
         series_name = data['series_name']
@@ -223,9 +364,10 @@ async def publish_to_channel(client, v_id, data):
             f"🔗 رابط المنشور: {post_link}"
         )
         
-        logging.info(f"✅ تم نشر البوستر للحلقة {v_id}: {series_name} - حلقة {ep_num}")
+        # حذف الطلب المعلق
+        delete_pending_post(v_id)
         
-        del pending_posts[v_id]
+        logging.info(f"✅ تم نشر البوستر للحلقة {v_id}: {series_name} - حلقة {ep_num}")
         
     except Exception as e:
         logging.error(f"خطأ في النشر: {e}")
@@ -234,7 +376,7 @@ async def publish_to_channel(client, v_id, data):
             f"❌ حدث خطأ أثناء النشر: {e}"
         )
 
-# ===== [8] دالة عرض الحلقة في البوت =====
+# ===== [11] دالة عرض الحلقة في البوت =====
 async def show_episode(client, message, v_id):
     try:
         db_data = db_query("SELECT title, ep_num, quality, duration FROM videos WHERE v_id = %s", (v_id,))
@@ -244,36 +386,14 @@ async def show_episode(client, message, v_id):
         
         title, ep, quality, duration = db_data[0]
         
-        # ✅ بناء أزرار المزيد من الحلقات
+        # بناء أزرار المزيد من الحلقات
         keyboard = []
         
-        # طباعة للتحقق
-        print(f"SHOW_MORE_BUTTONS = {SHOW_MORE_BUTTONS}")
-        
-        if SHOW_MORE_BUTTONS:
-            print(f"جلب حلقات أخرى للمسلسل: {title}")
-            other_eps = db_query("""
-                SELECT ep_num, v_id FROM videos 
-                WHERE title = %s AND ep_num > 0 AND v_id != %s
-                ORDER BY ep_num ASC
-            """, (title, v_id))
-            
-            print(f"عدد الحلقات الأخرى: {len(other_eps) if other_eps else 0}")
-            
-            if other_eps:
-                row = []
-                me = await client.get_me()
-                for o_ep, o_vid in other_eps:
-                    row.append(InlineKeyboardButton(
-                        str(o_ep), 
-                        url=f"https://t.me/{me.username}?start={o_vid}"
-                    ))
-                    if len(row) == 5:
-                        keyboard.append(row)
-                        row = []
-                if row:
-                    keyboard.append(row)
-                print(f"تم بناء {len(keyboard)} صف من الأزرار")
+        if get_show_more_buttons():
+            me = await client.get_me()
+            episode_buttons = create_episode_buttons(title, v_id, me.username)
+            if episode_buttons:
+                keyboard.extend(episode_buttons)
         
         # إضافة زر القناة الاحتياطية
         keyboard.append([InlineKeyboardButton("🔗 القناة الاحتياطية", url=BACKUP_CHANNEL_LINK)])
@@ -284,8 +404,6 @@ async def show_episode(client, message, v_id):
             caption += f"📺 الجودة: {quality}\n"
         if duration:
             caption += f"⏱ المدة: {duration}"
-        
-        print(f"إرسال الحلقة مع {len(keyboard)} صف أزرار")
         
         await client.copy_message(
             message.chat.id,
@@ -309,7 +427,7 @@ async def show_episode(client, message, v_id):
         logging.error(f"خطأ في show_episode: {e}")
         await message.reply_text("⚠️ حدث خطأ")
 
-# ===== [9] أمر البدء =====
+# ===== [12] أمر البدء =====
 @app.on_message(filters.command("start") & filters.private)
 async def smart_start(client, message):
     username = message.from_user.username or ""
@@ -330,16 +448,16 @@ async def smart_start(client, message):
 🆘 @Mohsen_7e"""
         await message.reply_text(welcome_text)
 
-# ===== [10] أمر التحكم في أزرار المزيد =====
+# ===== [13] أمر التحكم في أزرار المزيد =====
 @app.on_message(filters.command("toggle_buttons") & filters.user(ADMIN_ID))
 async def toggle_buttons(client, message):
-    global SHOW_MORE_BUTTONS
-    SHOW_MORE_BUTTONS = not SHOW_MORE_BUTTONS
-    status = "✅ مفعلة" if SHOW_MORE_BUTTONS else "❌ معطلة"
+    current = get_show_more_buttons()
+    new_value = not current
+    set_show_more_buttons(new_value)
+    status = "✅ مفعلة" if new_value else "❌ معطلة"
     await message.reply_text(f"أزرار المزيد من الحلقات: {status}")
-    print(f"تم تغيير SHOW_MORE_BUTTONS إلى {SHOW_MORE_BUTTONS}")
 
-# ===== [11] أمر فحص القناة (معدل) =====
+# ===== [14] أمر فحص القناة (معدل) =====
 @app.on_message(filters.command("scan_source") & filters.user(ADMIN_ID))
 async def scan_source_command(client, message):
     msg = await message.reply_text("🔄 جاري فحص قناة المصدر...")
@@ -355,7 +473,7 @@ async def scan_source_command(client, message):
             await msg.edit_text(f"❌ البوت ليس عضواً في قناة المصدر")
             return
         
-        # جلب آخر 200 رسالة من القناة
+        # جلب آخر 200 رسالة من القناة (مع معالجة الأخطاء)
         async for post in client.get_chat_history(SOURCE_CHANNEL, limit=200):
             stats['scanned'] += 1
             
@@ -392,6 +510,7 @@ async def scan_source_command(client, message):
         return
     
     total = db_query("SELECT COUNT(*) FROM videos")[0][0]
+    buttons_status = "مفعلة" if get_show_more_buttons() else "معطلة"
     result = f"""✅ **تم الفحص**
 
 📊 الإحصائيات:
@@ -399,11 +518,11 @@ async def scan_source_command(client, message):
 • حلقات محدثة: {stats['updated']}
 • أخطاء: {stats['errors']}
 
-📁 إجمالي الحلقات في قاعدة البيانات: {total}
-🔘 حالة أزرار المزيد: {'مفعلة' if SHOW_MORE_BUTTONS else 'معطلة'}"""
+📁 إجمالي الحلقات: {total}
+🔘 حالة أزرار المزيد: {buttons_status}"""
     await msg.edit_text(result)
 
-# ===== [12] أمر الإحصائيات =====
+# ===== [15] أمر الإحصائيات =====
 @app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
 async def smart_stats(client, message):
     total = db_query("SELECT COUNT(*) FROM videos")[0][0]
@@ -416,11 +535,13 @@ async def smart_stats(client, message):
         ORDER BY created_at DESC LIMIT 5
     """)
     
+    buttons_status = "مفعلة" if get_show_more_buttons() else "معطلة"
+    
     text = f"🤖 **إحصائيات البوت**\n\n"
     text += f"📁 إجمالي الحلقات: {total}\n"
     text += f"👥 عدد المستخدمين: {users}\n"
     text += f"👀 عدد المشاهدات: {views}\n"
-    text += f"🔘 أزرار المزيد: {'مفعلة' if SHOW_MORE_BUTTONS else 'معطلة'}\n\n"
+    text += f"🔘 أزرار المزيد: {buttons_status}\n\n"
     text += "🆕 **آخر 5 حلقات مضافة:**\n"
     
     for title, ep in recent:
@@ -428,7 +549,7 @@ async def smart_stats(client, message):
     
     await message.reply_text(text)
 
-# ===== [13] أمر اختبار الاتصال بالقنوات =====
+# ===== [16] أمر اختبار الاتصال بالقنوات =====
 @app.on_message(filters.command("test_channels") & filters.user(ADMIN_ID))
 async def test_channels(client, message):
     msg = await message.reply_text("🔄 جاري اختبار الاتصال بالقنوات...")
@@ -449,62 +570,75 @@ async def test_channels(client, message):
     except Exception as e:
         result += f"❌ قناة النشر: غير متصل - {e}\n"
     
-    # إرشادات
-    result += "\n📝 **للإصلاح:**\n"
-    result += "1. تأكد من تفعيل صلاحية 'مشاهدة الرسائل' للبوت في القناتين\n"
-    result += "2. أعد المحاولة بعد تفعيل الصلاحية"
-    
     await msg.edit_text(result)
 
-# ===== [14] أمر اختبار الأزرار =====
-@app.on_message(filters.command("test_buttons") & filters.user(ADMIN_ID))
-async def test_buttons(client, message):
-    """اختبار عرض الأزرار على حلقة محددة"""
-    command = message.text.split()
-    if len(command) < 2:
-        return await message.reply_text("❌ استخدم: /test_buttons v_id")
-    
-    v_id = command[1]
-    await show_episode(client, message, v_id)
+# ===== [17] أمر تنظيف الطلبات المنتهية =====
+@app.on_message(filters.command("clean_pending") & filters.user(ADMIN_ID))
+async def clean_pending(client, message):
+    clean_expired_posts()
+    await message.reply_text("✅ تم تنظيف الطلبات المنتهية")
 
-# ===== [15] التشغيل الرئيسي =====
+# ===== [18] التشغيل الرئيسي (بدون حذف ملف الجلسة) =====
 def main():
     print("🚀 تشغيل البوت...")
+    
+    # تهيئة قاعدة البيانات
     init_database()
+    
+    # تنظيف الطلبات المنتهية
+    clean_expired_posts()
     
     max_retries = 5
     retry_count = 0
     
     while retry_count < max_retries:
         try:
-            session_file = "railway_final_pro.session"
-            if os.path.exists(session_file):
-                os.remove(session_file)
-            
+            # لا تحذف ملف الجلسة! هذا مهم جداً
             print(f"📡 محاولة التشغيل {retry_count + 1}/{max_retries}")
             
             if not BOT_TOKEN:
                 print("❌ BOT_TOKEN غير موجود")
                 return
             
+            print("✅ تم التحقق من التوكن")
             app.run()
             break
             
         except FloodWait as e:
             retry_count += 1
-            print(f"⏳ Flood wait: {e.value} ثانية")
-            time.sleep(e.value)
+            wait_time = e.value
+            print(f"⏳ Flood wait: {wait_time} ثانية")
+            
+            # تخزين الوقت المتبقي في قاعدة البيانات
+            if wait_time > 300:  # أكثر من 5 دقائق
+                print("⚠️ وقت انتظار طويل، سيتم إعادة المحاولة لاحقاً")
+                time.sleep(60)  # انتظر دقيقة وحاول مجدداً
+            else:
+                time.sleep(wait_time)
                 
         except Exception as e:
             retry_count += 1
-            print(f"❌ خطأ: {e}")
+            print(f"❌ خطأ: {type(e).__name__}: {e}")
+            
             if retry_count < max_retries:
-                time.sleep(30 * retry_count)
+                wait = 30 * retry_count
+                print(f"⏳ الانتظار {wait} ثانية...")
+                time.sleep(wait)
     
     if retry_count >= max_retries:
         print("❌ فشل تشغيل البوت بعد 5 محاولات")
     else:
         print("✅ تم تشغيل البوت بنجاح!")
+
+# ===== [19] معالجة إيقاف التشغيل =====
+import atexit
+
+@atexit.register
+def cleanup():
+    """تنظيف عند إيقاف البوت"""
+    print("🔄 جاري تنظيف الاتصالات...")
+    db_pool.close_all()
+    print("✅ تم تنظيف الاتصالات")
 
 if __name__ == "__main__":
     main()
