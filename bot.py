@@ -1,4 +1,46 @@
-import os, psycopg2, logging, re, asyncio, time, random
+# أضف هذا الاستيراد إن لم يكن موجوداً
+from pyrogram.errors import FloodWait
+import asyncio
+import time
+
+# متغير لتتبع وقت آخر طلب
+last_request_time = {}
+REQUEST_LIMIT = 3  # عدد الطلبات المسموح بها
+TIME_WINDOW = 10   # خلال 10 ثواني
+
+@app.on_message(filters.private)
+async def rate_limit_handler(client, message):
+    """معالج الحد من الطلبات"""
+    user_id = message.from_user.id
+    current_time = time.time()
+    
+    # تنظيف السجلات القديمة
+    if user_id in last_request_time:
+        last_request_time[user_id] = [
+            t for t in last_request_time[user_id] 
+            if current_time - t < TIME_WINDOW
+        ]
+    else:
+        last_request_time[user_id] = []
+    
+    # التحقق من عدد الطلبات
+    if len(last_request_time[user_id]) >= REQUEST_LIMIT:
+        wait_time = TIME_WINDOW - (current_time - last_request_time[user_id][0])
+        if wait_time > 0:
+            logging.warning(f"⚠️ مستخدم {user_id} تجاوز الحد، انتظر {wait_time:.0f} ثانية")
+            await message.reply_text(
+                f"⏳ أنت تطلب بسرعة كبيرة!\n"
+                f"يرجى الانتظار {wait_time:.0f} ثانية ثم حاول مجدداً.\n"
+                f"هذا لحماية البوت من الضغط العالي."
+            )
+            return  # لا تمرر الرسالة للمعالجة
+    
+    # سجل الطلب الحالي
+    last_request_time[user_id].append(current_time)
+    
+    # اسمح للرسالة بالمرور للمعالجات الأخرى
+    return
+    import os, psycopg2, logging, re, asyncio, time, random
 from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
