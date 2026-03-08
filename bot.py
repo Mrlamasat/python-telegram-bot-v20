@@ -1,5 +1,5 @@
 import os, psycopg2, logging, re, asyncio, time, random
-from datetime import datetime
+from datetime import datetime, timedelta
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
@@ -20,6 +20,11 @@ PUBLISH_CHANNEL = -1003554018307
 # ===== [1.1] التحكم في المزيد من الحلقات =====
 SHOW_MORE_BUTTONS = True
 
+# ===== [1.2] نظام الحماية من FloodWait =====
+user_last_request = {}
+REQUEST_LIMIT = 5  # عدد الطلبات المسموح بها
+TIME_WINDOW = 10   # خلال 10 ثواني
+
 app = Client("railway_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # ===== [2] كلمات عشوائية للتشفير =====
@@ -33,20 +38,23 @@ def encrypt_title(title):
         return f"🎬 {word[::-1]} {random.randint(10,99)}"
     return f"🎬 {random.choice(ENCRYPTION_WORDS)} {random.randint(10,99)}"
 
-# ===== [3] دالة قاعدة البيانات =====
-def db_query(query, params=(), fetch=True):
-    try:
-        conn = psycopg2.connect(DATABASE_URL, sslmode="require")
-        cur = conn.cursor()
-        cur.execute(query, params)
-        res = cur.fetchall() if fetch else None
-        conn.commit()
-        cur.close()
-        conn.close()
-        return res
-    except Exception as e:
-        logging.error(f"DB Error: {e}")
-        return []
+# ===== [3] دالة قاعدة البيانات مع إعادة المحاولة =====
+def db_query(query, params=(), fetch=True, retry=3):
+    for attempt in range(retry):
+        try:
+            conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+            cur = conn.cursor()
+            cur.execute(query, params)
+            res = cur.fetchall() if fetch else None
+            conn.commit()
+            cur.close()
+            conn.close()
+            return res
+        except Exception as e:
+            logging.error(f"DB Error (attempt {attempt+1}): {e}")
+            if attempt == retry - 1:
+                return [] if fetch else None
+            time.sleep(1)
 
 # ===== [4] إنشاء الجداول =====
 def init_database():
@@ -89,24 +97,30 @@ def get_episode_buttons(series_name, current_id, bot_username):
 # ===== [7] متابعة التعديلات على الفيديوهات =====
 @app.on_edited_message(filters.chat(SOURCE_CHANNEL) & filters.video)
 async def on_video_edit(client, message):
-    v_id = str(message.id)
-    new_series = extract_series_name(message.caption or "")
-    new_ep = extract_episode_number(message.caption or "")
-    if new_series and new_ep > 0:
-        db_query("UPDATE videos SET series_name = %s, ep_num = %s WHERE v_id = %s", (new_series, new_ep, v_id), fetch=False)
-        logging.info(f"✏️ تحديث فيديو {v_id}: {new_series} - حلقة {new_ep}")
+    try:
+        v_id = str(message.id)
+        new_series = extract_series_name(message.caption or "")
+        new_ep = extract_episode_number(message.caption or "")
+        if new_series and new_ep > 0:
+            db_query("UPDATE videos SET series_name = %s, ep_num = %s WHERE v_id = %s", (new_series, new_ep, v_id), fetch=False)
+            logging.info(f"✏️ تحديث فيديو {v_id}: {new_series} - حلقة {new_ep}")
+    except Exception as e:
+        logging.error(f"Error in on_video_edit: {e}")
 
 # ===== [8] متابعة التعديلات على البوسترات =====
 @app.on_edited_message(filters.chat(SOURCE_CHANNEL) & filters.photo)
 async def on_poster_edit(client, message):
-    poster_id = message.id
-    new_series = extract_series_name(message.caption or "")
-    if new_series:
-        db_query("UPDATE posters SET series_name = %s WHERE poster_id = %s", (new_series, poster_id), fetch=False)
-        video = db_query("SELECT video_id FROM posters WHERE poster_id = %s", (poster_id,))
-        if video and video[0][0]:
-            db_query("UPDATE videos SET series_name = %s WHERE v_id = %s", (new_series, video[0][0]), fetch=False)
-            logging.info(f"✏️ تحديث بوستر {poster_id} → {new_series}")
+    try:
+        poster_id = message.id
+        new_series = extract_series_name(message.caption or "")
+        if new_series:
+            db_query("UPDATE posters SET series_name = %s WHERE poster_id = %s", (new_series, poster_id), fetch=False)
+            video = db_query("SELECT video_id FROM posters WHERE poster_id = %s", (poster_id,))
+            if video and video[0][0]:
+                db_query("UPDATE videos SET series_name = %s WHERE v_id = %s", (new_series, video[0][0]), fetch=False)
+                logging.info(f"✏️ تحديث بوستر {poster_id} → {new_series}")
+    except Exception as e:
+        logging.error(f"Error in on_poster_edit: {e}")
 
 # ===== [9] مراقبة قناة المصدر =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.photo))
@@ -136,48 +150,92 @@ async def monitor_source(client, message):
                 ]])
                 await message.reply_text(f"🖼 تم ربط {s_name}\nاختر الجودة:", reply_markup=kb)
     except Exception as e: 
-        logging.error(f"Error: {e}")
+        logging.error(f"Error in monitor_source: {e}")
 
 # ===== [10] معالجة الجودة =====
 @app.on_callback_query(filters.regex(r"^q_"))
 async def handle_quality(client, cb):
-    _, quality, v_id = cb.data.split('_')
-    db_query("UPDATE pending_posts SET step = 'waiting_for_episode', quality = %s WHERE video_id = %s", (quality, v_id), fetch=False)
-    await cb.message.edit_text(f"📊 الجودة: {quality}\nأرسل رقم الحلقة الآن.")
+    try:
+        _, quality, v_id = cb.data.split('_')
+        db_query("UPDATE pending_posts SET step = 'waiting_for_episode', quality = %s WHERE video_id = %s", (quality, v_id), fetch=False)
+        await cb.message.edit_text(f"📊 الجودة: {quality}\nأرسل رقم الحلقة الآن.")
+    except Exception as e:
+        logging.error(f"Error in handle_quality: {e}")
 
 # ===== [11] استقبال رقم الحلقة مع النشر التلقائي =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.text & ~filters.regex(r"^/"))
 async def receive_episode(client, message):
-    ep_num = extract_episode_number(message.text)
-    if ep_num == 0: return
-
-    pending = db_query("SELECT video_id, poster_id, quality FROM pending_posts WHERE step = 'waiting_for_episode' ORDER BY created_at DESC LIMIT 1")
-    if not pending: return
-
-    v_id, p_id, q = pending[0]
-    poster_data = db_query("SELECT series_name FROM posters WHERE poster_id = %s", (p_id,))
-    if not poster_data: return
-    s_name = poster_data[0][0]
-
-    db_query("INSERT INTO videos (v_id, series_name, ep_num, quality) VALUES (%s, %s, %s, %s)", (v_id, s_name, ep_num, q), fetch=False)
-    db_query("DELETE FROM pending_posts WHERE video_id = %s", (v_id,), fetch=False)
-
     try:
-        encrypted = encrypt_title(s_name)
-        me = await client.get_me()
-        btn = InlineKeyboardMarkup([[InlineKeyboardButton("🎬 مشاهدة الحلقة", url=f"https://t.me/{me.username}?start={v_id}")]])
-        caption = f"🎬 **{encrypted}**\n🔢 **الحلقة {ep_num}**\n📺 **الجودة {q}**"
-        await client.copy_message(PUBLISH_CHANNEL, SOURCE_CHANNEL, int(p_id), caption=caption, reply_markup=btn)
-        await message.reply_text(f"✅ تم النشر: {s_name} - حلقة {ep_num}")
-    except Exception as e: 
-        logging.error(f"Publish error: {e}")
+        ep_num = extract_episode_number(message.text)
+        if ep_num == 0: return
 
-# ===== [12] أمر البدء مع أزرار المزيد من الحلقات (معدل مع علامة ✅) =====
+        pending = db_query("SELECT video_id, poster_id, quality FROM pending_posts WHERE step = 'waiting_for_episode' ORDER BY created_at DESC LIMIT 1")
+        if not pending: return
+
+        v_id, p_id, q = pending[0]
+        poster_data = db_query("SELECT series_name FROM posters WHERE poster_id = %s", (p_id,))
+        if not poster_data: return
+        s_name = poster_data[0][0]
+
+        db_query("INSERT INTO videos (v_id, series_name, ep_num, quality) VALUES (%s, %s, %s, %s)", (v_id, s_name, ep_num, q), fetch=False)
+        db_query("DELETE FROM pending_posts WHERE video_id = %s", (v_id,), fetch=False)
+
+        try:
+            encrypted = encrypt_title(s_name)
+            me = await client.get_me()
+            btn = InlineKeyboardMarkup([[InlineKeyboardButton("🎬 مشاهدة الحلقة", url=f"https://t.me/{me.username}?start={v_id}")]])
+            caption = f"🎬 **{encrypted}**\n🔢 **الحلقة {ep_num}**\n📺 **الجودة {q}**"
+            await client.copy_message(PUBLISH_CHANNEL, SOURCE_CHANNEL, int(p_id), caption=caption, reply_markup=btn)
+            await message.reply_text(f"✅ تم النشر: {s_name} - حلقة {ep_num}")
+        except Exception as e: 
+            logging.error(f"Publish error: {e}")
+    except Exception as e:
+        logging.error(f"Error in receive_episode: {e}")
+
+# ===== [12] نظام الحماية من FloodWait للمستخدمين =====
+def check_rate_limit(user_id):
+    """التحقق من حد الطلبات للمستخدم"""
+    now = datetime.now()
+    
+    # تنظيف الطلبات القديمة
+    if user_id in user_last_request:
+        user_last_request[user_id] = [
+            t for t in user_last_request[user_id] 
+            if now - t < timedelta(seconds=TIME_WINDOW)
+        ]
+    else:
+        user_last_request[user_id] = []
+    
+    # التحقق من العدد
+    if len(user_last_request[user_id]) >= REQUEST_LIMIT:
+        oldest = user_last_request[user_id][0]
+        wait_time = TIME_WINDOW - (now - oldest).seconds
+        return False, wait_time
+    
+    # تسجيل الطلب
+    user_last_request[user_id].append(now)
+    return True, 0
+
+# ===== [13] أمر البدء مع أزرار المزيد من الحلقات =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
+    user_id = message.from_user.id
+    
+    # التحقق من حد الطلبات
+    allowed, wait_time = check_rate_limit(user_id)
+    if not allowed:
+        await message.reply_text(
+            f"⏳ أنت تطلب بسرعة كبيرة!\n"
+            f"يرجى الانتظار {wait_time} ثانية ثم حاول مجدداً."
+        )
+        return
+    
     # تسجيل المستخدم
-    db_query("INSERT INTO users (user_id, username, first_name, last_used) VALUES (%s, %s, %s, CURRENT_TIMESTAMP) ON CONFLICT (user_id) DO UPDATE SET last_used = CURRENT_TIMESTAMP", 
-             (message.from_user.id, message.from_user.username or "", message.from_user.first_name or ""), fetch=False)
+    try:
+        db_query("INSERT INTO users (user_id, username, first_name, last_used) VALUES (%s, %s, %s, CURRENT_TIMESTAMP) ON CONFLICT (user_id) DO UPDATE SET last_used = CURRENT_TIMESTAMP", 
+                 (user_id, message.from_user.username or "", message.from_user.first_name or ""), fetch=False)
+    except:
+        pass
     
     if len(message.command) > 1:
         v_id = message.command[1]
@@ -201,7 +259,7 @@ async def start_cmd(client, message):
         else:
             s_name, ep_num, quality = data[0]
         
-        # بناء الأزرار مع تمييز الحلقة الحالية
+        # بناء الأزرار
         keyboard = []
         
         if SHOW_MORE_BUTTONS:
@@ -213,7 +271,7 @@ async def start_cmd(client, message):
                 me = await client.get_me()
                 bot_username = me.username
                 
-                # إضافة الحلقة الحالية أولاً مع علامة ✅
+                # إضافة الحلقة الحالية أولاً
                 row.append(InlineKeyboardButton(f"✅ {ep_num}", url=f"https://t.me/{bot_username}?start={v_id}"))
                 
                 # إضافة باقي الحلقات
@@ -229,13 +287,22 @@ async def start_cmd(client, message):
         keyboard.append([InlineKeyboardButton("🔗 القناة الاحتياطية", url=BACKUP_CHANNEL_LINK)])
         
         # إرسال الفيديو
-        await client.copy_message(
-            message.chat.id, SOURCE_CHANNEL, int(v_id),
-            caption=f"🎬 {s_name} - الحلقة {ep_num}\n📺 الجودة: {quality}",
-            reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None
-        )
-        
-        db_query("UPDATE videos SET views = views + 1 WHERE v_id = %s", (v_id,), fetch=False)
+        try:
+            await client.copy_message(
+                message.chat.id, SOURCE_CHANNEL, int(v_id),
+                caption=f"🎬 {s_name} - الحلقة {ep_num}\n📺 الجودة: {quality}",
+                reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None
+            )
+            
+            db_query("UPDATE videos SET views = views + 1 WHERE v_id = %s", (v_id,), fetch=False)
+        except FloodWait as e:
+            logging.warning(f"⚠️ FloodWait: {e.value} ثانية")
+            await message.reply_text(f"⏳ البوت مشغول، انتظر {e.value} ثانية ثم حاول مجدداً")
+            await asyncio.sleep(e.value)
+            # إعادة المحاولة مرة واحدة
+            await start_cmd(client, message)
+        except Exception as e:
+            await message.reply_text(f"❌ خطأ في الإرسال: {e}")
     else:
         welcome_text = """👋 **بوت المشاهدة الذكي**
 
@@ -250,7 +317,7 @@ async def start_cmd(client, message):
 🆘 @Mohsen_7e"""
         await message.reply_text(welcome_text)
 
-# ===== [13] أمر الإحصائيات =====
+# ===== [14] أمر الإحصائيات =====
 @app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
 async def stats_cmd(client, message):
     total = db_query("SELECT COUNT(*) FROM videos")[0][0]
@@ -263,7 +330,7 @@ async def stats_cmd(client, message):
     
     await message.reply_text(text)
 
-# ===== [14] أمر فحص الطلبات المعلقة =====
+# ===== [15] أمر فحص الطلبات المعلقة =====
 @app.on_message(filters.command("check_pending") & filters.user(ADMIN_ID))
 async def check_pending(client, message):
     pending = db_query("SELECT video_id, step, quality FROM pending_posts ORDER BY created_at DESC")
@@ -275,13 +342,13 @@ async def check_pending(client, message):
         text += f"• {vid} | {step} | {q or '?'}\n"
     await message.reply_text(text)
 
-# ===== [15] أمر إعادة تعيين الطلبات المعلقة =====
+# ===== [16] أمر إعادة تعيين الطلبات المعلقة =====
 @app.on_message(filters.command("reset_pending") & filters.user(ADMIN_ID))
 async def reset_pending(client, message):
     db_query("DELETE FROM pending_posts", fetch=False)
     await message.reply_text("✅ تم حذف جميع الطلبات المعلقة")
 
-# ===== [16] أمر اختبار النشر =====
+# ===== [17] أمر اختبار النشر =====
 @app.on_message(filters.command("test_publish") & filters.user(ADMIN_ID))
 async def test_publish(client, message):
     try:
@@ -290,23 +357,34 @@ async def test_publish(client, message):
     except Exception as e:
         await message.reply_text(f"❌ فشل الإرسال: {e}")
 
-# ===== [17] أمر اختبار =====
+# ===== [18] أمر اختبار =====
 @app.on_message(filters.command("test") & filters.private)
 async def test_cmd(client, message):
     await message.reply_text("✅ البوت يعمل!")
 
-# ===== [18] التشغيل الرئيسي =====
+# ===== [19] أمر تنظيف حد الطلبات =====
+@app.on_message(filters.command("clear_limits") & filters.user(ADMIN_ID))
+async def clear_limits(client, message):
+    global user_last_request
+    user_last_request = {}
+    await message.reply_text("✅ تم تنظيف جميع حدود الطلبات")
+
+# ===== [20] التشغيل الرئيسي =====
 def main():
-    print("🚀 تشغيل البوت المتكامل مع علامة ✅...")
+    print("🚀 تشغيل البوت مع نظام الحماية من FloodWait...")
     init_database()
     
-    try:
-        app.run()
-    except FloodWait as e:
-        print(f"⏳ انتظر {e.value} ثانية")
-        time.sleep(e.value)
-    except Exception as e:
-        print(f"❌ خطأ: {e}")
+    while True:  # حلقة لا نهائية لإعادة التشغيل التلقائي
+        try:
+            app.run()
+        except FloodWait as e:
+            wait_time = e.value
+            print(f"⏳ FloodWait عام: انتظر {wait_time} ثانية")
+            time.sleep(wait_time)
+        except Exception as e:
+            print(f"❌ خطأ: {e}")
+            print("🔄 إعادة التشغيل بعد 5 ثواني...")
+            time.sleep(5)
 
 if __name__ == "__main__":
     main()
