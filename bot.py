@@ -23,7 +23,7 @@ PUBLISH_CHANNEL = -1003554018307
 app = Client("railway_final_pro", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # ===== [1.1] متغيرات التحكم =====
-SHOW_MORE_BUTTONS = True
+SHOW_MORE_BUTTONS = False  # يبدأ معطلاً، يشغل بـ /toggle_buttons
 pending_posts = {}
 
 # ===== [2] دوال قاعدة البيانات =====
@@ -192,7 +192,7 @@ async def publish_to_channel(client, v_id, data):
             InlineKeyboardButton("🎬 مشاهدة الحلقة", url=bot_link)
         ]])
         
-        # ✅ نشر البوستر في القناة - مع رقم الحلقة فقط
+        # نشر البوستر في القناة
         sent_message = await client.copy_message(
             PUBLISH_CHANNEL,
             SOURCE_CHANNEL,
@@ -215,7 +215,7 @@ async def publish_to_channel(client, v_id, data):
         else:
             post_link = f"https://t.me/c/{str(PUBLISH_CHANNEL).replace('-100', '')}/{sent_message.id}"
         
-        # ✅ إرسال تأكيد للمشرف مع رابط النشر
+        # إرسال تأكيد للمشرف مع رابط النشر
         await client.send_message(
             SOURCE_CHANNEL,
             f"✅ **تم النشر بنجاح!**\n"
@@ -231,7 +231,7 @@ async def publish_to_channel(client, v_id, data):
         logging.error(f"خطأ في النشر: {e}")
         await client.send_message(
             SOURCE_CHANNEL,
-            f"❌ حدث خطأ أثناء النشر: {e}"
+            f"❌ حدث خطأ أثناء النشر: {e}\nتأكد من أن البوت مشرف في قناة النشر"
         )
 
 # ===== [8] دالة عرض الحلقة في البوت =====
@@ -246,6 +246,7 @@ async def show_episode(client, message, v_id):
         
         keyboard = []
         
+        # ✅ التحقق من SHOW_MORE_BUTTONS وتشغيل الأزرار إذا كان مفعلاً
         if SHOW_MORE_BUTTONS:
             other_eps = db_query("""
                 SELECT ep_num, v_id FROM videos 
@@ -269,7 +270,7 @@ async def show_episode(client, message, v_id):
         
         keyboard.append([InlineKeyboardButton("🔗 القناة الاحتياطية", url=BACKUP_CHANNEL_LINK)])
         
-        # ✅ في البوت - يظهر رقم الحلقة بوضوح
+        # في البوت - يظهر رقم الحلقة
         caption = f"<b>🎬 الحلقة {ep}</b>\n"
         if quality:
             caption += f"📺 الجودة: {quality}\n"
@@ -295,7 +296,7 @@ async def show_episode(client, message, v_id):
             pass
         
     except Exception as e:
-        logging.error(f"خطأ: {e}")
+        logging.error(f"خطأ في show_episode: {e}")
         await message.reply_text("⚠️ حدث خطأ")
 
 # ===== [9] أمر البدء =====
@@ -319,15 +320,15 @@ async def smart_start(client, message):
 🆘 @Mohsen_7e"""
         await message.reply_text(welcome_text)
 
-# ===== [10] أمر التحكم في الأزرار =====
+# ===== [10] أمر التحكم في أزرار المزيد =====
 @app.on_message(filters.command("toggle_buttons") & filters.user(ADMIN_ID))
 async def toggle_buttons(client, message):
     global SHOW_MORE_BUTTONS
     SHOW_MORE_BUTTONS = not SHOW_MORE_BUTTONS
     status = "✅ مفعلة" if SHOW_MORE_BUTTONS else "❌ معطلة"
-    await message.reply_text(f"أزرار المزيد: {status}")
+    await message.reply_text(f"أزرار المزيد من الحلقات: {status}")
 
-# ===== [11] أمر فحص القناة =====
+# ===== [11] أمر فحص القناة (معدل ليعمل مع القنوات الخاصة) =====
 @app.on_message(filters.command("scan_source") & filters.user(ADMIN_ID))
 async def scan_source_command(client, message):
     msg = await message.reply_text("🔄 جاري فحص قناة المصدر...")
@@ -335,7 +336,16 @@ async def scan_source_command(client, message):
     stats = {'scanned': 0, 'updated': 0, 'errors': 0}
     
     try:
-        async for post in client.get_chat_history(SOURCE_CHANNEL, limit=500):
+        # التأكد من أن البوت عضو في القناة
+        try:
+            chat = await client.get_chat(SOURCE_CHANNEL)
+            await msg.edit_text(f"✅ تم الاتصال بقناة المصدر: {chat.title}")
+        except Exception as e:
+            await msg.edit_text(f"❌ البوت ليس عضواً في قناة المصدر\nالرجاء إضافة البوت كمشرف في القناة أولاً")
+            return
+        
+        # جلب آخر 200 رسالة من القناة
+        async for post in client.get_chat_history(SOURCE_CHANNEL, limit=200):
             stats['scanned'] += 1
             
             try:
@@ -361,12 +371,13 @@ async def scan_source_command(client, message):
                 
             except Exception as e:
                 stats['errors'] += 1
+                logging.error(f"خطأ في فحص الرسالة: {e}")
             
-            if stats['updated'] % 50 == 0:
+            if stats['updated'] % 20 == 0 and stats['updated'] > 0:
                 await msg.edit_text(f"🔄 تم تحديث {stats['updated']} حلقة...")
     
     except Exception as e:
-        await msg.edit_text(f"❌ خطأ: {e}")
+        await msg.edit_text(f"❌ خطأ: {e}\nتأكد من أن البوت مشرف في القناة")
         return
     
     total = db_query("SELECT COUNT(*) FROM videos")[0][0]
@@ -377,7 +388,8 @@ async def scan_source_command(client, message):
 • حلقات محدثة: {stats['updated']}
 • أخطاء: {stats['errors']}
 
-📁 إجمالي الحلقات: {total}"""
+📁 إجمالي الحلقات في قاعدة البيانات: {total}
+🔘 حالة أزرار المزيد: {'مفعلة' if SHOW_MORE_BUTTONS else 'معطلة'}"""
     await msg.edit_text(result)
 
 # ===== [12] أمر الإحصائيات =====
@@ -387,15 +399,54 @@ async def smart_stats(client, message):
     users = db_query("SELECT COUNT(*) FROM users")[0][0]
     views = db_query("SELECT COUNT(*) FROM views_log")[0][0]
     
-    text = f"🤖 **الإحصائيات**\n\n"
-    text += f"📁 الحلقات: {total}\n"
-    text += f"👥 المستخدمين: {users}\n"
-    text += f"👀 المشاهدات: {views}\n"
-    text += f"🔘 أزرار المزيد: {'مفعلة' if SHOW_MORE_BUTTONS else 'معطلة'}"
+    # جلب آخر 5 حلقات مضافة
+    recent = db_query("""
+        SELECT title, ep_num, created_at FROM videos 
+        ORDER BY created_at DESC LIMIT 5
+    """)
+    
+    text = f"🤖 **إحصائيات البوت**\n\n"
+    text += f"📁 إجمالي الحلقات: {total}\n"
+    text += f"👥 عدد المستخدمين: {users}\n"
+    text += f"👀 عدد المشاهدات: {views}\n"
+    text += f"🔘 أزرار المزيد: {'مفعلة' if SHOW_MORE_BUTTONS else 'معطلة'}\n\n"
+    text += "🆕 **آخر 5 حلقات مضافة:**\n"
+    
+    for title, ep, date in recent:
+        text += f"• {title} - حلقة {ep}\n"
     
     await message.reply_text(text)
 
-# ===== [13] التشغيل الرئيسي =====
+# ===== [13] أمر اختبار الاتصال بالقنوات =====
+@app.on_message(filters.command("test_channels") & filters.user(ADMIN_ID))
+async def test_channels(client, message):
+    msg = await message.reply_text("🔄 جاري اختبار الاتصال بالقنوات...")
+    
+    result = "📊 **نتائج اختبار القنوات:**\n\n"
+    
+    # اختبار قناة المصدر
+    try:
+        chat = await client.get_chat(SOURCE_CHANNEL)
+        result += f"✅ قناة المصدر: {chat.title}\n"
+    except Exception as e:
+        result += f"❌ قناة المصدر: غير متصل - {e}\n"
+    
+    # اختبار قناة النشر
+    try:
+        chat = await client.get_chat(PUBLISH_CHANNEL)
+        result += f"✅ قناة النشر: {chat.title}\n"
+    except Exception as e:
+        result += f"❌ قناة النشر: غير متصل - {e}\n"
+    
+    # إرشادات
+    result += "\n📝 **للإصلاح:**\n"
+    result += "1. أضف البوت كمشرف في قناة المصدر\n"
+    result += "2. أضف البوت كمشرف في قناة النشر\n"
+    result += "3. تأكد من صلاحيات إرسال الرسائل"
+    
+    await msg.edit_text(result)
+
+# ===== [14] التشغيل الرئيسي =====
 def main():
     print("🚀 تشغيل البوت...")
     init_database()
@@ -409,7 +460,7 @@ def main():
             if os.path.exists(session_file):
                 os.remove(session_file)
             
-            print(f"📡 محاولة {retry_count + 1}/{max_retries}")
+            print(f"📡 محاولة التشغيل {retry_count + 1}/{max_retries}")
             
             if not BOT_TOKEN:
                 print("❌ BOT_TOKEN غير موجود")
@@ -420,7 +471,7 @@ def main():
             
         except FloodWait as e:
             retry_count += 1
-            print(f"⏳ الانتظار {e.value} ثانية")
+            print(f"⏳ Flood wait: {e.value} ثانية")
             time.sleep(e.value)
                 
         except Exception as e:
@@ -430,9 +481,9 @@ def main():
                 time.sleep(30 * retry_count)
     
     if retry_count >= max_retries:
-        print("❌ فشل التشغيل")
+        print("❌ فشل تشغيل البوت بعد 5 محاولات")
     else:
-        print("✅ تم التشغيل بنجاح!")
+        print("✅ تم تشغيل البوت بنجاح!")
 
 if __name__ == "__main__":
     main()
