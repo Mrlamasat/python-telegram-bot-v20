@@ -158,6 +158,21 @@ def get_episode_buttons(series_name, current_id, bot_user):
     return keyboard
 
 # ===== [7] متابعة التعديلات على الفيديوهات =====
+@app.on_message(filters.command("check_pending") & filters.user(ADMIN_ID))
+async def check_pending(client, message):
+    # عرض جميع الطلبات المعلقة
+    pending = db_query("SELECT video_id, step, created_at FROM pending_posts ORDER BY created_at DESC")
+    
+    if not pending:
+        await message.reply_text("📭 لا توجد طلبات معلقة حالياً")
+        return
+    
+    text = "📋 **الطلبات المعلقة:**\n\n"
+    for vid, step, date in pending:
+        text += f"• {vid} | {step} | {date}\n"
+    
+    await message.reply_text(text)
+    
 @app.on_edited_message(filters.chat(SOURCE_CHANNEL) & filters.channel)
 async def on_video_edit(client, message):
     """عند تعديل وصف الفيديو"""
