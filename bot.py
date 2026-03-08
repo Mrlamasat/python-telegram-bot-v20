@@ -73,12 +73,15 @@ def init_database():
         )
     """, fetch=False)
     
-    # جدول المستخدمين
+    # جدول المستخدمين (معدل ليتوافق مع قاعدة البيانات)
     db_query("""
         CREATE TABLE IF NOT EXISTS users (
-            user_id BIGINT PRIMARY KEY,
-            username TEXT,
-            last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT UNIQUE,
+            username VARCHAR(255),
+            first_name VARCHAR(255),
+            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """, fetch=False)
     
@@ -88,6 +91,7 @@ def init_database():
             video_id TEXT PRIMARY KEY,
             step TEXT,
             poster_id INTEGER,
+            quality TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """, fetch=False)
@@ -158,21 +162,6 @@ def get_episode_buttons(series_name, current_id, bot_user):
     return keyboard
 
 # ===== [7] متابعة التعديلات على الفيديوهات =====
-@app.on_message(filters.command("check_pending") & filters.user(ADMIN_ID))
-async def check_pending(client, message):
-    # عرض جميع الطلبات المعلقة
-    pending = db_query("SELECT video_id, step, created_at FROM pending_posts ORDER BY created_at DESC")
-    
-    if not pending:
-        await message.reply_text("📭 لا توجد طلبات معلقة حالياً")
-        return
-    
-    text = "📋 **الطلبات المعلقة:**\n\n"
-    for vid, step, date in pending:
-        text += f"• {vid} | {step} | {date}\n"
-    
-    await message.reply_text(text)
-    
 @app.on_edited_message(filters.chat(SOURCE_CHANNEL) & filters.channel)
 async def on_video_edit(client, message):
     """عند تعديل وصف الفيديو"""
@@ -225,74 +214,91 @@ async def on_poster_edit(client, message):
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.channel)
 async def monitor_source(client, message):
     """مراقبة الفيديوهات والبوسترات الجديدة"""
-    
-    # الحالة 1: فيديو جديد
-    if message.video:
-        v_id = str(message.id)
-        
-        # تخزين الفيديو في الطلبات المعلقة
-        db_query("""
-            INSERT INTO pending_posts (video_id, step) 
-            VALUES (%s, 'waiting_for_poster')
-            ON CONFLICT (video_id) DO UPDATE SET step = 'waiting_for_poster'
-        """, (v_id,), fetch=False)
-        
-        await client.send_message(
-            SOURCE_CHANNEL,
-            f"📹 **تم استلام الفيديو**\nالرجاء رفع البوستر الآن"
-        )
-        logging.info(f"📹 فيديو جديد {v_id} - في انتظار البوستر")
-    
-    # الحالة 2: بوستر جديد
-    elif message.photo:
-        poster_id = message.id
-        series_name = extract_series_name(message.caption or "")
-        
-        if not series_name:
-            await client.send_message(
-                SOURCE_CHANNEL,
-                "⚠️ الرجاء كتابة اسم المسلسل في وصف البوستر"
-            )
+    try:
+        # الحالة 1: فيديو جديد
+        if message.video:
+            v_id = str(message.id)
+            logging.info(f"📹 تم استلام فيديو: {v_id}")
+            
+            # تخزين الفيديو في الطلبات المعلقة
+            try:
+                db_query("""
+                    INSERT INTO pending_posts (video_id, step) 
+                    VALUES (%s, 'waiting_for_poster')
+                    ON CONFLICT (video_id) DO UPDATE SET step = 'waiting_for_poster'
+                """, (v_id,), fetch=False)
+                
+                await client.send_message(
+                    SOURCE_CHANNEL,
+                    f"📹 **تم استلام الفيديو**\nالمعرف: {v_id}\nالرجاء رفع البوستر الآن"
+                )
+                logging.info(f"✅ تم تسجيل الفيديو {v_id} في pending_posts")
+            except Exception as e:
+                logging.error(f"❌ فشل تسجيل الفيديو {v_id}: {e}")
+                await client.send_message(
+                    SOURCE_CHANNEL,
+                    f"❌ خطأ في تسجيل الفيديو: {e}"
+                )
             return
         
-        # البحث عن فيديو في انتظار البوستر
-        pending = db_query("""
-            SELECT video_id FROM pending_posts 
-            WHERE step = 'waiting_for_poster' 
-            ORDER BY created_at DESC LIMIT 1
-        """)
-        
-        if pending:
-            video_id = pending[0][0]
+        # الحالة 2: بوستر جديد
+        elif message.photo:
+            poster_id = message.id
+            series_name = extract_series_name(message.caption or "")
+            logging.info(f"🖼 تم استلام بوستر: {poster_id} باسم {series_name}")
             
-            # ربط البوستر بالفيديو
-            db_query("""
-                INSERT INTO posters (poster_id, series_name, video_id) 
-                VALUES (%s, %s, %s)
-            """, (poster_id, series_name, video_id), fetch=False)
+            if not series_name:
+                await client.send_message(
+                    SOURCE_CHANNEL,
+                    "⚠️ الرجاء كتابة اسم المسلسل في وصف البوستر"
+                )
+                return
             
-            # تحديث حالة الطلب
-            db_query("""
-                UPDATE pending_posts 
-                SET step = 'waiting_for_quality', poster_id = %s 
-                WHERE video_id = %s
-            """, (poster_id, video_id), fetch=False)
+            # البحث عن فيديو في انتظار البوستر
+            pending = db_query("""
+                SELECT video_id FROM pending_posts 
+                WHERE step = 'waiting_for_poster' 
+                ORDER BY created_at DESC LIMIT 1
+            """)
             
-            # عرض أزرار الجودة
-            quality_keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("HD", callback_data=f"quality_HD_{video_id}"),
-                    InlineKeyboardButton("SD", callback_data=f"quality_SD_{video_id}"),
-                    InlineKeyboardButton("4K", callback_data=f"quality_4K_{video_id}")
-                ]
-            ])
-            
-            await client.send_message(
-                SOURCE_CHANNEL,
-                f"🖼 **تم ربط البوستر**\nالمسلسل: {series_name}\nاختر جودة الفيديو:",
-                reply_markup=quality_keyboard
-            )
-            logging.info(f"🖼 بوستر {poster_id} مرتبط بالفيديو {video_id}")
+            if pending:
+                video_id = pending[0][0]
+                
+                # ربط البوستر بالفيديو
+                db_query("""
+                    INSERT INTO posters (poster_id, series_name, video_id) 
+                    VALUES (%s, %s, %s)
+                """, (poster_id, series_name, video_id), fetch=False)
+                
+                # تحديث حالة الطلب
+                db_query("""
+                    UPDATE pending_posts 
+                    SET step = 'waiting_for_quality', poster_id = %s 
+                    WHERE video_id = %s
+                """, (poster_id, video_id), fetch=False)
+                
+                # عرض أزرار الجودة
+                quality_keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("HD", callback_data=f"quality_HD_{video_id}"),
+                        InlineKeyboardButton("SD", callback_data=f"quality_SD_{video_id}"),
+                        InlineKeyboardButton("4K", callback_data=f"quality_4K_{video_id}")
+                    ]
+                ])
+                
+                await client.send_message(
+                    SOURCE_CHANNEL,
+                    f"🖼 **تم ربط البوستر**\nالمسلسل: {series_name}\nاختر جودة الفيديو:",
+                    reply_markup=quality_keyboard
+                )
+                logging.info(f"🖼 بوستر {poster_id} مرتبط بالفيديو {video_id}")
+            else:
+                await client.send_message(
+                    SOURCE_CHANNEL,
+                    "⚠️ لا يوجد فيديو في انتظار البوستر. الرجاء رفع الفيديو أولاً."
+                )
+    except Exception as e:
+        logging.error(f"❌ خطأ عام في monitor_source: {e}")
 
 # ===== [10] معالجة أزرار الجودة =====
 @app.on_callback_query()
@@ -373,15 +379,15 @@ async def receive_episode(client, message):
     
     logging.info(f"✅ تم حفظ الحلقة {video_id}: {series_name} - حلقة {ep_num} ({quality})")
 
-# ===== [12] أمر البدء =====
+# ===== [12] أمر البدء (معدل ليتوافق مع جدول users) =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
-    # تسجيل المستخدم
+    # تسجيل المستخدم (معدل ليتوافق مع هيكل قاعدة البيانات)
     db_query("""
-        INSERT INTO users (user_id, username, last_seen) 
-        VALUES (%s, %s, CURRENT_TIMESTAMP)
-        ON CONFLICT (user_id) DO UPDATE SET last_seen = CURRENT_TIMESTAMP
-    """, (message.from_user.id, message.from_user.username or ""), fetch=False)
+        INSERT INTO users (user_id, username, first_name, joined_at, last_used) 
+        VALUES (%s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT (user_id) DO UPDATE SET last_used = CURRENT_TIMESTAMP
+    """, (message.from_user.id, message.from_user.username or "", message.from_user.first_name or ""), fetch=False)
     
     if len(message.command) > 1:
         v_id = message.command[1]
@@ -509,7 +515,7 @@ async def publish_cmd(client, message):
     except Exception as e:
         await message.reply_text(f"❌ خطأ: {e}")
 
-# ===== [14] أمر الإحصائيات =====
+# ===== [14] أمر الإحصائيات (معدل) =====
 @app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
 async def stats_cmd(client, message):
     total = db_query("SELECT COUNT(*) FROM videos")[0][0]
@@ -579,7 +585,7 @@ async def fix_all(client, message):
     
     videos = db_query("""
         SELECT v_id FROM videos 
-        WHERE series_name IS NULL OR series_name = '' OR series_name = 'None'
+        WHERE series_name IS NULL OR series_name = '' OR series_name = 'غير معروف'
     """)
     
     fixed = 0
@@ -641,12 +647,35 @@ async def debug_cmd(client, message):
     
     await message.reply_text(text)
 
-# ===== [18] أمر اختبار =====
+# ===== [18] أمر فحص الطلبات المعلقة =====
+@app.on_message(filters.command("check_pending") & filters.user(ADMIN_ID))
+async def check_pending(client, message):
+    # عرض جميع الطلبات المعلقة
+    pending = db_query("SELECT video_id, step, created_at FROM pending_posts ORDER BY created_at DESC")
+    
+    if not pending:
+        await message.reply_text("📭 لا توجد طلبات معلقة حالياً")
+        return
+    
+    text = "📋 **الطلبات المعلقة:**\n\n"
+    for vid, step, date in pending:
+        text += f"• {vid} | {step} | {date}\n"
+    
+    await message.reply_text(text)
+
+# ===== [19] أمر إعادة تعيين الطلبات المعلقة =====
+@app.on_message(filters.command("reset_pending") & filters.user(ADMIN_ID))
+async def reset_pending(client, message):
+    # حذف جميع الطلبات المعلقة
+    db_query("DELETE FROM pending_posts", fetch=False)
+    await message.reply_text("✅ تم حذف جميع الطلبات المعلقة")
+
+# ===== [20] أمر اختبار =====
 @app.on_message(filters.command("test") & filters.private)
 async def test_cmd(client, message):
     await message.reply_text("✅ البوت يعمل!")
 
-# ===== [19] التشغيل الرئيسي =====
+# ===== [21] التشغيل الرئيسي =====
 def main():
     print("🚀 تشغيل البوت الذكي...")
     init_database()
