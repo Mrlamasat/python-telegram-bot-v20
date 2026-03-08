@@ -23,7 +23,7 @@ PUBLISH_CHANNEL = -1003554018307
 app = Client("railway_final_pro", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # ===== [1.1] متغيرات التحكم =====
-SHOW_MORE_BUTTONS = False
+SHOW_MORE_BUTTONS = True
 pending_posts = {}
 
 # ===== [2] دوال قاعدة البيانات =====
