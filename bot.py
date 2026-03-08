@@ -317,7 +317,223 @@ async def start_cmd(client, message):
 🆘 @Mohsen_7e"""
         await message.reply_text(welcome_text)
 
-# ===== [14] أمر الإحصائيات =====
+# ===== [14] أوامر إدارة المسلسلات (إضافات جديدة) =====
+
+@app.on_message(filters.command("update_series") & filters.user(ADMIN_ID))
+async def update_series_command(client, message):
+    """تحديث اسم المسلسل لجميع حلقاته"""
+    try:
+        # استخراج النص بعد الأمر
+        command_parts = message.text.split(maxsplit=1)
+        if len(command_parts) < 2:
+            await message.reply_text("❌ استخدم: /update_series الاسم_القديم -> الاسم_الجديد\nأو: /update_series الاسم_الجديد")
+            return
+        
+        args = command_parts[1].strip()
+        
+        # التحقق إذا كان هناك سهم
+        if '->' in args:
+            old_name, new_name = [x.strip() for x in args.split('->', 1)]
+            # البحث بالاسم القديم
+            videos = db_query(
+                "SELECT v_id, series_name, ep_num FROM videos WHERE series_name = %s",
+                (old_name,)
+            )
+        else:
+            new_name = args
+            # البحث بجزء من الاسم
+            videos = db_query(
+                "SELECT v_id, series_name, ep_num FROM videos WHERE series_name LIKE %s",
+                (f"%{new_name.split()[0]}%",)
+            )
+        
+        if not videos:
+            await message.reply_text("❌ لم يتم العثور على حلقات لهذا المسلسل")
+            return
+        
+        # تحديث جميع الحلقات
+        count = 0
+        for v_id, old_name, ep_num in videos:
+            db_query(
+                "UPDATE videos SET series_name = %s WHERE v_id = %s",
+                (new_name, v_id),
+                fetch=False
+            )
+            count += 1
+            logging.info(f"✅ تحديث {v_id}: {old_name} -> {new_name} (حلقة {ep_num})")
+        
+        await message.reply_text(f"✅ تم تحديث {count} حلقة إلى: {new_name}")
+        
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ: {e}")
+
+@app.on_message(filters.command("reindex") & filters.user(ADMIN_ID))
+async def reindex_series(client, message):
+    """إعادة فهرسة جميع حلقات مسلسل معين (جلب البيانات من القناة)"""
+    try:
+        command_parts = message.text.split(maxsplit=1)
+        if len(command_parts) < 2:
+            await message.reply_text("❌ استخدم: /reindex اسم_المسلسل")
+            return
+        
+        series_name = command_parts[1].strip()
+        
+        # البحث عن جميع حلقات المسلسل
+        videos = db_query(
+            "SELECT v_id FROM videos WHERE series_name = %s",
+            (series_name,)
+        )
+        
+        if not videos:
+            await message.reply_text("❌ لم يتم العثور على حلقات")
+            return
+        
+        status_msg = await message.reply_text(f"🔄 جاري إعادة فهرسة {len(videos)} حلقة...")
+        
+        updated = 0
+        failed = 0
+        
+        for i, (v_id,) in enumerate(videos):
+            try:
+                # تحديث حالة كل 5 حلقات
+                if i % 5 == 0:
+                    await status_msg.edit_text(f"🔄 جاري التحديث... {i}/{len(videos)}")
+                
+                # جلب الرسالة الأصلية من القناة
+                msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
+                if msg and msg.video:
+                    caption = msg.caption or ""
+                    new_series = extract_series_name(caption)
+                    new_ep = extract_episode_number(caption)
+                    
+                    if new_series and new_ep > 0:
+                        db_query(
+                            "UPDATE videos SET series_name = %s, ep_num = %s WHERE v_id = %s",
+                            (new_series, new_ep, v_id),
+                            fetch=False
+                        )
+                        updated += 1
+                        logging.info(f"✅ تحديث {v_id}: {new_series} - حلقة {new_ep}")
+                    else:
+                        failed += 1
+                else:
+                    failed += 1
+                    
+                # تأخير بسيط لتجنب الضغط
+                await asyncio.sleep(0.5)
+                
+            except Exception as e:
+                logging.error(f"خطأ في تحديث {v_id}: {e}")
+                failed += 1
+        
+        await status_msg.edit_text(
+            f"✅ **نتيجة إعادة الفهرسة**\n"
+            f"• تم التحديث: {updated}\n"
+            f"• فشل: {failed}\n"
+            f"• إجمالي: {len(videos)}"
+        )
+        
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ: {e}")
+
+@app.on_message(filters.command("details") & filters.user(ADMIN_ID))
+async def show_details(client, message):
+    """عرض تفاصيل حلقة معينة"""
+    try:
+        command_parts = message.text.split()
+        if len(command_parts) < 2:
+            await message.reply_text("❌ استخدم: /details معرف_الحلقة")
+            return
+        
+        v_id = command_parts[1]
+        
+        # بيانات من قاعدة البيانات
+        db_data = db_query(
+            "SELECT series_name, ep_num, quality, views FROM videos WHERE v_id = %s",
+            (v_id,)
+        )
+        
+        # بيانات من القناة
+        try:
+            msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
+            if msg and msg.video:
+                caption = msg.caption or "بدون وصف"
+                channel_series = extract_series_name(caption)
+                channel_ep = extract_episode_number(caption)
+                channel_info = f"الوصف: {caption[:100]}...\nالمسلسل: {channel_series}\nرقم الحلقة: {channel_ep}"
+            else:
+                channel_info = "❌ غير موجود في القناة"
+        except Exception as e:
+            channel_info = f"❌ فشل جلب البيانات من القناة: {e}"
+        
+        text = f"📋 **تفاصيل الحلقة {v_id}**\n\n"
+        text += "**قاعدة البيانات:**\n"
+        if db_data:
+            text += f"المسلسل: {db_data[0][0]}\n"
+            text += f"رقم الحلقة: {db_data[0][1]}\n"
+            text += f"الجودة: {db_data[0][2]}\n"
+            text += f"المشاهدات: {db_data[0][3]}\n\n"
+        else:
+            text += "❌ غير موجود في قاعدة البيانات\n\n"
+        
+        text += f"**القناة:**\n{channel_info}"
+        
+        await message.reply_text(text)
+        
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ: {e}")
+
+@app.on_message(filters.command("fix_series") & filters.user(ADMIN_ID))
+async def fix_series_command(client, message):
+    """إصلاح أسماء المسلسلات المعطوبة"""
+    try:
+        await message.reply_text("🔍 جاري البحث عن الحلقات ذات الأسماء القصيرة...")
+        
+        # البحث عن حلقات بأسماء قصيرة (أقل من 3 أحرف) أو بدون اسم
+        videos = db_query(
+            "SELECT v_id, series_name FROM videos WHERE LENGTH(series_name) < 3 OR series_name LIKE 'مسلسل%'"
+        )
+        
+        if not videos:
+            await message.reply_text("✅ لا توجد حلقات بحاجة للإصلاح")
+            return
+        
+        status_msg = await message.reply_text(f"🔄 جاري إصلاح {len(videos)} حلقة...")
+        
+        fixed = 0
+        for i, (v_id, old_name) in enumerate(videos):
+            try:
+                # جلب البيانات من القناة
+                msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
+                if msg and msg.video:
+                    caption = msg.caption or ""
+                    new_series = extract_series_name(caption)
+                    
+                    if new_series and len(new_series) >= 3:
+                        db_query(
+                            "UPDATE videos SET series_name = %s WHERE v_id = %s",
+                            (new_series, v_id),
+                            fetch=False
+                        )
+                        fixed += 1
+                        logging.info(f"✅ إصلاح {v_id}: {old_name} -> {new_series}")
+                
+                # تأخير بسيط
+                await asyncio.sleep(0.5)
+                
+                # تحديث الحالة
+                if i % 5 == 0:
+                    await status_msg.edit_text(f"🔄 جاري الإصلاح... {i}/{len(videos)}")
+                    
+            except Exception as e:
+                logging.error(f"خطأ في إصلاح {v_id}: {e}")
+        
+        await status_msg.edit_text(f"✅ تم إصلاح {fixed} من {len(videos)} حلقة")
+        
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ: {e}")
+
+# ===== [15] أمر الإحصائيات =====
 @app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
 async def stats_cmd(client, message):
     total = db_query("SELECT COUNT(*) FROM videos")[0][0]
@@ -330,7 +546,7 @@ async def stats_cmd(client, message):
     
     await message.reply_text(text)
 
-# ===== [15] أمر فحص الطلبات المعلقة =====
+# ===== [16] أمر فحص الطلبات المعلقة =====
 @app.on_message(filters.command("check_pending") & filters.user(ADMIN_ID))
 async def check_pending(client, message):
     pending = db_query("SELECT video_id, step, quality FROM pending_posts ORDER BY created_at DESC")
@@ -342,13 +558,13 @@ async def check_pending(client, message):
         text += f"• {vid} | {step} | {q or '?'}\n"
     await message.reply_text(text)
 
-# ===== [16] أمر إعادة تعيين الطلبات المعلقة =====
+# ===== [17] أمر إعادة تعيين الطلبات المعلقة =====
 @app.on_message(filters.command("reset_pending") & filters.user(ADMIN_ID))
 async def reset_pending(client, message):
     db_query("DELETE FROM pending_posts", fetch=False)
     await message.reply_text("✅ تم حذف جميع الطلبات المعلقة")
 
-# ===== [17] أمر اختبار النشر =====
+# ===== [18] أمر اختبار النشر =====
 @app.on_message(filters.command("test_publish") & filters.user(ADMIN_ID))
 async def test_publish(client, message):
     try:
@@ -357,21 +573,21 @@ async def test_publish(client, message):
     except Exception as e:
         await message.reply_text(f"❌ فشل الإرسال: {e}")
 
-# ===== [18] أمر اختبار =====
+# ===== [19] أمر اختبار =====
 @app.on_message(filters.command("test") & filters.private)
 async def test_cmd(client, message):
     await message.reply_text("✅ البوت يعمل!")
 
-# ===== [19] أمر تنظيف حد الطلبات =====
+# ===== [20] أمر تنظيف حد الطلبات =====
 @app.on_message(filters.command("clear_limits") & filters.user(ADMIN_ID))
 async def clear_limits(client, message):
     global user_last_request
     user_last_request = {}
     await message.reply_text("✅ تم تنظيف جميع حدود الطلبات")
 
-# ===== [20] التشغيل الرئيسي =====
+# ===== [21] التشغيل الرئيسي =====
 def main():
-    print("🚀 تشغيل البوت مع نظام الحماية من FloodWait...")
+    print("🚀 تشغيل البوت مع نظام الحماية من FloodWait وأوامر إدارة المسلسلات...")
     init_database()
     
     while True:  # حلقة لا نهائية لإعادة التشغيل التلقائي
