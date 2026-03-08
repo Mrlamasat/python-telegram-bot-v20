@@ -303,14 +303,19 @@ async def handle_quality(client, callback_query):
     await callback_query.answer()
     logging.info(f"✅ تم اختيار الجودة {quality} للفيديو {video_id}")
 
-# ===== [11] استقبال رقم الحلقة =====
-@app.on_message(filters.chat(SOURCE_CHANNEL) & filters.channel & filters.text)
+# ===== [11] استقبال رقم الحلقة (نسخة مبسطة ومجربة) =====
+@app.on_message(filters.chat(SOURCE_CHANNEL) & filters.text)
 async def receive_episode(client, message):
-    if not message.text:
+    # استخراج الرقم من الرسالة
+    ep_num = extract_episode_number(message.text)
+    
+    # إذا لم تكن الرسالة رقماً، نتجاهلها تماماً
+    if ep_num == 0:
         return
-    
-    logging.info(f"📝 تم استلام رسالة نصية: {message.text}")
-    
+
+    logging.info(f"🔢 استلمت الرقم {ep_num}")
+
+    # البحث عن آخر فيديو في انتظار رقم الحلقة
     pending = db_query("""
         SELECT video_id, poster_id, quality FROM pending_posts 
         WHERE step = 'waiting_for_episode' 
@@ -318,27 +323,20 @@ async def receive_episode(client, message):
     """)
     
     if not pending:
-        logging.warning("⚠️ لا يوجد طلب في انتظار رقم الحلقة")
+        await message.reply_text("⚠️ لا يوجد طلب في انتظار رقم الحلقة")
         return
-    
+
     video_id, poster_id, quality = pending[0]
-    ep_num = extract_episode_number(message.text)
     
-    if ep_num == 0:
-        await client.send_message(
-            SOURCE_CHANNEL,
-            "❌ لم أجد رقم صحيح. الرجاء إرسال رقم الحلقة فقط (مثال: 13)"
-        )
-        return
-    
-    poster = db_query("SELECT series_name FROM posters WHERE poster_id = %s", (poster_id,))
-    if not poster:
+    # جلب اسم المسلسل
+    poster_data = db_query("SELECT series_name FROM posters WHERE poster_id = %s", (poster_id,))
+    if not poster_data:
         logging.error(f"❌ لا يوجد بوستر بالمعرف {poster_id}")
         return
     
-    series_name = poster[0][0]
+    series_name = poster_data[0][0]
     
-    # حفظ الفيديو في قاعدة البيانات
+    # حفظ في قاعدة البيانات
     db_query("""
         INSERT INTO videos (v_id, series_name, ep_num, quality) 
         VALUES (%s, %s, %s, %s)
@@ -351,18 +349,10 @@ async def receive_episode(client, message):
     # حذف الطلب المعلق
     db_query("DELETE FROM pending_posts WHERE video_id = %s", (video_id,), fetch=False)
     
-    # إرسال تأكيد
-    await client.send_message(
-        SOURCE_CHANNEL,
-        f"✅ **تم حفظ الحلقة بنجاح!**\n"
-        f"المسلسل: {series_name}\n"
-        f"رقم الحلقة: {ep_num}\n"
-        f"الجودة: {quality}"
-    )
-    
-    logging.info(f"✅ تم حفظ الحلقة {video_id}: {series_name} - حلقة {ep_num} ({quality})")
-    
-    # نشر تلقائي في قناة النشر
+    # رسالة تأكيد
+    await message.reply_text(f"✅ تم حفظ الحلقة:\n🎬 {series_name}\n🔢 {ep_num}\n📊 {quality}")
+
+    # النشر التلقائي في قناة النشر
     try:
         encrypted = encrypt_title(series_name)
         me = await client.get_me()
@@ -371,30 +361,20 @@ async def receive_episode(client, message):
         button = InlineKeyboardMarkup([[
             InlineKeyboardButton("🎬 مشاهدة الحلقة", url=bot_link)
         ]])
+
+        caption = f"🎬 {encrypted}\n🔢 الحلقة {ep_num}\n📺 {quality}"
+
+        await client.copy_message(
+            chat_id=PUBLISH_CHANNEL,
+            from_chat_id=SOURCE_CHANNEL,
+            message_id=poster_id,
+            caption=caption,
+            reply_markup=button
+        )
+        logging.info(f"✅ تم النشر التلقائي للحلقة {ep_num} من {series_name}")
         
-        # البحث عن البوستر
-        poster_info = db_query("SELECT poster_id FROM posters WHERE video_id = %s", (video_id,))
-        
-        if poster_info and poster_info[0][0]:
-            # نشر البوستر
-            await client.copy_message(
-                PUBLISH_CHANNEL,
-                SOURCE_CHANNEL,
-                poster_info[0][0],
-                caption=f"{encrypted}\nالحلقة {ep_num}\n{quality}",
-                reply_markup=button
-            )
-            logging.info(f"✅ تم نشر الحلقة {video_id} في قناة النشر مع البوستر")
-        else:
-            # نشر نص فقط
-            await client.send_message(
-                PUBLISH_CHANNEL,
-                f"{encrypted}\nالحلقة {ep_num}\n{quality}",
-                reply_markup=button
-            )
-            logging.info(f"✅ تم نشر الحلقة {video_id} في قناة النشر (بدون بوستر)")
     except Exception as e:
-        logging.error(f"❌ فشل النشر التلقائي: {e}")
+        logging.error(f"❌ خطأ في النشر التلقائي: {e}")
 
 # ===== [12] أمر البدء =====
 @app.on_message(filters.command("start") & filters.private)
@@ -568,12 +548,24 @@ async def reset_pending(client, message):
     db_query("DELETE FROM pending_posts", fetch=False)
     await message.reply_text("✅ تم حذف جميع الطلبات المعلقة")
 
-# ===== [17] أمر اختبار =====
+# ===== [17] أمر اختبار النشر =====
+@app.on_message(filters.command("test_publish") & filters.user(ADMIN_ID))
+async def test_publish(client, message):
+    try:
+        await client.send_message(
+            PUBLISH_CHANNEL,
+            "🧪 هذا اختبار للنشر التلقائي"
+        )
+        await message.reply_text("✅ تم إرسال رسالة اختبار إلى قناة النشر")
+    except Exception as e:
+        await message.reply_text(f"❌ فشل الإرسال: {e}")
+
+# ===== [18] أمر اختبار =====
 @app.on_message(filters.command("test") & filters.private)
 async def test_cmd(client, message):
     await message.reply_text("✅ البوت يعمل!")
 
-# ===== [18] التشغيل الرئيسي =====
+# ===== [19] التشغيل الرئيسي =====
 def main():
     print("🚀 تشغيل البوت الذكي مع النشر التلقائي...")
     init_database()
