@@ -18,7 +18,7 @@ BACKUP_CHANNEL_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
 PUBLISH_CHANNEL = -1003554018307
 
 # ===== [1.1] التحكم في المزيد من الحلقات =====
-SHOW_MORE_BUTTONS = True
+SHOW_MORE_BUTTONS = True  # تأكد أنه True
 
 app = Client("railway_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -51,7 +51,6 @@ def db_query(query, params=(), fetch=True):
 
 # ===== [4] إنشاء الجداول =====
 def init_database():
-    # جدول الفيديوهات
     db_query("""
         CREATE TABLE IF NOT EXISTS videos (
             v_id TEXT PRIMARY KEY,
@@ -62,7 +61,6 @@ def init_database():
         )
     """, fetch=False)
     
-    # جدول المستخدمين
     db_query("""
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
@@ -82,16 +80,18 @@ def extract_episode_number(text):
 
 def extract_series_name(text):
     if not text:
-        return None
+        return "مسلسل"
     clean = re.sub(r'\s*\d+\s*$', '', text.strip())
+    clean = re.sub(r'^\d+\s*', '', clean)
+    if not clean:
+        return "مسلسل"
     return clean.strip()[:50]
 
-# ===== [6] دالة أزرار الحلقات (تعديلك) =====
+# ===== [6] دالة أزرار الحلقات =====
 def get_episode_buttons(series_name, current_id, bot_user):
     if not series_name:
         return []
     
-    # جلب الحلقات المرتبطة بنفس المسلسل وترتيبها تصاعدياً
     eps = db_query("""
         SELECT ep_num, v_id FROM videos 
         WHERE series_name = %s 
@@ -103,12 +103,8 @@ def get_episode_buttons(series_name, current_id, bot_user):
     
     keyboard, row = [], []
     for ep, vid in eps:
-        # تمييز الحلقة التي يشاهدها المستخدم الآن بنقطة أو رمز
         label = f"• {ep} •" if str(vid) == str(current_id) else str(ep)
-        
         row.append(InlineKeyboardButton(label, url=f"https://t.me/{bot_user}?start={vid}"))
-        
-        # وضع 5 أزرار في كل صف
         if len(row) == 5:
             keyboard.append(row)
             row = []
@@ -116,10 +112,9 @@ def get_episode_buttons(series_name, current_id, bot_user):
         keyboard.append(row)
     return keyboard
 
-# ===== [7] أمر البدء (تعديلك) =====
+# ===== [7] أمر البدء =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
-    # تسجيل المستخدم
     db_query(
         "INSERT INTO users (user_id, username) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET last_seen = CURRENT_TIMESTAMP",
         (message.from_user.id, message.from_user.username or ""),
@@ -130,20 +125,15 @@ async def start_cmd(client, message):
         v_id = message.command[1]
         me = await client.get_me()
         
-        # محاولة جلب البيانات من القاعدة
         data = db_query("SELECT series_name, ep_num FROM videos WHERE v_id = %s", (v_id,))
         
         if not data:
-            # إذا كانت أول مرة تطلب، اسحب بياناتها واحفظها فوراً
             try:
                 source = await client.get_messages(SOURCE_CHANNEL, int(v_id))
                 if source and (source.video or source.document):
                     ep = extract_episode_number(source.caption or "")
                     series = extract_series_name(source.caption or "")
-                    if not series: 
-                        series = "محتوى غير مسمى"
                     
-                    # حفظ في قاعدة البيانات قبل توليد الأزرار
                     db_query("""
                         INSERT INTO videos (v_id, series_name, ep_num) 
                         VALUES (%s, %s, %s) ON CONFLICT (v_id) DO NOTHING
@@ -153,11 +143,13 @@ async def start_cmd(client, message):
                 else:
                     return await message.reply_text("❌ لم يتم العثور على الفيديو.")
             except Exception as e:
-                return await message.reply_text(f"⚠️ خطأ في الوصول للقناة المصدر: {e}")
+                return await message.reply_text(f"⚠️ خطأ: {e}")
         else:
             current_series, current_ep = data[0]
+            if not current_series:
+                current_series = "مسلسل"
 
-        # الآن توليد الأزرار بعد ضمان وجود البيانات في القاعدة
+        # توليد الأزرار
         keyboard = []
         if SHOW_MORE_BUTTONS:
             more_buttons = get_episode_buttons(current_series, v_id, me.username)
@@ -166,7 +158,6 @@ async def start_cmd(client, message):
         
         keyboard.append([InlineKeyboardButton("🔗 القناة الاحتياطية", url=BACKUP_CHANNEL_LINK)])
         
-        # إرسال الفيديو
         await client.copy_message(
             message.chat.id,
             SOURCE_CHANNEL,
@@ -203,84 +194,105 @@ async def stats_cmd(client, message):
     
     await message.reply_text(text)
 
-# ===== [9] أمر النشر =====
-@app.on_message(filters.command("publish") & filters.user(ADMIN_ID))
-async def publish_cmd(client, message):
+# ===== [9] أمر تشخيص الأزرار =====
+@app.on_message(filters.command("debug_buttons") & filters.user(ADMIN_ID))
+async def debug_buttons(client, message):
     cmd = message.text.split()
     if len(cmd) < 2:
-        await message.reply_text("❌ استخدم: /publish v_id")
+        await message.reply_text("❌ استخدم: /debug_buttons v_id")
         return
     
     v_id = cmd[1]
     
-    try:
-        data = db_query("SELECT series_name, ep_num FROM videos WHERE v_id = %s", (v_id,))
-        if not data:
-            await message.reply_text("❌ الحلقة غير موجودة في قاعدة البيانات")
-            return
-        
-        series_name, ep = data[0]
-        encrypted = encrypt_title(series_name)
-        
-        me = await client.get_me()
-        bot_link = f"https://t.me/{me.username}?start={v_id}"
-        
-        button = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🎬 مشاهدة الحلقة", url=bot_link)
-        ]])
-        
-        await client.send_message(
-            PUBLISH_CHANNEL,
-            f"{encrypted}\nالحلقة {ep}",
-            reply_markup=button
-        )
-        
-        await message.reply_text(f"✅ تم النشر: {encrypted} - حلقة {ep}")
-        
-    except Exception as e:
-        await message.reply_text(f"❌ خطأ: {e}")
-
-# ===== [10] أمر فحص وإصلاح قاعدة البيانات =====
-@app.on_message(filters.command("fix_db") & filters.user(ADMIN_ID))
-async def fix_database(client, message):
-    msg = await message.reply_text("🔄 جاري فحص وإصلاح قاعدة البيانات...")
+    current = db_query("SELECT series_name, ep_num FROM videos WHERE v_id = %s", (v_id,))
+    if not current:
+        await message.reply_text("❌ الحلقة غير موجودة في قاعدة البيانات")
+        return
     
-    # جلب جميع الفيديوهات التي ليس لها series_name
-    videos_to_fix = db_query("""
-        SELECT v_id FROM videos 
-        WHERE series_name IS NULL OR series_name = ''
+    series, ep = current[0]
+    
+    others = db_query("""
+        SELECT v_id, ep_num FROM videos 
+        WHERE series_name = %s AND v_id != %s
+        ORDER BY ep_num ASC
+    """, (series, v_id))
+    
+    text = f"🔍 **تشخيص أزرار المزيد**\n\n"
+    text += f"📌 الحلقة الحالية:\n"
+    text += f"• v_id: {v_id}\n"
+    text += f"• المسلسل: {series}\n"
+    text += f"• رقم الحلقة: {ep}\n\n"
+    
+    text += f"⚙️ الإعدادات:\n"
+    text += f"• SHOW_MORE_BUTTONS: {'✅ مفعل' if SHOW_MORE_BUTTONS else '❌ معطل'}\n\n"
+    
+    text += f"📊 حلقات أخرى في نفس المسلسل: {len(others)}\n"
+    
+    if others:
+        text += "قائمة الحلقات الأخرى:\n"
+        for vid, ep_num in others[:10]:
+            text += f"• حلقة {ep_num} (v_id: {vid})\n"
+    else:
+        text += "❌ لا توجد حلقات أخرى لنفس المسلسل!\n"
+        text += "هذا هو سبب عدم ظهور الأزرار."
+    
+    await message.reply_text(text)
+
+# ===== [10] أمر توحيد أسماء المسلسلات =====
+@app.on_message(filters.command("fix_series") & filters.user(ADMIN_ID))
+async def fix_series_names(client, message):
+    msg = await message.reply_text("🔄 جاري توحيد أسماء المسلسلات...")
+    
+    all_series = db_query("""
+        SELECT DISTINCT series_name FROM videos 
+        WHERE series_name IS NOT NULL
     """)
     
     fixed = 0
-    for (v_id,) in videos_to_fix:
+    for (name,) in all_series:
+        if not name:
+            continue
+        
+        clean_name = re.sub(r'\s+', ' ', name.strip())
+        clean_name = re.sub(r'[^\w\s]', '', clean_name)
+        
+        if clean_name != name:
+            db_query("""
+                UPDATE videos SET series_name = %s 
+                WHERE series_name = %s
+            """, (clean_name, name), fetch=False)
+            fixed += 1
+    
+    await msg.edit_text(f"✅ تم توحيد {fixed} اسم مسلسل")
+
+# ===== [11] أمر إصلاح قاعدة البيانات =====
+@app.on_message(filters.command("fix_db") & filters.user(ADMIN_ID))
+async def fix_database(client, message):
+    msg = await message.reply_text("🔄 جاري إصلاح قاعدة البيانات...")
+    
+    videos = db_query("SELECT v_id FROM videos WHERE series_name IS NULL OR series_name = ''")
+    fixed = 0
+    
+    for (v_id,) in videos:
         try:
             source = await client.get_messages(SOURCE_CHANNEL, int(v_id))
             if source and source.video:
-                series_name = extract_series_name(source.caption or "")
-                if not series_name:
-                    series_name = f"مسلسل {v_id[-3:]}"
-                
+                series = extract_series_name(source.caption or "")
                 ep = extract_episode_number(source.caption or "")
-                if ep == 0:
-                    ep = 1
-                
-                db_query("""
-                    UPDATE videos 
-                    SET series_name = %s, ep_num = %s 
-                    WHERE v_id = %s
-                """, (series_name, ep, v_id), fetch=False)
+                db_query("UPDATE videos SET series_name = %s, ep_num = %s WHERE v_id = %s", 
+                        (series, ep, v_id), fetch=False)
                 fixed += 1
         except:
             continue
     
     await msg.edit_text(f"✅ تم إصلاح {fixed} فيديو")
 
-# ===== [11] أمر اختبار =====
+# ===== [12] أمر اختبار =====
 @app.on_message(filters.command("test") & filters.private)
 async def test_cmd(client, message):
     await message.reply_text("✅ البوت يعمل!")
 
-# ===== [12] التشغيل الرئيسي =====
+# ===== [13] التشغيل =====
 def main():
     print("🚀 تشغيل البوت...")
     init_database()
