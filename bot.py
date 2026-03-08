@@ -23,7 +23,7 @@ PUBLISH_CHANNEL = -1003554018307
 app = Client("railway_final_pro", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # ===== [1.1] متغيرات التحكم =====
-SHOW_MORE_BUTTONS = False  # يبدأ معطلاً، يشغل بـ /toggle_buttons
+SHOW_MORE_BUTTONS = False  # يبدأ معطلاً
 pending_posts = {}
 
 # ===== [2] دوال قاعدة البيانات =====
@@ -231,7 +231,7 @@ async def publish_to_channel(client, v_id, data):
         logging.error(f"خطأ في النشر: {e}")
         await client.send_message(
             SOURCE_CHANNEL,
-            f"❌ حدث خطأ أثناء النشر: {e}\nتأكد من أن البوت مشرف في قناة النشر"
+            f"❌ حدث خطأ أثناء النشر: {e}"
         )
 
 # ===== [8] دالة عرض الحلقة في البوت =====
@@ -244,15 +244,21 @@ async def show_episode(client, message, v_id):
         
         title, ep, quality, duration = db_data[0]
         
+        # ✅ بناء أزرار المزيد من الحلقات
         keyboard = []
         
-        # ✅ التحقق من SHOW_MORE_BUTTONS وتشغيل الأزرار إذا كان مفعلاً
+        # طباعة للتحقق
+        print(f"SHOW_MORE_BUTTONS = {SHOW_MORE_BUTTONS}")
+        
         if SHOW_MORE_BUTTONS:
+            print(f"جلب حلقات أخرى للمسلسل: {title}")
             other_eps = db_query("""
                 SELECT ep_num, v_id FROM videos 
                 WHERE title = %s AND ep_num > 0 AND v_id != %s
                 ORDER BY ep_num ASC
             """, (title, v_id))
+            
+            print(f"عدد الحلقات الأخرى: {len(other_eps) if other_eps else 0}")
             
             if other_eps:
                 row = []
@@ -267,7 +273,9 @@ async def show_episode(client, message, v_id):
                         row = []
                 if row:
                     keyboard.append(row)
+                print(f"تم بناء {len(keyboard)} صف من الأزرار")
         
+        # إضافة زر القناة الاحتياطية
         keyboard.append([InlineKeyboardButton("🔗 القناة الاحتياطية", url=BACKUP_CHANNEL_LINK)])
         
         # في البوت - يظهر رقم الحلقة
@@ -276,6 +284,8 @@ async def show_episode(client, message, v_id):
             caption += f"📺 الجودة: {quality}\n"
         if duration:
             caption += f"⏱ المدة: {duration}"
+        
+        print(f"إرسال الحلقة مع {len(keyboard)} صف أزرار")
         
         await client.copy_message(
             message.chat.id,
@@ -327,8 +337,9 @@ async def toggle_buttons(client, message):
     SHOW_MORE_BUTTONS = not SHOW_MORE_BUTTONS
     status = "✅ مفعلة" if SHOW_MORE_BUTTONS else "❌ معطلة"
     await message.reply_text(f"أزرار المزيد من الحلقات: {status}")
+    print(f"تم تغيير SHOW_MORE_BUTTONS إلى {SHOW_MORE_BUTTONS}")
 
-# ===== [11] أمر فحص القناة (معدل ليعمل مع القنوات الخاصة) =====
+# ===== [11] أمر فحص القناة (معدل) =====
 @app.on_message(filters.command("scan_source") & filters.user(ADMIN_ID))
 async def scan_source_command(client, message):
     msg = await message.reply_text("🔄 جاري فحص قناة المصدر...")
@@ -339,9 +350,9 @@ async def scan_source_command(client, message):
         # التأكد من أن البوت عضو في القناة
         try:
             chat = await client.get_chat(SOURCE_CHANNEL)
-            await msg.edit_text(f"✅ تم الاتصال بقناة المصدر: {chat.title}")
+            await msg.edit_text(f"✅ تم الاتصال بقناة المصدر: {chat.title}\n🔄 جاري جلب الرسائل...")
         except Exception as e:
-            await msg.edit_text(f"❌ البوت ليس عضواً في قناة المصدر\nالرجاء إضافة البوت كمشرف في القناة أولاً")
+            await msg.edit_text(f"❌ البوت ليس عضواً في قناة المصدر")
             return
         
         # جلب آخر 200 رسالة من القناة
@@ -377,7 +388,7 @@ async def scan_source_command(client, message):
                 await msg.edit_text(f"🔄 تم تحديث {stats['updated']} حلقة...")
     
     except Exception as e:
-        await msg.edit_text(f"❌ خطأ: {e}\nتأكد من أن البوت مشرف في القناة")
+        await msg.edit_text(f"❌ خطأ: {e}")
         return
     
     total = db_query("SELECT COUNT(*) FROM videos")[0][0]
@@ -401,7 +412,7 @@ async def smart_stats(client, message):
     
     # جلب آخر 5 حلقات مضافة
     recent = db_query("""
-        SELECT title, ep_num, created_at FROM videos 
+        SELECT title, ep_num FROM videos 
         ORDER BY created_at DESC LIMIT 5
     """)
     
@@ -412,7 +423,7 @@ async def smart_stats(client, message):
     text += f"🔘 أزرار المزيد: {'مفعلة' if SHOW_MORE_BUTTONS else 'معطلة'}\n\n"
     text += "🆕 **آخر 5 حلقات مضافة:**\n"
     
-    for title, ep, date in recent:
+    for title, ep in recent:
         text += f"• {title} - حلقة {ep}\n"
     
     await message.reply_text(text)
@@ -440,13 +451,23 @@ async def test_channels(client, message):
     
     # إرشادات
     result += "\n📝 **للإصلاح:**\n"
-    result += "1. أضف البوت كمشرف في قناة المصدر\n"
-    result += "2. أضف البوت كمشرف في قناة النشر\n"
-    result += "3. تأكد من صلاحيات إرسال الرسائل"
+    result += "1. تأكد من تفعيل صلاحية 'مشاهدة الرسائل' للبوت في القناتين\n"
+    result += "2. أعد المحاولة بعد تفعيل الصلاحية"
     
     await msg.edit_text(result)
 
-# ===== [14] التشغيل الرئيسي =====
+# ===== [14] أمر اختبار الأزرار =====
+@app.on_message(filters.command("test_buttons") & filters.user(ADMIN_ID))
+async def test_buttons(client, message):
+    """اختبار عرض الأزرار على حلقة محددة"""
+    command = message.text.split()
+    if len(command) < 2:
+        return await message.reply_text("❌ استخدم: /test_buttons v_id")
+    
+    v_id = command[1]
+    await show_episode(client, message, v_id)
+
+# ===== [15] التشغيل الرئيسي =====
 def main():
     print("🚀 تشغيل البوت...")
     init_database()
