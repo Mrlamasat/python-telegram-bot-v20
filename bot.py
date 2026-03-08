@@ -5,95 +5,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
 
 logging.basicConfig(level=logging.INFO)
-# ===== [أوامر الحذف] =====
-@app.on_message(filters.command("delete") & filters.user(ADMIN_ID))
-async def delete_command(client, message):
-    """حذف حلقة أو عدة حلقات من قاعدة البيانات"""
-    try:
-        command_parts = message.text.split()
-        if len(command_parts) < 2:
-            await message.reply_text("❌ استخدم: /delete معرف_الحلقة1 معرف_الحلقة2 ...")
-            return
-        
-        v_ids = command_parts[1:]
-        deleted = 0
-        not_found = []
-        
-        for v_id in v_ids:
-            # التحقق من وجود الحلقة
-            exists = db_query("SELECT 1 FROM videos WHERE v_id = %s", (v_id,))
-            if exists:
-                db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
-                db_query("DELETE FROM views_log WHERE v_id = %s", (v_id,), fetch=False)
-                deleted += 1
-                logging.info(f"🗑️ تم حذف الحلقة {v_id}")
-            else:
-                not_found.append(v_id)
-        
-        result = f"✅ تم حذف {deleted} حلقة"
-        if not_found:
-            result += f"\n❌ لم يتم العثور على: {', '.join(not_found)}"
-        
-        await message.reply_text(result)
-        
-    except Exception as e:
-        await message.reply_text(f"❌ خطأ: {e}")
 
-@app.on_message(filters.command("delete_series") & filters.user(ADMIN_ID))
-async def delete_series_command(client, message):
-    """حذف جميع حلقات مسلسل معين"""
-    try:
-        command_parts = message.text.split(maxsplit=1)
-        if len(command_parts) < 2:
-            await message.reply_text("❌ استخدم: /delete_series اسم_المسلسل")
-            return
-        
-        series_name = command_parts[1].strip()
-        
-        # البحث عن جميع حلقات المسلسل
-        videos = db_query("SELECT v_id FROM videos WHERE series_name = %s", (series_name,))
-        
-        if not videos:
-            await message.reply_text(f"❌ لا توجد حلقات للمسلسل: {series_name}")
-            return
-        
-        count = len(videos)
-        
-        # حذف جميع الحلقات
-        for (v_id,) in videos:
-            db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
-            db_query("DELETE FROM views_log WHERE v_id = %s", (v_id,), fetch=False)
-        
-        logging.info(f"🗑️ تم حذف جميع حلقات {series_name} ({count} حلقة)")
-        await message.reply_text(f"✅ تم حذف جميع حلقات {series_name}\n📊 عدد الحلقات: {count}")
-        
-    except Exception as e:
-        await message.reply_text(f"❌ خطأ: {e}")
-
-@app.on_message(filters.command("list") & filters.user(ADMIN_ID))
-async def list_command(client, message):
-    """عرض قائمة بالحلقات (آخر 20 حلقة)"""
-    try:
-        videos = db_query("SELECT v_id, series_name, ep_num, views FROM videos ORDER BY created_at DESC LIMIT 20")
-        
-        if not videos:
-            await message.reply_text("📭 لا توجد حلقات في قاعدة البيانات")
-            return
-        
-        text = "📋 **آخر 20 حلقة:**\n\n"
-        for v_id, name, ep, views in videos:
-            text += f"• `{v_id}` | {name} - حلقة {ep} | 👁️ {views}\n"
-        
-        # تقسيم النص الطويل
-        if len(text) > 4000:
-            parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
-            for part in parts:
-                await message.reply_text(part)
-        else:
-            await message.reply_text(text)
-        
-    except Exception as e:
-        await message.reply_text(f"❌ خطأ: {e}")
 # ===== [1] الإعدادات =====
 API_ID = 35405228
 API_HASH = "dacba460d875d963bbd4462c5eb554d6"
@@ -146,40 +58,27 @@ def db_query(query, params=(), fetch=True, retry=3):
 
 # ===== [4] إنشاء الجداول =====
 def init_database():
-    db_query("CREATE TABLE IF NOT EXISTS videos (v_id TEXT PRIMARY KEY, series_name TEXT, ep_num INTEGER DEFAULT 0, quality TEXT DEFAULT 'HD', views INTEGER DEFAULT 0)", fetch=False)
+    db_query("CREATE TABLE IF NOT EXISTS videos (v_id TEXT PRIMARY KEY, series_name TEXT, ep_num INTEGER DEFAULT 0, quality TEXT DEFAULT 'HD', views INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", fetch=False)
     db_query("CREATE TABLE IF NOT EXISTS posters (poster_id BIGINT PRIMARY KEY, series_name TEXT, video_id TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", fetch=False)
     db_query("CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, user_id BIGINT UNIQUE, username TEXT, first_name TEXT, joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", fetch=False)
     db_query("CREATE TABLE IF NOT EXISTS pending_posts (video_id TEXT PRIMARY KEY, step TEXT, poster_id BIGINT, quality TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", fetch=False)
+    db_query("CREATE TABLE IF NOT EXISTS views_log (id SERIAL PRIMARY KEY, v_id TEXT, viewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", fetch=False)
     print("✅ قاعدة البيانات جاهزة")
 
-# ===== [5] دوال الاستخراج المحسنة لجميع المسلسلات =====
+# ===== [5] دوال الاستخراج المحسنة =====
 def extract_series_name(text):
     """استخراج اسم المسلسل من النص لجميع المسلسلات"""
     if not text: return None
     
     text = text.strip()
     
-    # أنماط عامة لجميع المسلسلات
     patterns = [
-        # نمط: [أي اسم] الحلقة 5
         r'^(.+?)\s+(?:حلقة|حلقه|الحلقة|الحلقه)\s+\d+$',
-        
-        # نمط: [أي اسم] 5
         r'^(.+?)\s+(\d+)$',
-        
-        # نمط: [أي اسم] - 5
         r'^(.+?)\s*-\s*(\d+)$',
-        
-        # نمط: [أي اسم] [5]
         r'^(.+?)\s*[\[\(\{]\d+[\]\)\}]',
-        
-        # نمط: [أي اسم] (جودة) 5
         r'^(.+?)\s+.*?\s+(\d+)$',
-        
-        # نمط: مسلسل [أي اسم] الحلقة 5
         r'^مسلسل\s+(.+?)\s+(?:حلقة|حلقه|الحلقة|الحلقه)\s+\d+$',
-        
-        # نمط: مسلسل [أي اسم] 5
         r'^مسلسل\s+(.+?)\s+(\d+)$',
     ]
     
@@ -187,12 +86,10 @@ def extract_series_name(text):
         match = re.search(pattern, text)
         if match:
             name = match.group(1).strip()
-            # تنظيف الاسم
             name = re.sub(r'[-\s]+$', '', name)
             name = re.sub(r'[\[\(\{].*$', '', name)
             return name
     
-    # إذا لم ينطبق أي نمط، نأخذ النص كامل
     return text.strip()
 
 def extract_episode_number(text):
@@ -201,22 +98,18 @@ def extract_episode_number(text):
     
     text = text.strip()
     
-    # 1. البحث عن رقم بعد كلمة حلقة/حلقه
     match = re.search(r'(?:حلقة|حلقه|الحلقة|الحلقه)\s*[:\-]?\s*(\d+)', text, re.IGNORECASE)
     if match:
         return int(match.group(1))
     
-    # 2. البحث عن رقم بين قوسين
     match = re.search(r'[\[\(\{](\d+)[\]\)\}]', text)
     if match:
         return int(match.group(1))
     
-    # 3. البحث عن رقم بعد شرطة
     match = re.search(r'-\s*(\d+)\s*$', text)
     if match:
         return int(match.group(1))
     
-    # 4. البحث عن آخر رقم في النص
     nums = re.findall(r'\d+', text)
     if nums:
         return int(nums[-1])
@@ -295,7 +188,7 @@ async def on_poster_edit(client, message):
     except Exception as e:
         logging.error(f"Error in on_poster_edit: {e}")
 
-# ===== [9] مراقبة قناة المصدر =====
+# ===== [9] مراقبة قناة المصدر (معدل للنشر التلقائي) =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.photo))
 async def monitor_source(client, message):
     try:
@@ -306,16 +199,43 @@ async def monitor_source(client, message):
             ep_num = extract_episode_number(caption)
             
             if series_name and ep_num > 0:
+                # حفظ الفيديو في قاعدة البيانات
                 db_query(
                     "INSERT INTO videos (v_id, series_name, ep_num, quality) VALUES (%s, %s, %s, 'HD') ON CONFLICT (v_id) DO UPDATE SET series_name = EXCLUDED.series_name, ep_num = EXCLUDED.ep_num",
                     (v_id, series_name, ep_num),
                     fetch=False
                 )
                 logging.info(f"✅ فيديو مكتمل {v_id}: {series_name} - حلقة {ep_num}")
-                await message.reply_text(f"✅ تم حفظ الفيديو: {series_name} - حلقة {ep_num}")
+                
+                # ===== النشر التلقائي في القناة العامة =====
+                try:
+                    encrypted = encrypt_title(series_name)
+                    me = await client.get_me()
+                    
+                    btn = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🎬 مشاهدة الحلقة", url=f"https://t.me/{me.username}?start={v_id}")
+                    ]])
+                    
+                    caption_publish = f"🎬 **{encrypted}**\n🔢 **الحلقة {ep_num}**\n📺 **الجودة HD**"
+                    
+                    await client.copy_message(
+                        PUBLISH_CHANNEL, 
+                        SOURCE_CHANNEL, 
+                        int(v_id), 
+                        caption=caption_publish, 
+                        reply_markup=btn
+                    )
+                    
+                    await message.reply_text(f"✅ تم النشر في القناة العامة: {series_name} - حلقة {ep_num}")
+                    
+                except Exception as e:
+                    logging.error(f"❌ فشل النشر: {e}")
+                    await message.reply_text(f"✅ تم حفظ الفيديو: {series_name} - حلقة {ep_num}\n⚠️ لكن فشل النشر في القناة العامة: {e}")
+                
             else:
+                # فيديو غير مكتمل → يحتاج بوستر
                 db_query("INSERT INTO pending_posts (video_id, step) VALUES (%s, 'waiting_for_poster') ON CONFLICT (video_id) DO UPDATE SET step = 'waiting_for_poster'", (v_id,), fetch=False)
-                await message.reply_text(f"📹 تم استلام الفيديو ({v_id})\nارفع البوستر الآن.")
+                await message.reply_text(f"📹 تم استلام الفيديو ({v_id})\nارفع البوستر الآن مع اسم المسلسل في الوصف.")
         
         elif message.photo:
             poster_id = message.id
@@ -353,30 +273,55 @@ async def handle_quality(client, cb):
 async def receive_episode(client, message):
     try:
         ep_num = extract_episode_number(message.text)
-        if ep_num == 0: return
+        if ep_num == 0: 
+            await message.reply_text("❌ لم أتمكن من قراءة رقم الحلقة. أرسل رقماً فقط مثل: 5")
+            return
 
         pending = db_query("SELECT video_id, poster_id, quality FROM pending_posts WHERE step = 'waiting_for_episode' ORDER BY created_at DESC LIMIT 1")
-        if not pending: return
+        if not pending:
+            await message.reply_text("❌ لا يوجد طلب معلق. ابدأ برفع فيديو أولاً")
+            return
 
         v_id, p_id, q = pending[0]
         poster_data = db_query("SELECT series_name FROM posters WHERE poster_id = %s", (p_id,))
-        if not poster_data: return
+        if not poster_data:
+            await message.reply_text("❌ لم يتم العثور على البوستر")
+            return
+            
         s_name = poster_data[0][0]
 
-        db_query("INSERT INTO videos (v_id, series_name, ep_num, quality) VALUES (%s, %s, %s, %s)", (v_id, s_name, ep_num, q), fetch=False)
+        db_query("INSERT INTO videos (v_id, series_name, ep_num, quality) VALUES (%s, %s, %s, %s)", 
+                 (v_id, s_name, ep_num, q), fetch=False)
         db_query("DELETE FROM pending_posts WHERE video_id = %s", (v_id,), fetch=False)
 
         try:
             encrypted = encrypt_title(s_name)
             me = await client.get_me()
-            btn = InlineKeyboardMarkup([[InlineKeyboardButton("🎬 مشاهدة الحلقة", url=f"https://t.me/{me.username}?start={v_id}")]])
+            
+            btn = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🎬 مشاهدة الحلقة", url=f"https://t.me/{me.username}?start={v_id}")
+            ]])
+            
             caption = f"🎬 **{encrypted}**\n🔢 **الحلقة {ep_num}**\n📺 **الجودة {q}**"
-            await client.copy_message(PUBLISH_CHANNEL, SOURCE_CHANNEL, int(p_id), caption=caption, reply_markup=btn)
-            await message.reply_text(f"✅ تم النشر: {s_name} - حلقة {ep_num}")
+            
+            await client.copy_message(
+                PUBLISH_CHANNEL, 
+                SOURCE_CHANNEL, 
+                int(p_id), 
+                caption=caption, 
+                reply_markup=btn
+            )
+            
+            logging.info(f"✅ تم النشر في القناة العامة: {s_name} - حلقة {ep_num}")
+            await message.reply_text(f"✅ تم النشر في القناة العامة: {s_name} - حلقة {ep_num}")
+            
         except Exception as e: 
-            logging.error(f"Publish error: {e}")
+            logging.error(f"❌ فشل النشر في القناة العامة: {e}")
+            await message.reply_text(f"❌ فشل النشر في القناة العامة. تأكد أن البوت مشرف في القناة.\nالخطأ: {e}")
+            
     except Exception as e:
         logging.error(f"Error in receive_episode: {e}")
+        await message.reply_text(f"❌ حدث خطأ: {e}")
 
 # ===== [12] نظام الحماية من FloodWait =====
 def check_rate_limit(user_id):
@@ -462,6 +407,7 @@ async def start_cmd(client, message):
                 reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None
             )
             
+            db_query("INSERT INTO views_log (v_id) VALUES (%s)", (v_id,), fetch=False)
             db_query("UPDATE videos SET views = views + 1 WHERE v_id = %s", (v_id,), fetch=False)
             
         except FloodWait as e:
@@ -484,14 +430,142 @@ async def start_cmd(client, message):
 🆘 @Mohsen_7e"""
         await message.reply_text(welcome_text)
 
-# ===== [14] أوامر الإدارة =====
+# ===== [14] أوامر الحذف والإدارة الجديدة =====
+
+@app.on_message(filters.command("delete") & filters.user(ADMIN_ID))
+async def delete_command(client, message):
+    """حذف حلقة أو عدة حلقات من قاعدة البيانات"""
+    try:
+        command_parts = message.text.split()
+        if len(command_parts) < 2:
+            await message.reply_text("❌ استخدم: /delete معرف_الحلقة1 معرف_الحلقة2 ...")
+            return
+        
+        v_ids = command_parts[1:]
+        deleted = 0
+        not_found = []
+        
+        for v_id in v_ids:
+            exists = db_query("SELECT 1 FROM videos WHERE v_id = %s", (v_id,))
+            if exists:
+                db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
+                db_query("DELETE FROM views_log WHERE v_id = %s", (v_id,), fetch=False)
+                deleted += 1
+                logging.info(f"🗑️ تم حذف الحلقة {v_id}")
+            else:
+                not_found.append(v_id)
+        
+        result = f"✅ تم حذف {deleted} حلقة"
+        if not_found:
+            result += f"\n❌ لم يتم العثور على: {', '.join(not_found)}"
+        
+        await message.reply_text(result)
+        
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ: {e}")
+
+@app.on_message(filters.command("delete_series") & filters.user(ADMIN_ID))
+async def delete_series_command(client, message):
+    """حذف جميع حلقات مسلسل معين"""
+    try:
+        command_parts = message.text.split(maxsplit=1)
+        if len(command_parts) < 2:
+            await message.reply_text("❌ استخدم: /delete_series اسم_المسلسل")
+            return
+        
+        series_name = command_parts[1].strip()
+        
+        videos = db_query("SELECT v_id FROM videos WHERE series_name = %s", (series_name,))
+        
+        if not videos:
+            await message.reply_text(f"❌ لا توجد حلقات للمسلسل: {series_name}")
+            return
+        
+        count = len(videos)
+        
+        for (v_id,) in videos:
+            db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
+            db_query("DELETE FROM views_log WHERE v_id = %s", (v_id,), fetch=False)
+        
+        logging.info(f"🗑️ تم حذف جميع حلقات {series_name} ({count} حلقة)")
+        await message.reply_text(f"✅ تم حذف جميع حلقات {series_name}\n📊 عدد الحلقات: {count}")
+        
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ: {e}")
+
+@app.on_message(filters.command("list") & filters.user(ADMIN_ID))
+async def list_command(client, message):
+    """عرض قائمة بالحلقات (آخر 20 حلقة)"""
+    try:
+        videos = db_query("SELECT v_id, series_name, ep_num, views FROM videos ORDER BY created_at DESC LIMIT 20")
+        
+        if not videos:
+            await message.reply_text("📭 لا توجد حلقات في قاعدة البيانات")
+            return
+        
+        text = "📋 **آخر 20 حلقة:**\n\n"
+        for v_id, name, ep, views in videos:
+            text += f"• `{v_id}` | {name} - حلقة {ep} | 👁️ {views}\n"
+        
+        if len(text) > 4000:
+            parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+            for part in parts:
+                await message.reply_text(part)
+        else:
+            await message.reply_text(text)
+        
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ: {e}")
+
+@app.on_message(filters.command("search") & filters.user(ADMIN_ID))
+async def search_command(client, message):
+    """البحث عن حلقات باسم المسلسل"""
+    try:
+        command_parts = message.text.split(maxsplit=1)
+        if len(command_parts) < 2:
+            await message.reply_text("❌ استخدم: /search اسم_المسلسل")
+            return
+        
+        search_term = command_parts[1].strip()
+        
+        videos = db_query(
+            "SELECT v_id, series_name, ep_num, views FROM videos WHERE series_name ILIKE %s ORDER BY ep_num ASC LIMIT 50",
+            (f"%{search_term}%",)
+        )
+        
+        if not videos:
+            await message.reply_text(f"❌ لا توجد نتائج لـ: {search_term}")
+            return
+        
+        text = f"🔍 **نتائج البحث عن: {search_term}**\n\n"
+        for v_id, name, ep, views in videos:
+            text += f"• `{v_id}` | {name} - حلقة {ep} | 👁️ {views}\n"
+        
+        if len(text) > 4000:
+            parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+            for part in parts:
+                await message.reply_text(part)
+        else:
+            await message.reply_text(text)
+        
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ: {e}")
+
+# ===== [15] أوامر الإدارة الأخرى =====
 @app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
 async def stats_cmd(client, message):
     total = db_query("SELECT COUNT(*) FROM videos")[0][0]
     users = db_query("SELECT COUNT(*) FROM users")[0][0]
+    views_today = db_query("SELECT COUNT(*) FROM views_log WHERE viewed_at >= CURRENT_DATE")[0][0]
     top = db_query("SELECT series_name, views FROM videos WHERE views > 0 ORDER BY views DESC LIMIT 5")
     
-    text = f"📊 **الإحصائيات**\n📁 الحلقات: {total}\n👥 المستخدمين: {users}\n🔘 المزيد: {'✅' if SHOW_MORE_BUTTONS else '❌'}\n\n🏆 الأكثر مشاهدة:\n"
+    text = f"📊 **الإحصائيات**\n"
+    text += f"📁 الحلقات: {total}\n"
+    text += f"👥 المستخدمين: {users}\n"
+    text += f"👁️ مشاهدات اليوم: {views_today}\n"
+    text += f"🔘 المزيد: {'✅' if SHOW_MORE_BUTTONS else '❌'}\n\n"
+    text += f"🏆 **الأكثر مشاهدة:**\n"
+    
     for name, views in top:
         text += f"• {name}: {views}\n"
     
@@ -499,13 +573,17 @@ async def stats_cmd(client, message):
 
 @app.on_message(filters.command("check_pending") & filters.user(ADMIN_ID))
 async def check_pending(client, message):
-    pending = db_query("SELECT video_id, step, quality FROM pending_posts ORDER BY created_at DESC")
+    pending = db_query("SELECT video_id, step, quality, created_at FROM pending_posts ORDER BY created_at DESC")
     if not pending:
         await message.reply_text("📭 لا توجد طلبات معلقة")
         return
+    
     text = "📋 **الطلبات المعلقة:**\n"
-    for vid, step, q in pending:
-        text += f"• {vid} | {step} | {q or '?'}\n"
+    for vid, step, q, created in pending:
+        time_ago = datetime.now() - created
+        minutes = int(time_ago.total_seconds() / 60)
+        text += f"• `{vid}` | {step} | {q or '?'} | منذ {minutes} د\n"
+    
     await message.reply_text(text)
 
 @app.on_message(filters.command("reset_pending") & filters.user(ADMIN_ID))
@@ -516,8 +594,8 @@ async def reset_pending(client, message):
 @app.on_message(filters.command("test_publish") & filters.user(ADMIN_ID))
 async def test_publish(client, message):
     try:
-        await client.send_message(PUBLISH_CHANNEL, "🧪 اختبار النشر التلقائي")
-        await message.reply_text("✅ تم إرسال رسالة اختبار")
+        await client.send_message(PUBLISH_CHANNEL, "🧪 اختبار النشر التلقائي - البوت يعمل ✅")
+        await message.reply_text("✅ تم إرسال رسالة اختبار إلى القناة العامة")
     except Exception as e:
         await message.reply_text(f"❌ فشل الإرسال: {e}")
 
@@ -530,6 +608,35 @@ async def clear_limits(client, message):
     global user_last_request
     user_last_request = {}
     await message.reply_text("✅ تم تنظيف حدود الطلبات")
+
+@app.on_message(filters.command("check_channel") & filters.user(ADMIN_ID))
+async def check_channel_command(client, message):
+    """فحص صلاحيات البوت في القناة العامة"""
+    try:
+        channel = await client.get_chat(PUBLISH_CHANNEL)
+        
+        try:
+            bot_member = await client.get_chat_member(PUBLISH_CHANNEL, "me")
+            bot_status = bot_member.status
+        except:
+            bot_status = "❌ ليس عضواً"
+        
+        text = f"📊 **معلومات القناة العامة**\n\n"
+        text += f"اسم القناة: {channel.title}\n"
+        text += f"معرف القناة: `{PUBLISH_CHANNEL}`\n"
+        text += f"حالة البوت: {bot_status}\n\n"
+        
+        if bot_status == "administrator":
+            text += "✅ البوت مشرف - يمكنه النشر"
+        elif bot_status == "member":
+            text += "⚠️ البوت عضو فقط - يحتاج صلاحية مشرف للنشر"
+        else:
+            text += "❌ البوت ليس في القناة - أضفه كمشرف"
+        
+        await message.reply_text(text)
+        
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ في فحص القناة: {e}")
 
 @app.on_message(filters.command("update_series") & filters.user(ADMIN_ID))
 async def update_series_command(client, message):
@@ -551,7 +658,7 @@ async def update_series_command(client, message):
             db_query("UPDATE videos SET series_name = %s WHERE v_id = %s", (new_name, v_id), fetch=False)
             count += 1
         
-        await message.reply_text(f"✅ تم تحديث {count} حلقة")
+        await message.reply_text(f"✅ تم تحديث {count} حلقة إلى {new_name}")
         
     except Exception as e:
         await message.reply_text(f"❌ خطأ: {e}")
@@ -591,9 +698,9 @@ async def reindex_command(client, message):
     except Exception as e:
         await message.reply_text(f"❌ خطأ: {e}")
 
-# ===== [15] التشغيل الرئيسي =====
+# ===== [16] التشغيل الرئيسي =====
 def main():
-    print("🚀 تشغيل البوت الذكي مع دعم جميع المسلسلات...")
+    print("🚀 تشغيل البوت الذكي مع أوامر الحذف والإدارة...")
     init_database()
     
     while True:
