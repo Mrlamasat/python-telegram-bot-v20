@@ -172,7 +172,7 @@ async def receive_episode(client, message):
     except Exception as e: 
         logging.error(f"Publish error: {e}")
 
-# ===== [12] أمر البدء مع أزرار المزيد من الحلقات =====
+# ===== [12] أمر البدء مع أزرار المزيد من الحلقات (معدل مع علامة ✅) =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     # تسجيل المستخدم
@@ -201,12 +201,30 @@ async def start_cmd(client, message):
         else:
             s_name, ep_num, quality = data[0]
         
-        # بناء الأزرار
+        # بناء الأزرار مع تمييز الحلقة الحالية
         keyboard = []
+        
         if SHOW_MORE_BUTTONS:
-            more_buttons = get_episode_buttons(s_name, v_id, (await client.get_me()).username)
-            if more_buttons:
-                keyboard.extend(more_buttons)
+            # جلب الحلقات الأخرى
+            other_eps = db_query("SELECT ep_num, v_id FROM videos WHERE series_name = %s AND v_id != %s ORDER BY ep_num ASC LIMIT 30", (s_name, v_id))
+            
+            if other_eps:
+                row = []
+                me = await client.get_me()
+                bot_username = me.username
+                
+                # إضافة الحلقة الحالية أولاً مع علامة ✅
+                row.append(InlineKeyboardButton(f"✅ {ep_num}", url=f"https://t.me/{bot_username}?start={v_id}"))
+                
+                # إضافة باقي الحلقات
+                for o_ep, o_vid in other_eps:
+                    row.append(InlineKeyboardButton(str(o_ep), url=f"https://t.me/{bot_username}?start={o_vid}"))
+                    if len(row) == 5:
+                        keyboard.append(row)
+                        row = []
+                
+                if row:
+                    keyboard.append(row)
         
         keyboard.append([InlineKeyboardButton("🔗 القناة الاحتياطية", url=BACKUP_CHANNEL_LINK)])
         
@@ -279,7 +297,7 @@ async def test_cmd(client, message):
 
 # ===== [18] التشغيل الرئيسي =====
 def main():
-    print("🚀 تشغيل البوت المتكامل...")
+    print("🚀 تشغيل البوت المتكامل مع علامة ✅...")
     init_database()
     
     try:
