@@ -227,7 +227,7 @@ def create_episode_buttons(series_name, current_v_id, bot_username):
     
     return keyboard
 
-# ===== [9] أمر البدء (معدل للفيديوهات القديمة) =====
+# ===== [9] أمر البدء =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     # تسجيل المستخدم
@@ -244,7 +244,7 @@ async def start_cmd(client, message):
         data = db_query("SELECT series_name, ep_num, encrypted_name FROM videos WHERE v_id = %s", (v_id,))
         
         if not data:
-            # الفيديو غير موجود في قاعدة البيانات - نجربه直接从 المصدر
+            # الفيديو غير موجود في قاعدة البيانات
             msg = await message.reply_text("🔄 جاري التحميل لأول مرة...")
             try:
                 source = await client.get_messages(SOURCE_CHANNEL, int(v_id))
@@ -254,9 +254,10 @@ async def start_cmd(client, message):
                     if ep == 0:
                         ep = 1
                     
-                    # استخراج اسم المسلسل من caption (للفيديوهات القديمة)
+                    # استخراج اسم المسلسل من caption
                     series_name = extract_series_name(source.caption or "")
                     if not series_name:
+                        # ✅ تم إصلاح الخطأ هنا
                         series_name = f"مسلسل {v_id[-3:]}"
                     
                     encrypted = encrypt_title(series_name)
@@ -339,7 +340,8 @@ async def fix_database(client, message):
             if source and source.video:
                 series_name = extract_series_name(source.caption or "")
                 if not series_name:
-                    series_name = f"مسلسل {v_id[-3:}"
+                    # ✅ تم إصلاح الخطأ هنا أيضاً
+                    series_name = f"مسلسل {v_id[-3:]}"
                 
                 ep = extract_episode_number(source.caption or "")
                 if ep == 0:
