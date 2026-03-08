@@ -5,7 +5,95 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
 
 logging.basicConfig(level=logging.INFO)
+# ===== [أوامر الحذف] =====
+@app.on_message(filters.command("delete") & filters.user(ADMIN_ID))
+async def delete_command(client, message):
+    """حذف حلقة أو عدة حلقات من قاعدة البيانات"""
+    try:
+        command_parts = message.text.split()
+        if len(command_parts) < 2:
+            await message.reply_text("❌ استخدم: /delete معرف_الحلقة1 معرف_الحلقة2 ...")
+            return
+        
+        v_ids = command_parts[1:]
+        deleted = 0
+        not_found = []
+        
+        for v_id in v_ids:
+            # التحقق من وجود الحلقة
+            exists = db_query("SELECT 1 FROM videos WHERE v_id = %s", (v_id,))
+            if exists:
+                db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
+                db_query("DELETE FROM views_log WHERE v_id = %s", (v_id,), fetch=False)
+                deleted += 1
+                logging.info(f"🗑️ تم حذف الحلقة {v_id}")
+            else:
+                not_found.append(v_id)
+        
+        result = f"✅ تم حذف {deleted} حلقة"
+        if not_found:
+            result += f"\n❌ لم يتم العثور على: {', '.join(not_found)}"
+        
+        await message.reply_text(result)
+        
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ: {e}")
 
+@app.on_message(filters.command("delete_series") & filters.user(ADMIN_ID))
+async def delete_series_command(client, message):
+    """حذف جميع حلقات مسلسل معين"""
+    try:
+        command_parts = message.text.split(maxsplit=1)
+        if len(command_parts) < 2:
+            await message.reply_text("❌ استخدم: /delete_series اسم_المسلسل")
+            return
+        
+        series_name = command_parts[1].strip()
+        
+        # البحث عن جميع حلقات المسلسل
+        videos = db_query("SELECT v_id FROM videos WHERE series_name = %s", (series_name,))
+        
+        if not videos:
+            await message.reply_text(f"❌ لا توجد حلقات للمسلسل: {series_name}")
+            return
+        
+        count = len(videos)
+        
+        # حذف جميع الحلقات
+        for (v_id,) in videos:
+            db_query("DELETE FROM videos WHERE v_id = %s", (v_id,), fetch=False)
+            db_query("DELETE FROM views_log WHERE v_id = %s", (v_id,), fetch=False)
+        
+        logging.info(f"🗑️ تم حذف جميع حلقات {series_name} ({count} حلقة)")
+        await message.reply_text(f"✅ تم حذف جميع حلقات {series_name}\n📊 عدد الحلقات: {count}")
+        
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ: {e}")
+
+@app.on_message(filters.command("list") & filters.user(ADMIN_ID))
+async def list_command(client, message):
+    """عرض قائمة بالحلقات (آخر 20 حلقة)"""
+    try:
+        videos = db_query("SELECT v_id, series_name, ep_num, views FROM videos ORDER BY created_at DESC LIMIT 20")
+        
+        if not videos:
+            await message.reply_text("📭 لا توجد حلقات في قاعدة البيانات")
+            return
+        
+        text = "📋 **آخر 20 حلقة:**\n\n"
+        for v_id, name, ep, views in videos:
+            text += f"• `{v_id}` | {name} - حلقة {ep} | 👁️ {views}\n"
+        
+        # تقسيم النص الطويل
+        if len(text) > 4000:
+            parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+            for part in parts:
+                await message.reply_text(part)
+        else:
+            await message.reply_text(text)
+        
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ: {e}")
 # ===== [1] الإعدادات =====
 API_ID = 35405228
 API_HASH = "dacba460d875d963bbd4462c5eb554d6"
