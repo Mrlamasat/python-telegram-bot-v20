@@ -303,17 +303,21 @@ async def handle_quality(client, callback_query):
     await callback_query.answer()
     logging.info(f"✅ تم اختيار الجودة {quality} للفيديو {video_id}")
 
-# ===== [11] استقبال رقم الحلقة (نسخة مبسطة ومجربة) =====
+# ===== [11] استقبال رقم الحلقة (نسخة مع تسجيل تفصيلي) =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.text)
 async def receive_episode(client, message):
+    # تسجيل وصول أي رسالة نصية
+    logging.info(f"📝 رسالة نصية واردة: {message.text}")
+    
     # استخراج الرقم من الرسالة
     ep_num = extract_episode_number(message.text)
     
-    # إذا لم تكن الرسالة رقماً، نتجاهلها تماماً
+    # إذا لم تكن الرسالة رقماً، نسجل ونتجاهل
     if ep_num == 0:
+        logging.info(f"⏭️ تم تجاهل الرسالة (لا تحتوي على رقم): {message.text}")
         return
 
-    logging.info(f"🔢 استلمت الرقم {ep_num}")
+    logging.info(f"🔢 تم استخراج الرقم: {ep_num}")
 
     # البحث عن آخر فيديو في انتظار رقم الحلقة
     pending = db_query("""
@@ -323,34 +327,46 @@ async def receive_episode(client, message):
     """)
     
     if not pending:
+        logging.warning("⚠️ لا يوجد طلب في انتظار رقم الحلقة")
         await message.reply_text("⚠️ لا يوجد طلب في انتظار رقم الحلقة")
         return
 
     video_id, poster_id, quality = pending[0]
+    logging.info(f"✅ وجدنا طلب معلق: video_id={video_id}, poster_id={poster_id}, quality={quality}")
     
     # جلب اسم المسلسل
     poster_data = db_query("SELECT series_name FROM posters WHERE poster_id = %s", (poster_id,))
     if not poster_data:
         logging.error(f"❌ لا يوجد بوستر بالمعرف {poster_id}")
+        await message.reply_text(f"❌ خطأ: لم يتم العثور على البوستر رقم {poster_id}")
         return
     
     series_name = poster_data[0][0]
+    logging.info(f"📛 اسم المسلسل: {series_name}")
     
     # حفظ في قاعدة البيانات
-    db_query("""
-        INSERT INTO videos (v_id, series_name, ep_num, quality) 
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (v_id) DO UPDATE SET 
-        series_name = EXCLUDED.series_name,
-        ep_num = EXCLUDED.ep_num,
-        quality = EXCLUDED.quality
-    """, (video_id, series_name, ep_num, quality), fetch=False)
+    try:
+        db_query("""
+            INSERT INTO videos (v_id, series_name, ep_num, quality) 
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (v_id) DO UPDATE SET 
+            series_name = EXCLUDED.series_name,
+            ep_num = EXCLUDED.ep_num,
+            quality = EXCLUDED.quality
+        """, (video_id, series_name, ep_num, quality), fetch=False)
+        logging.info(f"💾 تم حفظ الفيديو {video_id} في قاعدة البيانات")
+    except Exception as e:
+        logging.error(f"❌ فشل حفظ الفيديو: {e}")
+        await message.reply_text(f"❌ خطأ في حفظ البيانات: {e}")
+        return
     
     # حذف الطلب المعلق
     db_query("DELETE FROM pending_posts WHERE video_id = %s", (video_id,), fetch=False)
+    logging.info(f"🗑️ تم حذف الطلب المعلق {video_id}")
     
     # رسالة تأكيد
     await message.reply_text(f"✅ تم حفظ الحلقة:\n🎬 {series_name}\n🔢 {ep_num}\n📊 {quality}")
+    logging.info(f"✅ تم إرسال رسالة التأكيد")
 
     # النشر التلقائي في قناة النشر
     try:
@@ -363,6 +379,8 @@ async def receive_episode(client, message):
         ]])
 
         caption = f"🎬 {encrypted}\n🔢 الحلقة {ep_num}\n📺 {quality}"
+        
+        logging.info(f"📤 جاري النشر في قناة {PUBLISH_CHANNEL}")
 
         await client.copy_message(
             chat_id=PUBLISH_CHANNEL,
@@ -375,6 +393,7 @@ async def receive_episode(client, message):
         
     except Exception as e:
         logging.error(f"❌ خطأ في النشر التلقائي: {e}")
+        await message.reply_text(f"⚠️ تم حفظ الحلقة لكن فشل النشر التلقائي: {e}")
 
 # ===== [12] أمر البدء =====
 @app.on_message(filters.command("start") & filters.private)
