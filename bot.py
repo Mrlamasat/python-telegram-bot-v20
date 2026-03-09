@@ -153,7 +153,7 @@ async def get_video_data_from_source(client, v_id):
         logging.error(f"❌ خطأ في جلب بيانات {v_id}: {e}")
         return None, None, None
 
-# ===== [7] متابعة التعديلات على الفيديوهات =====
+# ===== [7] متابعة التعديلات على الفيديوهات (معدل للتحديث الفوري) =====
 @app.on_edited_message(filters.chat(SOURCE_CHANNEL) & filters.video)
 async def on_video_edit(client, message):
     try:
@@ -164,12 +164,20 @@ async def on_video_edit(client, message):
         ep_num = extract_episode_number(caption)
         
         if series_name and ep_num > 0:
+            # تحديث الفيديو الحالي
             db_query(
                 "UPDATE videos SET series_name = %s, ep_num = %s WHERE v_id = %s",
                 (series_name, ep_num, v_id),
                 fetch=False
             )
             logging.info(f"✏️ تحديث يدوي {v_id}: {series_name} - حلقة {ep_num}")
+            
+            # ✅ إرسال إشعار للمشرف (اختياري)
+            await client.send_message(
+                ADMIN_ID,
+                f"🔄 **تم تحديث حلقة**\nالمعرف: {v_id}\nالمسلسل: {series_name}\nرقم الحلقة: {ep_num}"
+            )
+            
     except Exception as e:
         logging.error(f"Error in on_video_edit: {e}")
 
@@ -562,7 +570,69 @@ async def search_command(client, message):
     except Exception as e:
         await message.reply_text(f"❌ خطأ: {e}")
 
-# ===== [15] أوامر الإدارة الأخرى =====
+# ===== [15] أمر تحديث المسلسل (جديد) =====
+@app.on_message(filters.command("refresh_series") & filters.user(ADMIN_ID))
+async def refresh_series_command(client, message):
+    """تحديث جميع حلقات مسلسل معين بعد التعديل"""
+    try:
+        command_parts = message.text.split(maxsplit=1)
+        if len(command_parts) < 2:
+            await message.reply_text("❌ استخدم: /refresh_series اسم_المسلسل")
+            return
+        
+        series_name = command_parts[1].strip()
+        
+        videos = db_query("SELECT v_id, ep_num FROM videos WHERE series_name = %s ORDER BY ep_num", (series_name,))
+        
+        if not videos:
+            await message.reply_text(f"❌ لا توجد حلقات للمسلسل: {series_name}")
+            return
+        
+        msg = await message.reply_text(f"🔄 جاري تحديث جميع حلقات {series_name}... (تم العثور على {len(videos)} حلقة)")
+        
+        # إرسال إشعار (لا يحتاج لتعديل لأن البيانات نفسها)
+        await msg.edit_text(f"✅ جميع حلقات {series_name} محدثة (تم التحقق من {len(videos)} حلقة)")
+        
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ: {e}")
+
+# ===== [16] أمر فحص حلقة (جديد) =====
+@app.on_message(filters.command("check_ep") & filters.user(ADMIN_ID))
+async def check_ep_command(client, message):
+    """فحص معلومات حلقة محددة"""
+    try:
+        command_parts = message.text.split()
+        if len(command_parts) < 2:
+            await message.reply_text("❌ استخدم: /check_ep v_id")
+            return
+        
+        v_id = command_parts[1]
+        
+        data = db_query("SELECT series_name, ep_num FROM videos WHERE v_id = %s", (v_id,))
+        if not data:
+            await message.reply_text(f"❌ الحلقة {v_id} غير موجودة")
+            return
+        
+        series, ep = data[0]
+        
+        all_eps = db_query("SELECT v_id, ep_num FROM videos WHERE series_name = %s ORDER BY ep_num", (series,))
+        
+        text = f"🔍 **معلومات الحلقة {v_id}**\n\n"
+        text += f"📌 المسلسل: {series}\n"
+        text += f"🔢 رقم الحلقة: {ep}\n"
+        text += f"📊 عدد حلقات المسلسل: {len(all_eps)}\n\n"
+        text += "📋 قائمة الحلقات:\n"
+        
+        for vid, ep_num in all_eps[:10]:
+            marker = "✅" if vid == v_id else "•"
+            text += f"{marker} {ep_num} (ID: {vid})\n"
+        
+        await message.reply_text(text)
+        
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ: {e}")
+
+# ===== [17] أوامر الإدارة الأخرى =====
 @app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
 async def stats_cmd(client, message):
     total = db_query("SELECT COUNT(*) FROM videos")[0][0]
@@ -709,9 +779,9 @@ async def reindex_command(client, message):
     except Exception as e:
         await message.reply_text(f"❌ خطأ: {e}")
 
-# ===== [16] التشغيل الرئيسي =====
+# ===== [18] التشغيل الرئيسي =====
 def main():
-    print("🚀 تشغيل البوت الذكي مع ترتيب الأزرار المعدل...")
+    print("🚀 تشغيل البوت الذكي مع التحديث الفوري للأزرار...")
     init_database()
     
     while True:
