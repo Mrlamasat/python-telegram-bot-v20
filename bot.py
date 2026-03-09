@@ -6,11 +6,11 @@ from pyrogram.errors import FloodWait
 
 logging.basicConfig(level=logging.INFO)
 
-# ===== [1] الإعدادات =====
-API_ID = 35405228
-API_HASH = "dacba460d875d963bbd4462c5eb554d6"
+# ===== # ===== [1] الإعدادات =====
+API_ID = int(os.environ.get("API_ID"))
+API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 SOURCE_CHANNEL = -1003547072209
 ADMIN_ID = 7720165591
@@ -343,7 +343,7 @@ def check_rate_limit(user_id):
     user_last_request[user_id].append(now)
     return True, 0
 
-# ===== [13] أمر البدء الذكي مع التحديث التلقائي =====
+# ===== [13] أمر البدء الذكي مع التحديث التلقائي (معدل لترتيب الأزرار) =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     user_id = message.from_user.id
@@ -383,33 +383,28 @@ async def start_cmd(client, message):
             )
             
             if other_eps:
-                row = []
                 me = await client.get_me()
                 bot_username = me.username
                 
-                row.append(InlineKeyboardButton(f"✅ {ep_num}", url=f"https://t.me/{bot_username}?start={v_id}"))
-                # أولاً: قائمة بجميع الحلقات (بما فيها الحالية)
-all_eps = [(ep_num, v_id)]  # الحلقة الحالية
-all_eps.extend(other_eps)   # باقي الحلقات
-
-# ترتيب الحلقات تصاعدياً حسب رقم الحلقة
-all_eps.sort(key=lambda x: x[0])
-
-# بناء الأزرار بالترتيب الصحيح
-row = []
-for o_ep, o_vid in all_eps:
-    # إذا كانت هذه هي الحلقة الحالية، أضف ✅
-    if o_ep == ep_num and o_vid == v_id:
-        row.append(InlineKeyboardButton(f"✅ {o_ep}", url=f"https://t.me/{bot_username}?start={o_vid}"))
-    else:
-        row.append(InlineKeyboardButton(str(o_ep), url=f"https://t.me/{bot_username}?start={o_vid}"))
-    
-    if len(row) == 5:
-        keyboard.append(row)
-        row = []
-
-if row:
-    keyboard.append(row)
+                # دمج الحلقة الحالية مع باقي الحلقات
+                all_eps = [(ep_num, v_id)]  # الحلقة الحالية
+                all_eps.extend(other_eps)   # إضافة باقي الحلقات
+                
+                # ترتيب جميع الحلقات تصاعدياً حسب الرقم
+                all_eps.sort(key=lambda x: x[0])
+                
+                # بناء الأزرار بالترتيب الصحيح
+                row = []
+                for o_ep, o_vid in all_eps:
+                    # إذا كانت هذه هي الحلقة الحالية، ضع ✅
+                    if o_ep == ep_num and o_vid == v_id:
+                        row.append(InlineKeyboardButton(f"✅ {o_ep}", url=f"https://t.me/{bot_username}?start={o_vid}"))
+                    else:
+                        row.append(InlineKeyboardButton(str(o_ep), url=f"https://t.me/{bot_username}?start={o_vid}"))
+                    
+                    if len(row) == 5:
+                        keyboard.append(row)
+                        row = []
                 
                 if row:
                     keyboard.append(row)
@@ -716,7 +711,7 @@ async def reindex_command(client, message):
 
 # ===== [16] التشغيل الرئيسي =====
 def main():
-    print("🚀 تشغيل البوت الذكي مع أوامر الحذف والإدارة...")
+    print("🚀 تشغيل البوت الذكي مع ترتيب الأزرار المعدل...")
     init_database()
     
     while True:
