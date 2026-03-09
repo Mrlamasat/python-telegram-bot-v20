@@ -164,7 +164,7 @@ async def on_video_edit(client, message):
         ep_num = extract_episode_number(caption)
         
         if series_name and ep_num > 0:
-            # تحديث الفيديو الحالي
+            # تحديث الفيديو الحالي في قاعدة البيانات
             db_query(
                 "UPDATE videos SET series_name = %s, ep_num = %s WHERE v_id = %s",
                 (series_name, ep_num, v_id),
@@ -172,7 +172,7 @@ async def on_video_edit(client, message):
             )
             logging.info(f"✏️ تحديث يدوي {v_id}: {series_name} - حلقة {ep_num}")
             
-            # ✅ إرسال إشعار للمشرف (اختياري)
+            # إرسال إشعار للمشرف
             await client.send_message(
                 ADMIN_ID,
                 f"🔄 **تم تحديث حلقة**\nالمعرف: {v_id}\nالمسلسل: {series_name}\nرقم الحلقة: {ep_num}"
@@ -351,7 +351,7 @@ def check_rate_limit(user_id):
     user_last_request[user_id].append(now)
     return True, 0
 
-# ===== [13] أمر البدء الذكي مع التحديث التلقائي (معدل لترتيب الأزرار) =====
+# ===== [13] أمر البدء الذكي مع التحديث الفوري (معدل للأزرار) =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     user_id = message.from_user.id
@@ -370,40 +370,35 @@ async def start_cmd(client, message):
     if len(message.command) > 1:
         v_id = message.command[1]
         
-        # جلب البيانات من المصدر مباشرة
-        series_name, ep_num, quality = await get_video_data_from_source(client, v_id)
+        # جلب بيانات الحلقة الحالية من قاعدة البيانات مباشرة
+        data = db_query("SELECT series_name, ep_num, quality FROM videos WHERE v_id = %s", (v_id,))
         
-        if not series_name:
-            data = db_query("SELECT series_name, ep_num, quality FROM videos WHERE v_id = %s", (v_id,))
-            if data:
-                series_name, ep_num, quality = data[0]
-            else:
+        if not data:
+            # إذا لم توجد في قاعدة البيانات، نجلبها من المصدر
+            series_name, ep_num, quality = await get_video_data_from_source(client, v_id)
+            if not series_name:
                 await message.reply_text("❌ لم يتم العثور على الحلقة")
                 return
+        else:
+            series_name, ep_num, quality = data[0]
         
-        # بناء الأزرار
+        # بناء الأزرار بناءً على قاعدة البيانات فقط
         keyboard = []
         
         if SHOW_MORE_BUTTONS and series_name:
-            other_eps = db_query(
-                "SELECT ep_num, v_id FROM videos WHERE series_name = %s AND v_id != %s ORDER BY ep_num ASC LIMIT 30",
-                (series_name, v_id)
+            # جلب جميع حلقات نفس المسلسل من قاعدة البيانات مباشرة
+            all_series_eps = db_query(
+                "SELECT ep_num, v_id FROM videos WHERE series_name = %s ORDER BY ep_num ASC LIMIT 50",
+                (series_name,)
             )
             
-            if other_eps:
+            if all_series_eps and len(all_series_eps) > 1:
                 me = await client.get_me()
                 bot_username = me.username
                 
-                # دمج الحلقة الحالية مع باقي الحلقات
-                all_eps = [(ep_num, v_id)]  # الحلقة الحالية
-                all_eps.extend(other_eps)   # إضافة باقي الحلقات
-                
-                # ترتيب جميع الحلقات تصاعدياً حسب الرقم
-                all_eps.sort(key=lambda x: x[0])
-                
-                # بناء الأزرار بالترتيب الصحيح
+                # بناء الأزرار بالترتيب التصاعدي
                 row = []
-                for o_ep, o_vid in all_eps:
+                for o_ep, o_vid in all_series_eps:
                     # إذا كانت هذه هي الحلقة الحالية، ضع ✅
                     if o_ep == ep_num and o_vid == v_id:
                         row.append(InlineKeyboardButton(f"✅ {o_ep}", url=f"https://t.me/{bot_username}?start={o_vid}"))
@@ -449,11 +444,10 @@ async def start_cmd(client, message):
 🆘 @Mohsen_7e"""
         await message.reply_text(welcome_text)
 
-# ===== [14] أوامر الحذف والإدارة الجديدة =====
+# ===== [14] أوامر الإدارة =====
 
 @app.on_message(filters.command("delete") & filters.user(ADMIN_ID))
 async def delete_command(client, message):
-    """حذف حلقة أو عدة حلقات من قاعدة البيانات"""
     try:
         command_parts = message.text.split()
         if len(command_parts) < 2:
@@ -485,7 +479,6 @@ async def delete_command(client, message):
 
 @app.on_message(filters.command("delete_series") & filters.user(ADMIN_ID))
 async def delete_series_command(client, message):
-    """حذف جميع حلقات مسلسل معين"""
     try:
         command_parts = message.text.split(maxsplit=1)
         if len(command_parts) < 2:
@@ -514,7 +507,6 @@ async def delete_series_command(client, message):
 
 @app.on_message(filters.command("list") & filters.user(ADMIN_ID))
 async def list_command(client, message):
-    """عرض قائمة بالحلقات (آخر 20 حلقة)"""
     try:
         videos = db_query("SELECT v_id, series_name, ep_num, views FROM videos ORDER BY created_at DESC LIMIT 20")
         
@@ -538,7 +530,6 @@ async def list_command(client, message):
 
 @app.on_message(filters.command("search") & filters.user(ADMIN_ID))
 async def search_command(client, message):
-    """البحث عن حلقات باسم المسلسل"""
     try:
         command_parts = message.text.split(maxsplit=1)
         if len(command_parts) < 2:
@@ -570,10 +561,8 @@ async def search_command(client, message):
     except Exception as e:
         await message.reply_text(f"❌ خطأ: {e}")
 
-# ===== [15] أمر تحديث المسلسل (جديد) =====
 @app.on_message(filters.command("refresh_series") & filters.user(ADMIN_ID))
 async def refresh_series_command(client, message):
-    """تحديث جميع حلقات مسلسل معين بعد التعديل"""
     try:
         command_parts = message.text.split(maxsplit=1)
         if len(command_parts) < 2:
@@ -596,10 +585,8 @@ async def refresh_series_command(client, message):
     except Exception as e:
         await message.reply_text(f"❌ خطأ: {e}")
 
-# ===== [16] أمر فحص حلقة (جديد) =====
 @app.on_message(filters.command("check_ep") & filters.user(ADMIN_ID))
 async def check_ep_command(client, message):
-    """فحص معلومات حلقة محددة"""
     try:
         command_parts = message.text.split()
         if len(command_parts) < 2:
@@ -632,7 +619,6 @@ async def check_ep_command(client, message):
     except Exception as e:
         await message.reply_text(f"❌ خطأ: {e}")
 
-# ===== [17] أوامر الإدارة الأخرى =====
 @app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
 async def stats_cmd(client, message):
     total = db_query("SELECT COUNT(*) FROM videos")[0][0]
@@ -692,7 +678,6 @@ async def clear_limits(client, message):
 
 @app.on_message(filters.command("check_channel") & filters.user(ADMIN_ID))
 async def check_channel_command(client, message):
-    """فحص صلاحيات البوت في القناة العامة"""
     try:
         channel = await client.get_chat(PUBLISH_CHANNEL)
         
