@@ -388,12 +388,28 @@ async def start_cmd(client, message):
                 bot_username = me.username
                 
                 row.append(InlineKeyboardButton(f"✅ {ep_num}", url=f"https://t.me/{bot_username}?start={v_id}"))
-                
-                for o_ep, o_vid in other_eps:
-                    row.append(InlineKeyboardButton(str(o_ep), url=f"https://t.me/{bot_username}?start={o_vid}"))
-                    if len(row) == 5:
-                        keyboard.append(row)
-                        row = []
+                # أولاً: قائمة بجميع الحلقات (بما فيها الحالية)
+all_eps = [(ep_num, v_id)]  # الحلقة الحالية
+all_eps.extend(other_eps)   # باقي الحلقات
+
+# ترتيب الحلقات تصاعدياً حسب رقم الحلقة
+all_eps.sort(key=lambda x: x[0])
+
+# بناء الأزرار بالترتيب الصحيح
+row = []
+for o_ep, o_vid in all_eps:
+    # إذا كانت هذه هي الحلقة الحالية، أضف ✅
+    if o_ep == ep_num and o_vid == v_id:
+        row.append(InlineKeyboardButton(f"✅ {o_ep}", url=f"https://t.me/{bot_username}?start={o_vid}"))
+    else:
+        row.append(InlineKeyboardButton(str(o_ep), url=f"https://t.me/{bot_username}?start={o_vid}"))
+    
+    if len(row) == 5:
+        keyboard.append(row)
+        row = []
+
+if row:
+    keyboard.append(row)
                 
                 if row:
                     keyboard.append(row)
