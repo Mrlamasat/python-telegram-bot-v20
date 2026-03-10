@@ -115,7 +115,6 @@ def create_series_keyboard(series_list, bot_username, user_id=None):
 def create_admin_keyboard(series_list, bot_username):
     """إنشاء لوحة المفاتيح للمشرف (مع أزرار الحذف والاكتمال)"""
     keyboard = []
-    row = []
     
     for item in series_list:
         if len(item) >= 4:
@@ -123,30 +122,13 @@ def create_admin_keyboard(series_list, bot_username):
         else:
             continue
         
-        # زر عادي
-        series_button = InlineKeyboardButton(
-            series_name,
-            callback_data=f"series_{series_name}"
-        )
-        
-        # زر حذف
-        delete_button = InlineKeyboardButton(
-            "🗑️",
-            callback_data=f"delete_{series_name}"
-        )
-        
-        # زر اكتمال
-        complete_button = InlineKeyboardButton(
-            "✅",
-            callback_data=f"complete_{series_name}"
-        )
-        
-        row.append(series_button)
-        row.append(delete_button)
-        row.append(complete_button)
-        
+        # صف واحد لكل مسلسل مع 3 أزرار
+        row = [
+            InlineKeyboardButton(series_name, callback_data=f"series_{series_name}"),
+            InlineKeyboardButton("🗑️", callback_data=f"delete_{series_name}"),
+            InlineKeyboardButton("✅", callback_data=f"complete_{series_name}")
+        ]
         keyboard.append(row)
-        row = []
     
     # زر العودة للقائمة العادية
     keyboard.append([
@@ -198,16 +180,18 @@ async def update_series_channel(client, db_query, force=False):
                     text,
                     reply_markup=InlineKeyboardMarkup(keyboard)
                 )
+                logging.info("✅ تم تحديث القائمة")
+                return
             except:
                 fixed_message_id = None
         
-        if not fixed_message_id:
-            msg = await client.send_message(
-                SERIES_CHANNEL,
-                text,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            fixed_message_id = msg.id
+        msg = await client.send_message(
+            SERIES_CHANNEL,
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        fixed_message_id = msg.id
+        logging.info("✅ تم إنشاء قائمة جديدة")
         
         # تحديث العدد الأخير
         last_episode_count = current_count
@@ -235,10 +219,24 @@ async def show_admin_mode(client, callback_query, db_query):
     
     keyboard = create_admin_keyboard(series_list, me.username)
     
-    await callback_query.message.edit_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    if fixed_message_id:
+        try:
+            await client.edit_message_text(
+                SERIES_CHANNEL,
+                fixed_message_id,
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except:
+            pass
+    else:
+        msg = await client.send_message(
+            SERIES_CHANNEL,
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        fixed_message_id = msg.id
+    
     await callback_query.answer()
 
 # ===== [9] دالة تحديث القائمة (تُستدعى من الملف الرئيسي) =====
@@ -291,16 +289,22 @@ def register_handlers(app, db_query):
     
     @app.on_callback_query(filters.regex(r"^back_to_normal$"))
     async def handle_back_to_normal(client, callback_query):
-        if callback_query.from_user.id != ADMIN_ID:
-            await callback_query.answer("⛔ غير مصرح", show_alert=True)
+        # العودة للقائمة العادية
+        await update_series_channel(client, db_query, force=True)
+        await callback_query.answer()
+
+# ===== [11] أوامر المشرف (معدلة للتأكد من العمل) =====
+def register_commands(app, db_query):
+    
+    @app.on_message(filters.command("admin_menu") & filters.private)
+    async def admin_menu_cmd(client, message):
+        """تفعيل وضع الإدارة - يعمل الآن"""
+        
+        # التحقق من أن المستخدم هو المشرف
+        if message.from_user.id != ADMIN_ID:
+            await message.reply_text("⛔ هذا الأمر للمشرف فقط")
             return
         
-        # العودة للقائمة العادية
-        await update_series_channel(app, db_query, force=True)
-    
-    @app.on_message(filters.command("admin_menu") & filters.user(ADMIN_ID))
-    async def admin_menu_cmd(client, message):
-        """تفعيل وضع الإدارة"""
         series_list = get_series_list(db_query)
         
         if not series_list:
@@ -326,24 +330,31 @@ def register_handlers(app, db_query):
                     text,
                     reply_markup=InlineKeyboardMarkup(keyboard)
                 )
+                await message.reply_text("✅ تم تفعيل وضع الإدارة")
+                return
             except:
                 pass
-        else:
-            msg = await client.send_message(
-                SERIES_CHANNEL,
-                text,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            fixed_message_id = msg.id
         
+        # إذا لم يكن هناك منشور ثابت، أنشئ واحداً جديداً
+        msg = await client.send_message(
+            SERIES_CHANNEL,
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        fixed_message_id = msg.id
         await message.reply_text("✅ تم تفعيل وضع الإدارة")
 
-# ===== [11] دالة التشغيل =====
+# ===== [12] دالة التشغيل =====
 def setup_series_menu(app, db_query):
     global last_episode_count
     last_episode_count = get_total_episodes_count(db_query)
+    
+    # تسجيل المعالجات والأوامر
     register_handlers(app, db_query)
+    register_commands(app, db_query)
+    
     # تحديث مرة واحدة عند التشغيل
     loop = asyncio.get_event_loop()
     loop.create_task(update_series_channel(app, db_query, force=True))
+    
     logging.info("✅ تم إعداد قائمة المسلسلات")
