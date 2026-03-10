@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
+
 # استيراد دالة التحديث من series_menu
 from series_menu import refresh_series_menu
 
@@ -155,7 +156,7 @@ async def get_video_data_from_source(client, v_id):
         logging.error(f"❌ خطأ في جلب بيانات {v_id}: {e}")
         return None, None, None
 
-# ===== [7] متابعة التعديلات على الفيديوهات (معدل للتحديث الفوري) =====
+# ===== [7] متابعة التعديلات على الفيديوهات (مع إضافة التحديث) =====
 @app.on_edited_message(filters.chat(SOURCE_CHANNEL) & filters.video)
 async def on_video_edit(client, message):
     try:
@@ -180,6 +181,9 @@ async def on_video_edit(client, message):
                 f"🔄 **تم تحديث حلقة**\nالمعرف: {v_id}\nالمسلسل: {series_name}\nرقم الحلقة: {ep_num}"
             )
             
+            # تحديث قائمة المسلسلات فوراً
+            await refresh_series_menu(client, db_query)
+            
     except Exception as e:
         logging.error(f"Error in on_video_edit: {e}")
 
@@ -195,10 +199,13 @@ async def on_poster_edit(client, message):
             if video and video[0][0]:
                 db_query("UPDATE videos SET series_name = %s WHERE v_id = %s", (new_series, video[0][0]), fetch=False)
                 logging.info(f"✏️ تحديث بوستر {poster_id} → {new_series}")
+                
+                # تحديث قائمة المسلسلات فوراً
+                await refresh_series_menu(client, db_query)
     except Exception as e:
         logging.error(f"Error in on_poster_edit: {e}")
 
-# ===== [9] مراقبة قناة المصدر (معدل للنشر التلقائي) =====
+# ===== [9] مراقبة قناة المصدر (مع إضافة التحديث) =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.photo))
 async def monitor_source(client, message):
     try:
@@ -216,9 +223,10 @@ async def monitor_source(client, message):
                     fetch=False
                 )
                 logging.info(f"✅ فيديو مكتمل {v_id}: {series_name} - حلقة {ep_num}")
-                # بعد إضافة الفيديو إلى قاعدة البيانات
-await refresh_series_menu(client, db_query)
-
+                
+                # تحديث قائمة المسلسلات فوراً
+                await refresh_series_menu(client, db_query)
+                
                 # ===== النشر التلقائي في القناة العامة =====
                 try:
                     encrypted = encrypt_title(series_name)
@@ -280,7 +288,7 @@ async def handle_quality(client, cb):
     except Exception as e:
         logging.error(f"Error in handle_quality: {e}")
 
-# ===== [11] استقبال رقم الحلقة مع النشر التلقائي =====
+# ===== [11] استقبال رقم الحلقة مع النشر التلقائي (مع إضافة التحديث) =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.text & ~filters.regex(r"^/"))
 async def receive_episode(client, message):
     try:
@@ -305,8 +313,10 @@ async def receive_episode(client, message):
         db_query("INSERT INTO videos (v_id, series_name, ep_num, quality) VALUES (%s, %s, %s, %s)", 
                  (v_id, s_name, ep_num, q), fetch=False)
         db_query("DELETE FROM pending_posts WHERE video_id = %s", (v_id,), fetch=False)
-# بعد تحديث الفيديو
-await refresh_series_menu(client, db_query)
+
+        # تحديث قائمة المسلسلات فوراً
+        await refresh_series_menu(client, db_query)
+
         try:
             encrypted = encrypt_title(s_name)
             me = await client.get_me()
@@ -584,7 +594,7 @@ async def refresh_series_command(client, message):
         
         msg = await message.reply_text(f"🔄 جاري تحديث جميع حلقات {series_name}... (تم العثور على {len(videos)} حلقة)")
         
-        # إرسال إشعار (لا يحتاج لتعديل لأن البيانات نفسها)
+        # إرسال إشعار
         await msg.edit_text(f"✅ جميع حلقات {series_name} محدثة (تم التحقق من {len(videos)} حلقة)")
         
     except Exception as e:
@@ -769,7 +779,15 @@ async def reindex_command(client, message):
     except Exception as e:
         await message.reply_text(f"❌ خطأ: {e}")
 
-# ===== [18] التشغيل الرئيسي =====
+# ===== [19] إعداد قائمة المسلسلات =====
+try:
+    from series_menu import setup_series_menu
+    setup_series_menu(app, db_query)
+    print("✅ تم تحميل نظام قائمة المسلسلات")
+except Exception as e:
+    print(f"⚠️ لم يتم تحميل قائمة المسلسلات: {e}")
+
+# ===== [20] التشغيل الرئيسي =====
 def main():
     print("🚀 تشغيل البوت الذكي مع التحديث الفوري للأزرار...")
     init_database()
@@ -786,18 +804,5 @@ def main():
             print("🔄 إعادة التشغيل بعد 5 ثواني...")
             time.sleep(5)
 
-# ===== [الأوامر] =====
-# ... كل أوامرك هنا ...
-
-# ===== [19] إعداد قائمة المسلسلات =====
-# ضع هذا هنا 👇 (قبل main)
-try:
-    from series_menu import setup_series_menu
-    setup_series_menu(app, db_query)
-    print("✅ تم تحميل نظام قائمة المسلسلات")
-except Exception as e:
-    print(f"⚠️ لم يتم تحميل قائمة المسلسلات: {e}")
-
-# ===== [التشغيل الرئيسي] =====
 if __name__ == "__main__":
     main()
