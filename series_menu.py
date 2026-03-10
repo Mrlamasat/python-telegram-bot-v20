@@ -16,7 +16,7 @@ completed_series = set()
 last_episode_count = 0
 bot_info = None 
 
-# ===== [3] جلب البيانات =====
+# ===== [3] جلب البيانات من قاعدة البيانات =====
 def get_series_list(db_query):
     return db_query("""
         SELECT 
@@ -31,7 +31,7 @@ def get_series_list(db_query):
         ORDER BY s.series_name
     """)
 
-# ===== [4] بناء الأزرار (روابط مباشرة للمشاهدة) =====
+# ===== [4] بناء الأزرار (أيقونات واضحة وروابط مباشرة) =====
 def create_series_keyboard(series_list, bot_username):
     keyboard = []
     row = []
@@ -39,16 +39,18 @@ def create_series_keyboard(series_list, bot_username):
         s_name, count, last_date, max_ep, last_v_id = item
         
         btn_text = s_name
-        # إضافة إيموجي الحالة
+        
+        # ✅ وسم المسلسلات المكتملة (الحلقة الأخيرة)
         if s_name in completed_series or max_ep >= MAX_EPISODES:
             btn_text += " ✅"
         else:
+            # 🔥 وسم "نيو" للحلقات الجديدة (آخر 24 ساعة)
             if last_date:
                 if isinstance(last_date, str): last_date = datetime.fromisoformat(last_date)
                 if (datetime.now() - last_date).total_seconds() < 86400:
-                    btn_text += " 🆕"
+                    btn_text += " 🔥"
 
-        # تغيير الاستراتيجية: الزر يحمل رابط التحويل المباشر للبوت
+        # الرابط المباشر للبوت للمشاهدة
         direct_url = f"https://t.me/{bot_username}?start={last_v_id}"
         row.append(InlineKeyboardButton(btn_text, url=direct_url))
         
@@ -58,7 +60,7 @@ def create_series_keyboard(series_list, bot_username):
     if row: keyboard.append(row)
     return keyboard
 
-# ===== [5] التحديث التلقائي للقناة =====
+# ===== [5] التحديث التلقائي للقناة بالنص الجديد الواضح =====
 async def update_series_channel(client, db_query, force=False):
     global fixed_message_id, last_episode_count, bot_info
     
@@ -72,8 +74,15 @@ async def update_series_channel(client, db_query, force=False):
     series_list = get_series_list(db_query)
     if not series_list: return
     
-    text = "📺 **قائمة المسلسلات المحدثة**\n━━━━━━━━━━━━━━\n🔹 اضغط على اسم المسلسل للمشاهدة داخل البوت فوراً 👇"
-    # نمرر اسم مستخدم البوت لبناء الروابط
+    # النص النهائي والمعدل بناءً على طلبك يا محمد
+    text = (
+        "🎬 **مكتبة المسلسلات الحصرية**\n"
+        "━━━━━━━━━━━━━━━\n"
+        "اضغط على اسم المسلسل للمشاهدة الفورية 👇\n\n"
+        "✅ **تعني: تم اكتمال المسلسل (الحلقة الأخيرة)**\n"
+        "🔥 **تعني: توجد حلقة جديدة مضافة الآن**"
+    )
+
     reply_markup = InlineKeyboardMarkup(create_series_keyboard(series_list, bot_info.username))
 
     try:
@@ -86,7 +95,7 @@ async def update_series_channel(client, db_query, force=False):
     except Exception as e:
         logging.error(f"Error in update_menu: {e}")
 
-# ===== [6] وظائف الإدارة (عبر الأوامر لأن الأزرار أصبحت روابط) =====
+# ===== [6] لوحة الإدارة (حذف وتعيين منتهي) =====
 def register_handlers(app, db_query):
     
     @app.on_message(filters.command("admin_menu") & filters.user(ADMIN_ID))
@@ -97,11 +106,10 @@ def register_handlers(app, db_query):
             s_name = s[0]
             kb.append([
                 InlineKeyboardButton(f"🗑️ حذف {s_name}", callback_data=f"del_{s_name}"),
-                InlineKeyboardButton(f"✅ مكتمل", callback_data=f"complete_{s_name}")
+                InlineKeyboardButton(f"✅ تعيين منتهي", callback_data=f"complete_{s_name}")
             ])
-        await message.reply("⚙️ لوحة إدارة المسلسلات:", reply_markup=InlineKeyboardMarkup(kb))
+        await message.reply("⚙️ **لوحة إدارة المسلسلات**", reply_markup=InlineKeyboardMarkup(kb))
 
-    # معالجة أزرار الحذف والاكتمال في لوحة الإدارة فقط
     @app.on_callback_query(filters.regex(r"^(del_|complete_)") & filters.user(ADMIN_ID))
     async def handle_admin_actions(client, cb):
         if cb.data.startswith("del_"):
@@ -111,7 +119,7 @@ def register_handlers(app, db_query):
         elif cb.data.startswith("complete_"):
             s_name = cb.data.replace("complete_", "")
             completed_series.add(s_name)
-            await cb.answer(f"✅ تم تعيين {s_name} كمكتمل")
+            await cb.answer(f"✅ تم تعيين {s_name} كمنتهي")
         
         await update_series_channel(client, db_query, force=True)
 
