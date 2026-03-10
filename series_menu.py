@@ -7,7 +7,6 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ===== [1] الإعدادات =====
 SERIES_CHANNEL = -1003894735143
-UPDATE_INTERVAL = 3600  # التحديث كل ساعة
 ADMIN_ID = 7720165591
 
 # ===== [2] متغير لتخزين معرف المنشور الثابت =====
@@ -60,10 +59,7 @@ def create_series_keyboard(series_list, bot_username):
         else:
             continue
         
-        # التحقق من وجود حلقة جديدة
         is_new = check_new_episodes(last_episode)
-        
-        # إضافة علامة 🆕 إذا كان هناك حلقة جديدة
         button_text = f"{series_name} 🆕" if is_new else series_name
         
         button = InlineKeyboardButton(
@@ -80,7 +76,6 @@ def create_series_keyboard(series_list, bot_username):
     if row:
         keyboard.append(row)
     
-    # إضافة زر التحديث اليدوي
     keyboard.append([
         InlineKeyboardButton("🔄 تحديث القائمة", callback_data="refresh_series_menu")
     ])
@@ -128,9 +123,9 @@ async def show_series_episodes(client, callback_query, series_name, db_query):
     )
     await callback_query.answer()
 
-# ===== [4] إنشاء/تحديث المنشور الثابت =====
+# ===== [4] دالة التحديث (سيتم استدعاؤها من多处) =====
 async def update_series_channel(client, db_query):
-    """إنشاء أو تحديث المنشور الثابت في القناة"""
+    """تحديث المنشور الثابت في القناة"""
     global fixed_message_id
     
     try:
@@ -148,7 +143,6 @@ async def update_series_channel(client, db_query):
         
         keyboard = create_series_keyboard(series_list, me.username)
         
-        # إذا كان لدينا معرف منشور سابق، نقوم بتحديثه
         if fixed_message_id:
             try:
                 await client.edit_message_text(
@@ -157,33 +151,37 @@ async def update_series_channel(client, db_query):
                     text,
                     reply_markup=InlineKeyboardMarkup(keyboard)
                 )
-                logging.info("✅ تم تحديث المنشور الثابت")
+                logging.info("✅ تم تحديث القائمة")
                 return
-            except Exception as e:
-                logging.warning(f"⚠️ فشل تحديث المنشور القديم: {e}")
+            except:
                 fixed_message_id = None
         
-        # البحث عن منشور قديم في القناة
+        # البحث عن منشور قديم
         async for message in client.get_chat_history(SERIES_CHANNEL, limit=20):
             if message.text and "📺 **قائمة المسلسلات**" in message.text:
                 fixed_message_id = message.id
                 await message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-                logging.info("✅ تم العثور على منشور قديم وتحديثه")
+                logging.info("✅ تم تحديث القائمة")
                 return
         
-        # إذا لم يوجد منشور، إنشاء واحد جديد
+        # إنشاء جديد
         msg = await client.send_message(
             SERIES_CHANNEL,
             text,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         fixed_message_id = msg.id
-        logging.info("✅ تم إنشاء منشور ثابت جديد")
+        logging.info("✅ تم إنشاء قائمة جديدة")
         
     except Exception as e:
-        logging.error(f"❌ خطأ في تحديث القناة: {e}")
+        logging.error(f"❌ خطأ في التحديث: {e}")
 
-# ===== [5] معالجات الأزرار والأوامر =====
+# ===== [5] دالة يمكن استدعاؤها من الملف الرئيسي =====
+async def refresh_series_menu(client, db_query):
+    """دالة عامة للتحديث يمكن استدعاؤها من bot.py"""
+    await update_series_channel(client, db_query)
+
+# ===== [6] معالجات الأزرار =====
 def register_handlers(app, db_query):
     
     @app.on_callback_query(filters.regex(r"^series_"))
@@ -205,15 +203,9 @@ def register_handlers(app, db_query):
     
     @app.on_message(filters.command("update_menu") & filters.user(ADMIN_ID))
     async def update_menu_command(client, message):
-        msg = await message.reply_text("🔄 جاري تحديث القائمة...")
+        msg = await message.reply_text("🔄 جاري التحديث...")
         await update_series_channel(client, db_query)
-        await msg.edit_text("✅ تم تحديث القائمة")
-    
-    @app.on_message(filters.command("refresh_menu") & filters.user(ADMIN_ID))
-    async def refresh_menu_command(client, message):
-        msg = await message.reply_text("🔄 جاري إنشاء القائمة...")
-        await update_series_channel(client, db_query)
-        await msg.edit_text("✅ تم إنشاء القائمة")
+        await msg.edit_text("✅ تم التحديث")
     
     @app.on_message(filters.command("menu_stats") & filters.user(ADMIN_ID))
     async def menu_stats_command(client, message):
@@ -233,22 +225,11 @@ def register_handlers(app, db_query):
         
         await message.reply_text(text)
 
-# ===== [6] مهمة التحديث التلقائي =====
-async def auto_update_task(client, db_query):
-    """تحديث تلقائي كل ساعة"""
-    while True:
-        try:
-            await update_series_channel(client, db_query)
-            await asyncio.sleep(UPDATE_INTERVAL)
-        except Exception as e:
-            logging.error(f"❌ خطأ في التحديث التلقائي: {e}")
-            await asyncio.sleep(60)
-
 # ===== [7] دالة التشغيل الرئيسية =====
 def setup_series_menu(app, db_query):
     """تشغيل النظام"""
     register_handlers(app, db_query)
+    # تحديث فوري عند التشغيل
     loop = asyncio.get_event_loop()
-    loop.create_task(auto_update_task(app, db_query))
     loop.create_task(update_series_channel(app, db_query))
-    logging.info("✅ تم إعداد قائمة المسلسلات الثابتة")
+    logging.info("✅ تم إعداد قائمة المسلسلات (تحديث فوري)")
