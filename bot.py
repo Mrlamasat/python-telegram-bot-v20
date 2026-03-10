@@ -783,3 +783,10 @@ def main():
 
 if __name__ == "__main__":
     main()
+# ===== [19] إعداد قائمة المسلسلات =====
+try:
+    from series_menu import setup_series_menu
+    setup_series_menu(app, db_query)
+    print("✅ تم تحميل نظام قائمة المسلسلات")
+except Exception as e:
+    print(f"⚠️ لم يتم تحميل قائمة المسلسلات: {e}")
