@@ -781,12 +781,18 @@ def main():
             print("🔄 إعادة التشغيل بعد 5 ثواني...")
             time.sleep(5)
 
-if __name__ == "__main__":
-    main()
+# ===== [الأوامر] =====
+# ... كل أوامرك هنا ...
+
 # ===== [19] إعداد قائمة المسلسلات =====
+# ضع هذا هنا 👇 (قبل main)
 try:
     from series_menu import setup_series_menu
     setup_series_menu(app, db_query)
     print("✅ تم تحميل نظام قائمة المسلسلات")
 except Exception as e:
     print(f"⚠️ لم يتم تحميل قائمة المسلسلات: {e}")
+
+# ===== [التشغيل الرئيسي] =====
+if __name__ == "__main__":
+    main()
