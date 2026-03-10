@@ -19,10 +19,13 @@ MAX_EPISODES = 30  # الحد الأقصى لعدد حلقات المسلسل
 user_viewed = {}
 
 # ===== [4] تخزين المسلسلات المكتملة يدوياً =====
-# هذا جدول افتراضي - يمكن تخزينه في قاعدة البيانات لاحقاً
-completed_series = set()  # مسلسلات مكتملة يدوياً
+completed_series = set()
 
-# ===== [5] دوال مساعدة =====
+# ===== [5] متغير لمنع التحديثات غير الضرورية =====
+last_episode_count = 0  # آخر عدد للحلقات في قاعدة البيانات
+force_update_needed = False  # هل هناك حاجة للتحديث
+
+# ===== [6] دوال مساعدة =====
 def get_series_list(db_query):
     """جلب قائمة المسلسلات مع معلومات كاملة"""
     
@@ -42,9 +45,13 @@ def get_series_list(db_query):
     
     return series
 
+def get_total_episodes_count(db_query):
+    """الحصول على العدد الإجمالي للحلقات في قاعدة البيانات"""
+    result = db_query("SELECT COUNT(*) FROM videos")
+    return result[0][0] if result else 0
+
 def is_completed(series_name, episode_count, max_episode):
     """التحقق مما إذا كان المسلسل مكتملاً"""
-    # مكتمل يدوياً أو وصل للحد الأقصى
     return series_name in completed_series or max_episode >= MAX_EPISODES
 
 def has_new_episodes(last_episode_date, user_id, series_name):
@@ -59,16 +66,13 @@ def has_new_episodes(last_episode_date, user_id, series_name):
         except:
             return False
     
-    # التحقق من أن الحلقة خلال آخر 24 ساعة
     is_new = (now - last_episode_date).total_seconds() < 86400
     
     if not is_new:
         return False
     
-    # التحقق مما إذا كان المستخدم قد شاهد الحلقة
     if user_id in user_viewed and series_name in user_viewed[user_id]:
         last_viewed = user_viewed[user_id][series_name]
-        # إذا شاهد الحلقة بعد نزولها، لا تظهر 🆕
         if last_viewed > last_episode_date:
             return False
     
@@ -77,11 +81,9 @@ def has_new_episodes(last_episode_date, user_id, series_name):
 def get_series_button_text(series_name, episode_count, max_episode, last_episode, user_id):
     """تحديد نص الزر بناءً على حالة المسلسل والمستخدم"""
     
-    # التحقق من الاكتمال
     if is_completed(series_name, episode_count, max_episode):
         return f"{series_name} ✅"
     
-    # التحقق من وجود حلقات جديدة
     if has_new_episodes(last_episode, user_id, series_name):
         return f"{series_name} 🆕"
     
@@ -120,7 +122,6 @@ def create_series_keyboard(series_list, bot_username, user_id=None, show_control
     if row:
         keyboard.append(row)
     
-    # أزرار التحكم
     if show_controls:
         control_row = [
             InlineKeyboardButton("🔄 تحديث", callback_data="refresh_series_menu"),
@@ -134,17 +135,31 @@ def create_series_keyboard(series_list, bot_username, user_id=None, show_control
     
     return keyboard
 
-# ===== [6] تسجيل المشاهدة =====
+# ===== [7] تسجيل المشاهدة =====
 def mark_as_viewed(user_id, series_name):
     """تسجيل أن المستخدم شاهد المسلسل"""
     if user_id not in user_viewed:
         user_viewed[user_id] = {}
     user_viewed[user_id][series_name] = datetime.now()
 
-# ===== [7] دالة التحديث =====
+# ===== [8] دالة التحديث (تحدث فقط عند إضافة حلقة جديدة) =====
 async def update_series_channel(client, db_query, user_id=None, force=False, show_controls=False):
-    """تحديث المنشور الثابت في القناة"""
-    global fixed_message_id, last_update_time
+    """تحديث المنشور الثابت في القناة - فقط عند إضافة حلقة جديدة"""
+    global fixed_message_id, last_update_time, last_episode_count, force_update_needed
+    
+    # التحقق من وجود حلقات جديدة
+    current_count = get_total_episodes_count(db_query)
+    has_new_episode = current_count > last_episode_count
+    
+    if has_new_episode:
+        logging.info(f"🆕 تم اكتشاف حلقة جديدة! العدد: {last_episode_count} → {current_count}")
+        last_episode_count = current_count
+        force_update_needed = True
+    
+    # منع التحديث إذا لم تكن هناك حلقات جديدة وليس force
+    if not force and not force_update_needed and not has_new_episode:
+        logging.info("⏳ لا توجد حلقات جديدة - تخطي التحديث")
+        return
     
     # منع التحديث المتكرر
     if not force and last_update_time:
@@ -180,7 +195,8 @@ async def update_series_channel(client, db_query, user_id=None, force=False, sho
                     reply_markup=InlineKeyboardMarkup(keyboard)
                 )
                 last_update_time = datetime.now()
-                logging.info("✅ تم تحديث القائمة")
+                force_update_needed = False
+                logging.info("✅ تم تحديث القائمة (بسبب حلقة جديدة)")
                 return
             except Exception as e:
                 logging.warning(f"⚠️ فشل تحديث المنشور القديم: {e}")
@@ -193,12 +209,13 @@ async def update_series_channel(client, db_query, user_id=None, force=False, sho
         )
         fixed_message_id = msg.id
         last_update_time = datetime.now()
+        force_update_needed = False
         logging.info("✅ تم إنشاء قائمة جديدة")
         
     except Exception as e:
         logging.error(f"❌ خطأ في التحديث: {e}")
 
-# ===== [8] دوال الإدارة =====
+# ===== [9] دوال الإدارة =====
 async def show_admin_menu(client, callback_query, db_query):
     """عرض قائمة الإدارة"""
     
@@ -258,12 +275,19 @@ async def show_series_list_for_action(client, callback_query, db_query, action):
     )
     await callback_query.answer()
 
-# ===== [9] دالة تحديث القائمة =====
+# ===== [10] دالة تحديث القائمة (تُستدعى من الملف الرئيسي) =====
 async def refresh_series_menu(client, db_query):
     """تحديث القائمة عند إضافة حلقة جديدة"""
     await update_series_channel(client, db_query, force=True)
 
-# ===== [10] معالجات الأزرار =====
+# ===== [11] دالة لتهيئة العدد الأولي للحلقات =====
+def init_last_episode_count(db_query):
+    """تهيئة العدد الأولي للحلقات عند تشغيل البوت"""
+    global last_episode_count
+    last_episode_count = get_total_episodes_count(db_query)
+    logging.info(f"📊 العدد الأولي للحلقات: {last_episode_count}")
+
+# ===== [12] معالجات الأزرار =====
 def register_handlers(app, db_query):
     
     @app.on_callback_query(filters.regex(r"^series_"))
@@ -277,11 +301,19 @@ def register_handlers(app, db_query):
     
     @app.on_callback_query(filters.regex(r"^refresh_series_menu$"))
     async def handle_refresh_menu(client, callback_query):
+        # التحديث اليدوي مسموح فقط للمشرفين
+        if callback_query.from_user.id != ADMIN_ID:
+            await callback_query.answer("⛔ غير مصرح لك", show_alert=True)
+            return
+        
         await callback_query.answer("🔄 جاري التحديث...", show_alert=False)
         await update_series_channel(client, db_query, force=True)
     
     @app.on_callback_query(filters.regex(r"^show_admin_menu$"))
     async def handle_show_admin(client, callback_query):
+        if callback_query.from_user.id != ADMIN_ID:
+            await callback_query.answer("⛔ غير مصرح لك", show_alert=True)
+            return
         await show_admin_menu(client, callback_query, db_query)
     
     @app.on_callback_query(filters.regex(r"^back_to_menu$"))
@@ -305,40 +337,34 @@ def register_handlers(app, db_query):
     async def handle_delete_series(client, callback_query):
         series_name = callback_query.data.replace("delete_", "")
         
-        # حذف المسلسل من قاعدة البيانات
         db_query("DELETE FROM videos WHERE series_name = %s", (series_name,), fetch=False)
         
         await callback_query.message.edit_text(f"✅ تم حذف مسلسل {series_name}")
         await callback_query.answer()
         
-        # تحديث القائمة
         await update_series_channel(app, db_query, force=True, show_controls=True)
     
     @app.on_callback_query(filters.regex(r"^complete_"))
     async def handle_complete_series(client, callback_query):
         series_name = callback_query.data.replace("complete_", "")
         
-        # إضافة المسلسل إلى قائمة المكتملة يدوياً
         completed_series.add(series_name)
         
         await callback_query.message.edit_text(f"✅ تم تعيين {series_name} كمكتمل")
         await callback_query.answer()
         
-        # تحديث القائمة
         await update_series_channel(app, db_query, force=True, show_controls=True)
     
     @app.on_callback_query(filters.regex(r"^incomplete_"))
     async def handle_incomplete_series(client, callback_query):
         series_name = callback_query.data.replace("incomplete_", "")
         
-        # إزالة المسلسل من قائمة المكتملة يدوياً
         if series_name in completed_series:
             completed_series.remove(series_name)
         
         await callback_query.message.edit_text(f"✅ تم إلغاء الاكتمال لـ {series_name}")
         await callback_query.answer()
         
-        # تحديث القائمة
         await update_series_channel(app, db_query, force=True, show_controls=True)
     
     # أوامر المشرف
@@ -383,10 +409,18 @@ def register_handlers(app, db_query):
         
         await message.reply_text(text)
 
-# ===== [11] دالة التشغيل =====
+# ===== [13] دالة التشغيل =====
 def setup_series_menu(app, db_query):
     """تشغيل النظام"""
+    # تهيئة العدد الأولي للحلقات
+    init_last_episode_count(db_query)
+    
+    # تسجيل المعالجات
     register_handlers(app, db_query)
+    
+    # تحديث واحد فقط عند التشغيل (إذا كانت هناك حلقات)
     loop = asyncio.get_event_loop()
-    loop.create_task(update_series_channel(app, db_query, force=True))
-    logging.info("✅ تم إعداد قائمة المسلسلات الثابتة")
+    if last_episode_count > 0:
+        loop.create_task(update_series_channel(app, db_query, force=True))
+    
+    logging.info("✅ تم إعداد قائمة المسلسلات الثابتة (تتحدث فقط عند إضافة حلقة جديدة)")
