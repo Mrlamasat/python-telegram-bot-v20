@@ -115,7 +115,7 @@ def create_series_keyboard(series_list, bot_username, user_id=None):
     if row:
         keyboard.append(row)
     
-    # زر تحديث واحد فقط (بدون حذف)
+    # زر تحديث واحد فقط
     keyboard.append([
         InlineKeyboardButton("🔄 تحديث القائمة", callback_data="refresh_series_menu")
     ])
@@ -159,7 +159,7 @@ async def update_series_channel(client, db_query, user_id=None, force=False):
         
         keyboard = create_series_keyboard(series_list, me.username, user_id)
         
-        # إذا كان لدينا معرف منشور سابق، نقوم بتعديله فقط (لا حذف)
+        # إذا كان لدينا معرف منشور سابق، نقوم بتعديله فقط
         if fixed_message_id:
             try:
                 await client.edit_message_text(
@@ -173,8 +173,6 @@ async def update_series_channel(client, db_query, user_id=None, force=False):
                 return
             except Exception as e:
                 logging.warning(f"⚠️ فشل تحديث المنشور القديم: {e}")
-                # لا نحذف المتغير، ربما يكون الخطأ مؤقتاً
-                # fixed_message_id = None  # لا تحذف المعرف
         
         # إذا لم يكن لدينا منشور، ننشئ واحداً جديداً
         msg = await client.send_message(
@@ -194,7 +192,7 @@ async def refresh_series_menu(client, db_query):
     """تحديث القائمة عند إضافة حلقة جديدة"""
     await update_series_channel(client, db_query, force=True)
 
-# ===== [8] معالجات الأزرار (بدون حذف) =====
+# ===== [8] معالجات الأزرار (بدون رسائل في القناة) =====
 def register_handlers(app, db_query):
     
     @app.on_callback_query(filters.regex(r"^series_"))
@@ -205,25 +203,17 @@ def register_handlers(app, db_query):
         # تسجيل أن المستخدم شاهد هذا المسلسل
         mark_as_viewed(user_id, series_name)
         
-        # تحديث القائمة للمستخدم (تختفي 🆕) - تعديل فقط لا حذف
+        # تحديث القائمة للمستخدم (تختفي 🆕)
         await update_series_channel(client, db_query, user_id=user_id, force=True)
         
-        # إرسال رسالة للمستخدم بدلاً من حذف القائمة
-        await callback_query.message.reply_text(
-            f"🎬 **{series_name}**\n\n"
-            f"يمكنك مشاهدة الحلقات عبر البوت:\n"
-            f"🔗 https://t.me/{app.me.username}?start=series_{series_name}\n\n"
-            f"✅ تم تسجيل مشاهدتك للمسلسل"
-        )
-        
-        await callback_query.answer(f"تم اختيار {series_name}")
+        # إشعار صامت فقط (بدون رسالة في القناة)
+        await callback_query.answer(f"✅ {series_name}", show_alert=False)
     
     @app.on_callback_query(filters.regex(r"^refresh_series_menu$"))
     async def handle_refresh_menu(client, callback_query):
-        await callback_query.answer("🔄 جاري تحديث القائمة...")
-        # تحديث فقط بدون حذف
+        await callback_query.answer("🔄 جاري التحديث...", show_alert=False)
         await update_series_channel(client, db_query, force=True)
-        await callback_query.answer("✅ تم التحديث")
+        await callback_query.answer("✅ تم التحديث", show_alert=False)
     
     @app.on_message(filters.command("update_menu") & filters.user(ADMIN_ID))
     async def update_menu_command(client, message):
@@ -235,9 +225,9 @@ def register_handlers(app, db_query):
     async def refresh_menu_command(client, message):
         global fixed_message_id
         # لا نحذف المنشور، فقط نجبر التحديث
-        msg = await message.reply_text("🔄 جاري تحديث القائمة...")
+        msg = await message.reply_text("🔄 جاري إنشاء القائمة...")
         await update_series_channel(client, db_query, force=True)
-        await msg.edit_text("✅ تم تحديث القائمة")
+        await msg.edit_text("✅ تم إنشاء القائمة")
     
     @app.on_message(filters.command("menu_stats") & filters.user(ADMIN_ID))
     async def menu_stats_command(client, message):
