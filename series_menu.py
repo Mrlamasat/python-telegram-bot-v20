@@ -31,28 +31,8 @@ def get_series_list(db_query):
         ORDER BY s.series_name
     """)
 
-# ===== [4] التحقق من حالة "جديد" للمستخدم =====
-def is_new_for_user(series_name, last_date, user_id):
-    """التحقق مما إذا كان المسلسل جديداً لهذا المستخدم"""
-    if not last_date:
-        return False
-    
-    if isinstance(last_date, str):
-        last_date = datetime.fromisoformat(last_date)
-    
-    # التحقق من أن الحلقة خلال آخر 24 ساعة
-    is_recent = (datetime.now() - last_date).total_seconds() < 86400
-    if not is_recent:
-        return False
-    
-    # التحقق مما إذا كان المستخدم قد شاهد بالفعل
-    if user_id in user_viewed and series_name in user_viewed[user_id]:
-        return False  # شاهدها بالفعل
-    
-    return True  # جديدة ولم يشاهدها
-
-# ===== [5] بناء الأزرار الذكية (تختلف حسب المستخدم) =====
-def create_series_keyboard(series_list, bot_username, user_id=None):
+# ===== [4] بناء الأزرار الذكية =====
+def create_series_keyboard(series_list, bot_username):
     keyboard = []
     row = []
     for item in series_list:
@@ -60,17 +40,18 @@ def create_series_keyboard(series_list, bot_username, user_id=None):
         
         btn_text = s_name
         
-        # ✅ المسلسلات المكتملة
+        # ✅ وسم المسلسلات المكتملة
         if s_name in completed_series or max_ep >= MAX_EPISODES:
             btn_text += " ✅"
         else:
-            # 🔥 فقط إذا كان جديداً ولم يشاهده هذا المستخدم
-            if user_id and is_new_for_user(s_name, last_date, user_id):
-                btn_text += " 🔥"
+            # 🔥 وسم النار للحلقات الجديدة (آخر 24 ساعة)
+            if last_date:
+                if isinstance(last_date, str): last_date = datetime.fromisoformat(last_date)
+                if (datetime.now() - last_date).total_seconds() < 86400:
+                    btn_text += " 🔥"
 
         # الرابط المباشر للبوت
         direct_url = f"https://t.me/{bot_username}?start={last_v_id}"
-        
         row.append(InlineKeyboardButton(btn_text, url=direct_url))
         
         if len(row) == 3: 
@@ -79,14 +60,7 @@ def create_series_keyboard(series_list, bot_username, user_id=None):
     if row: keyboard.append(row)
     return keyboard
 
-# ===== [6] تسجيل المشاهدة =====
-async def record_view(user_id, series_name, v_id, db_query):
-    """تسجيل أن المستخدم شاهد المسلسل"""
-    if user_id not in user_viewed:
-        user_viewed[user_id] = {}
-    user_viewed[user_id][series_name] = datetime.now()
-
-# ===== [7] التحديث التلقائي للقناة =====
+# ===== [5] التحديث التلقائي للقناة بالنص الجديد =====
 async def update_series_channel(client, db_query, force=False):
     global fixed_message_id, last_episode_count, bot_info
     
@@ -104,8 +78,8 @@ async def update_series_channel(client, db_query, force=False):
         "🎬 **مكتبة المسلسلات الحصرية**\n"
         "━━━━━━━━━━━━━━━\n"
         "اضغط على اسم المسلسل للمشاهدة الفورية 👇\n\n"
-        "✅ **مسلسل مكتمل**\n"
-        "🔥 **يظهر فقط لمن لم يشاهد الحلقة الجديدة**"
+        "✅ **تعني: تم اكتمال المسلسل (الحلقة الأخيرة)**\n"
+        "🔥 **تعني: توجد حلقة جديدة مضافة الآن**"
     )
 
     reply_markup = InlineKeyboardMarkup(create_series_keyboard(series_list, bot_info.username))
@@ -120,40 +94,34 @@ async def update_series_channel(client, db_query, force=False):
     except Exception as e:
         logging.error(f"Error in update_menu: {e}")
 
-# ===== [8] معالج تسجيل المشاهدة =====
+# ===== [6] معالجة الأوامر الجديدة لتجنب التضارب =====
 def register_handlers(app, db_query):
     
-    # هذا المعالج يلتقط عندما يفتح المستخدم الرابط
+    # معالجة رابط التشغيل المباشر
     @app.on_message(filters.command("start") & filters.private)
     async def track_start(client, message):
-        user_id = message.from_user.id
-        args = message.command
-        
-        if len(args) > 1:
-            v_id = args[1]
+        if len(message.command) > 1:
+            v_id = message.command[1]
             res = db_query("SELECT series_name FROM videos WHERE v_id = %s", (v_id,))
             if res:
                 s_name = res[0][0]
-                await record_view(user_id, s_name, v_id, db_query)
-        
-        # تمرير للدالة الأصلية في bot.py
-        # هذا الجزء يحتاج للتنسيق مع bot.py
+                user_id = message.from_user.id
+                if user_id not in user_viewed: user_viewed[user_id] = {}
+                user_viewed[user_id][s_name] = datetime.now()
 
-    # 🆕 أمر تحديث القائمة يدوياً
-    @app.on_message(filters.command("update_series") & filters.user(ADMIN_ID))
+    # 🆕 أمر التحديث السريع (بديل لـ update_series)
+    @app.on_message(filters.command("up_menu") & filters.user(ADMIN_ID))
     async def update_series_command(client, message):
-        msg = await message.reply_text("🔄 جاري تحديث القائمة...")
+        await message.reply_text("🔄 جاري تحديث قائمة القناة...")
         await update_series_channel(client, db_query, force=True)
-        await msg.edit_text("✅ تم تحديث القائمة")
 
-    # 🆕 أمر إعادة إنشاء القائمة
-    @app.on_message(filters.command("refresh_series") & filters.user(ADMIN_ID))
+    # 🆕 أمر إعادة إنشاء القائمة (بديل لـ refresh_series)
+    @app.on_message(filters.command("reset_menu") & filters.user(ADMIN_ID))
     async def refresh_series_command(client, message):
         global fixed_message_id
-        fixed_message_id = None  # إعادة تعيين المعرف
-        msg = await message.reply_text("🔄 جاري إنشاء القائمة من جديد...")
+        fixed_message_id = None  
+        await message.reply_text("🔄 جاري إعادة إرسال القائمة وتثبيتها...")
         await update_series_channel(client, db_query, force=True)
-        await msg.edit_text("✅ تم إنشاء القائمة من جديد")
 
     # لوحة الإدارة
     @app.on_message(filters.command("admin_menu") & filters.user(ADMIN_ID))
@@ -164,7 +132,7 @@ def register_handlers(app, db_query):
             s_name = s[0]
             kb.append([
                 InlineKeyboardButton(f"🗑️ حذف {s_name}", callback_data=f"del_{s_name}"),
-                InlineKeyboardButton(f"✅ تعيين منتهي", callback_data=f"complete_{s_name}")
+                InlineKeyboardButton(f"🏁 تعيين منتهي", callback_data=f"complete_{s_name}")
             ])
         await message.reply("⚙️ **لوحة إدارة المسلسلات**", reply_markup=InlineKeyboardMarkup(kb))
 
@@ -177,11 +145,11 @@ def register_handlers(app, db_query):
         elif cb.data.startswith("complete_"):
             s_name = cb.data.replace("complete_", "")
             completed_series.add(s_name)
-            await cb.answer(f"✅ تم تعيين {s_name} كمنتهي")
+            await cb.answer(f"🏁 تم تعيين {s_name} كمنتهي")
         
         await update_series_channel(client, db_query, force=True)
 
-# ===== [9] وظائف الربط =====
+# ===== [7] وظائف الربط والاستدعاء =====
 def setup_series_menu(app, db_query):
     register_handlers(app, db_query)
     asyncio.get_event_loop().create_task(update_series_channel(app, db_query, force=True))
