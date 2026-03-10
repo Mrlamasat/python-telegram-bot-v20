@@ -8,16 +8,17 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 SERIES_CHANNEL = -1003894735143
 ADMIN_ID = 7720165591
 
-# ===== [2] متغيرات الحالة =====
+# ===== [2] متغيرات التخزين =====
 fixed_message_id = None
+MAX_EPISODES = 30
 user_viewed = {}
 completed_series = set()
 last_episode_count = 0
+bot_info = None # لتخزين معلومات البوت وتجنب FloodWait
 
-# ===== [3] جلب البيانات من قاعدة البيانات =====
+# ===== [3] جلب البيانات =====
 def get_series_list(db_query):
-    """جلب قائمة المسلسلات مع معرف آخر حلقة مضافة لكل مسلسل"""
-    series = db_query("""
+    return db_query("""
         SELECT 
             s.series_name,
             COUNT(*) as episode_count,
@@ -29,61 +30,52 @@ def get_series_list(db_query):
         GROUP BY s.series_name
         ORDER BY s.series_name
     """)
-    return series
 
-# ===== [4] بناء الأزرار (3 مسلسلات في السطر) =====
+# ===== [4] بناء الأزرار (3 في السطر) =====
 def create_series_keyboard(series_list, user_id=None):
     keyboard = []
     row = []
     for item in series_list:
         s_name, count, last_date, max_ep, last_v_id = item
         
-        # تحديد حالة الزر (جديد / مكتمل)
         btn_text = s_name
-        if s_name in completed_series or max_ep >= 30: # 30 حلقة كحد افتراضي للاكتمال
+        if s_name in completed_series or max_ep >= MAX_EPISODES:
             btn_text += " ✅"
         else:
-            # التحقق من علامة "جديد" للمستخدم الحالي
             is_new = False
             if last_date:
                 if isinstance(last_date, str): last_date = datetime.fromisoformat(last_date)
-                # إذا كانت الحلقة خلال آخر 24 ساعة ولم يضغط عليها المستخدم بعد
                 if (datetime.now() - last_date).total_seconds() < 86400:
                     if user_id not in user_viewed or s_name not in user_viewed[user_id] or user_viewed[user_id][s_name] < last_date:
                         is_new = True
             if is_new: btn_text += " 🆕"
 
-        # إضافة الزر (يحتوي على معرف آخر حلقة لتوجيه المستخدم)
-        row.append(InlineKeyboardButton(btn_text, callback_data=f"view_{last_v_id}_{s_name}"))
+        # استخدام callback_data فقط للتحكم
+        row.append(InlineKeyboardButton(btn_text, callback_data=f"v_{last_v_id}"))
         
-        # تنظيم 3 أزرار في كل سطر
-        if len(row) == 3:
+        if len(row) == 3: # تغيير ليكون 3 مسلسلات في السطر
             keyboard.append(row)
             row = []
-    
     if row: keyboard.append(row)
     return keyboard
 
-# ===== [5] تحديث القائمة الثابتة في القناة =====
+# ===== [5] التحديث التلقائي =====
 async def update_series_channel(client, db_query, force=False):
-    global fixed_message_id, last_episode_count
+    global fixed_message_id, last_episode_count, bot_info
     
     res = db_query("SELECT COUNT(*) FROM videos")
     current_count = res[0][0] if res else 0
     
-    # لا يتم التحديث إلا إذا تغير عدد الحلقات أو طلبنا ذلك يدوياً
     if not force and current_count <= last_episode_count: return
+
+    # تجنب get_me المتكرر لتفادي FloodWait
+    if not bot_info:
+        bot_info = await client.get_me()
 
     series_list = get_series_list(db_query)
     if not series_list: return
     
-    text = (
-        "📺 **قائمة المسلسلات المتاحة**\n"
-        "━━━━━━━━━━━━━━\n"
-        "🔹 اضغط على اسم المسلسل لمشاهدة آخر حلقة\n"
-        "🔹 العلامة 🆕 تختفي بمجرد ضغطك على الزر"
-    )
-    
+    text = "📺 **قائمة المسلسلات المتاحة**\n━━━━━━━━━━━━━━\n🔹 اضغط على المسلسل للمشاهدة فوراً"
     reply_markup = InlineKeyboardMarkup(create_series_keyboard(series_list))
 
     try:
@@ -93,23 +85,25 @@ async def update_series_channel(client, db_query, force=False):
             msg = await client.send_message(SERIES_CHANNEL, text, reply_markup=reply_markup)
             fixed_message_id = msg.id
         last_episode_count = current_count
-    except: 
-        fixed_message_id = None # لإعادة المحاولة في حال حُذفت الرسالة
+    except Exception as e:
+        logging.error(f"Error in update_menu: {e}")
 
-# ===== [6] المعالجات (توجيه + حذف) =====
+# ===== [6] معالج الضغط =====
 def register_handlers(app, db_query):
     
-    @app.on_callback_query(filters.regex(r"^view_"))
-    async def handle_click(client, cb):
-        data = cb.data.split("_")
-        v_id, s_name = data[1], "_".join(data[2:])
+    @app.on_callback_query(filters.regex(r"^v_"))
+    async def handle_view(client, cb):
+        v_id = cb.data.replace("v_", "")
         user_id = cb.from_user.id
         
-        # 1. إخفاء علامة "جديد" لهذا المستخدم فوراً
-        if user_id not in user_viewed: user_viewed[user_id] = {}
-        user_viewed[user_id][s_name] = datetime.now()
-        
-        # تحديث الأزرار للمستخدم في القناة (تغيير محلي)
+        # جلب اسم المسلسل من v_id لتحديث علامة "جديد"
+        res = db_query("SELECT series_name FROM videos WHERE v_id = %s", (v_id,))
+        if res:
+            s_name = res[0][0]
+            if user_id not in user_viewed: user_viewed[user_id] = {}
+            user_viewed[user_id][s_name] = datetime.now()
+
+        # تحديث القائمة للمستخدم فوراً لإخفاء علامة 🆕
         series_list = get_series_list(db_query)
         try:
             await cb.edit_message_reply_markup(
@@ -117,33 +111,29 @@ def register_handlers(app, db_query):
             )
         except: pass
         
-        # 2. التحويل المباشر لصفحة المشاهدة
-        me = await client.get_me()
-        url = f"https://t.me/{me.username}?start={v_id}"
-        await cb.answer("جاري نقلك لأحدث حلقة...", show_alert=False)
-        await client.send_message(user_id, f"🎬 تم اختيار **{s_name}**\n\nاضغط على الرابط للمشاهدة فوراً:\n{url}")
+        # التوجيه للمشاهدة (إرسال الرابط)
+        url = f"https://t.me/{bot_info.username}?start={v_id}"
+        await cb.answer("✅ تم اختيار المسلسل", show_alert=False)
+        await client.send_message(user_id, f"🎬 **مشاهدة أحدث حلقة مضافة:**\n{url}")
 
-    @app.on_callback_query(filters.regex(r"^delete_") & filters.user(ADMIN_ID))
-    async def admin_delete(client, cb):
-        s_name = cb.data.replace("delete_", "")
+    @app.on_callback_query(filters.regex(r"^del_") & filters.user(ADMIN_ID))
+    async def admin_del(client, cb):
+        s_name = cb.data.replace("del_", "")
         db_query("DELETE FROM videos WHERE series_name = %s", (s_name,), fetch=False)
-        await cb.answer(f"🗑️ تم حذف {s_name} وتحديث القائمة")
+        await cb.answer(f"🗑️ تم حذف {s_name}")
         await update_series_channel(client, db_query, force=True)
 
-# ===== [7] الإعداد والتشغيل =====
+# ===== [7] وظائف الربط =====
 def setup_series_menu(app, db_query):
     register_handlers(app, db_query)
     
-    # أمر الإدارة لفتح قائمة الحذف
     @app.on_message(filters.command("admin_menu") & filters.user(ADMIN_ID))
     async def show_admin(client, message):
         series_list = get_series_list(db_query)
-        kb = [[InlineKeyboardButton(f"🗑️ حذف {s[0]}", callback_data=f"delete_{s[0]}")] for s in series_list]
-        await message.reply("🛠️ اختر المسلسل المراد حذفه نهائياً من القائمة:", reply_markup=InlineKeyboardMarkup(kb))
+        kb = [[InlineKeyboardButton(f"🗑️ {s[0]}", callback_data=f"del_{s[0]}")] for s in series_list]
+        await message.reply("⚙️ إدارة القائمة الثابتة:", reply_markup=InlineKeyboardMarkup(kb))
 
-    # التحديث الأول عند التشغيل
     asyncio.get_event_loop().create_task(update_series_channel(app, db_query, force=True))
 
 async def refresh_series_menu(client, db_query):
-    """دالة الربط مع الملف الرئيسي"""
     await update_series_channel(client, db_query, force=True)
