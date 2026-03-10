@@ -1,6 +1,6 @@
 # ===== series_menu.py =====
 # ملف مستقل لإدارة قائمة المسلسلات في القناة الخاصة
-# يتم استدعاؤه من الملف الرئيسي
+# يتم استدعاؤه من الملف الرئيسي (bot.py)
 
 import asyncio
 import logging
@@ -11,6 +11,9 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 # ===== [1] الإعدادات =====
 SERIES_CHANNEL = -1003894735143  # قناة المسلسلات الخاصة
 UPDATE_INTERVAL = 3600  # التحديث كل ساعة (بالثواني)
+
+# معرف المشرف (تم وضعه مباشرة)
+ADMIN_ID = 7720165591
 
 # ===== [2] دوال مساعدة =====
 def get_series_list(db_query):
@@ -38,16 +41,31 @@ def check_new_episodes(last_episode_date):
         return False
     
     now = datetime.now()
+    # التأكد من أن last_episode_date هو كائن datetime
+    if isinstance(last_episode_date, str):
+        try:
+            last_episode_date = datetime.fromisoformat(last_episode_date)
+        except:
+            return False
+    
     time_diff = now - last_episode_date
     return time_diff.total_seconds() < 86400  # 24 ساعة
 
 def create_series_keyboard(series_list, bot_username):
-    """إنشاء لوحة مفاتيح المسلسلات (3-4 أزرار في كل سطر)"""
+    """إنشاء لوحة مفاتيح المسلسلات (3 أزرار في كل سطر)"""
     
     keyboard = []
     row = []
     
-    for series_name, episode_count, last_episode in series_list:
+    for item in series_list:
+        # التعامل مع النتيجة بشكل صحيح
+        if len(item) >= 3:
+            series_name = item[0]
+            episode_count = item[1]
+            last_episode = item[2]
+        else:
+            continue
+        
         # التحقق من وجود حلقة جديدة
         is_new = check_new_episodes(last_episode)
         
@@ -62,7 +80,7 @@ def create_series_keyboard(series_list, bot_username):
         
         row.append(button)
         
-        # 3 أزرار في كل سطر (يمكن تغييرها إلى 4)
+        # 3 أزرار في كل سطر
         if len(row) == 3:
             keyboard.append(row)
             row = []
@@ -121,43 +139,48 @@ async def show_series_episodes(client, callback_query, series_name, db_query):
         f"📺 **{series_name}**\nاختر رقم الحلقة:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+    await callback_query.answer()
 
 # ===== [4] إنشاء/تحديث منشور القائمة =====
 async def update_series_channel(client, db_query):
     """إنشاء أو تحديث منشور قائمة المسلسلات في القناة"""
     
-    # جلب قائمة المسلسلات
-    series_list = get_series_list(db_query)
-    
-    if not series_list:
-        logging.warning("⚠️ لا توجد مسلسلات لعرضها")
-        return
-    
-    # إنشاء نص القائمة
-    me = await client.get_me()
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-    
-    text = "📺 **قائمة المسلسلات**\n"
-    text += f"🔄 آخر تحديث: {current_time}\n\n"
-    
-    # إنشاء لوحة المفاتيح
-    keyboard = create_series_keyboard(series_list, me.username)
-    
-    # البحث عن منشور قديم في القناة
-    async for message in client.get_chat_history(SERIES_CHANNEL, limit=10):
-        if message.text and "📺 **قائمة المسلسلات**" in message.text:
-            # تحديث المنشور القديم
-            await message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-            logging.info("✅ تم تحديث قائمة المسلسلات")
+    try:
+        # جلب قائمة المسلسلات
+        series_list = get_series_list(db_query)
+        
+        if not series_list:
+            logging.warning("⚠️ لا توجد مسلسلات لعرضها")
             return
-    
-    # إذا لم يوجد منشور قديم، إنشاء واحد جديد
-    await client.send_message(
-        SERIES_CHANNEL,
-        text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    logging.info("✅ تم إنشاء قائمة المسلسلات الجديدة")
+        
+        # إنشاء نص القائمة
+        me = await client.get_me()
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+        
+        text = "📺 **قائمة المسلسلات**\n"
+        text += f"🔄 آخر تحديث: {current_time}\n\n"
+        
+        # إنشاء لوحة المفاتيح
+        keyboard = create_series_keyboard(series_list, me.username)
+        
+        # البحث عن منشور قديم في القناة
+        async for message in client.get_chat_history(SERIES_CHANNEL, limit=10):
+            if message.text and "📺 **قائمة المسلسلات**" in message.text:
+                # تحديث المنشور القديم
+                await message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+                logging.info("✅ تم تحديث قائمة المسلسلات")
+                return
+        
+        # إذا لم يوجد منشور قديم، إنشاء واحد جديد
+        await client.send_message(
+            SERIES_CHANNEL,
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        logging.info("✅ تم إنشاء قائمة المسلسلات الجديدة")
+        
+    except Exception as e:
+        logging.error(f"❌ خطأ في تحديث القناة: {e}")
 
 # ===== [5] مهمة التحديث التلقائي =====
 async def auto_update_task(client, db_query):
@@ -195,6 +218,7 @@ def register_handlers(app, db_query):
             text,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
+        await callback_query.answer()
     
     @app.on_callback_query(filters.regex(r"^refresh_series_menu$"))
     async def handle_refresh_menu(client, callback_query):
@@ -202,7 +226,7 @@ def register_handlers(app, db_query):
         await update_series_channel(client, db_query)
         await callback_query.message.delete()
 
-# ===== [7] أوامر التحكم عبر البوت =====
+# ===== [7] أوامر التحكم عبر البوت (مع ADMIN_ID مباشر) =====
 def register_commands(app, db_query):
     """تسجيل أوامر التحكم في قائمة المسلسلات"""
     
@@ -216,14 +240,17 @@ def register_commands(app, db_query):
     async def refresh_menu_command(client, message):
         msg = await message.reply_text("🔄 جاري إعادة إنشاء القائمة...")
         
-        # حذف جميع منشورات القائمة القديمة
-        async for msg in client.get_chat_history(SERIES_CHANNEL, limit=20):
-            if msg.text and "📺 **قائمة المسلسلات**" in msg.text:
-                await msg.delete()
-        
-        # إنشاء قائمة جديدة
-        await update_series_channel(client, db_query)
-        await msg.edit_text("✅ تم إعادة إنشاء القائمة بنجاح")
+        try:
+            # حذف جميع منشورات القائمة القديمة
+            async for old_msg in client.get_chat_history(SERIES_CHANNEL, limit=20):
+                if old_msg.text and "📺 **قائمة المسلسلات**" in old_msg.text:
+                    await old_msg.delete()
+            
+            # إنشاء قائمة جديدة
+            await update_series_channel(client, db_query)
+            await msg.edit_text("✅ تم إعادة إنشاء القائمة بنجاح")
+        except Exception as e:
+            await msg.edit_text(f"❌ خطأ: {e}")
     
     @app.on_message(filters.command("menu_stats") & filters.user(ADMIN_ID))
     async def menu_stats_command(client, message):
@@ -233,9 +260,11 @@ def register_commands(app, db_query):
         total_series = len(series_list)
         new_series = 0
         
-        for _, _, last_ep in series_list:
-            if check_new_episodes(last_ep):
-                new_series += 1
+        for item in series_list:
+            if len(item) >= 3:
+                last_ep = item[2]
+                if check_new_episodes(last_ep):
+                    new_series += 1
         
         text = f"📊 **إحصائيات قائمة المسلسلات**\n\n"
         text += f"📁 إجمالي المسلسلات: {total_series}\n"
