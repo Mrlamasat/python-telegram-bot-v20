@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
+# استيراد دالة التحديث من series_menu
+from series_menu import refresh_series_menu
 
 logging.basicConfig(level=logging.INFO)
 
@@ -214,7 +216,9 @@ async def monitor_source(client, message):
                     fetch=False
                 )
                 logging.info(f"✅ فيديو مكتمل {v_id}: {series_name} - حلقة {ep_num}")
-                
+                # بعد إضافة الفيديو إلى قاعدة البيانات
+await refresh_series_menu(client, db_query)
+
                 # ===== النشر التلقائي في القناة العامة =====
                 try:
                     encrypted = encrypt_title(series_name)
@@ -301,7 +305,8 @@ async def receive_episode(client, message):
         db_query("INSERT INTO videos (v_id, series_name, ep_num, quality) VALUES (%s, %s, %s, %s)", 
                  (v_id, s_name, ep_num, q), fetch=False)
         db_query("DELETE FROM pending_posts WHERE video_id = %s", (v_id,), fetch=False)
-
+# بعد تحديث الفيديو
+await refresh_series_menu(client, db_query)
         try:
             encrypted = encrypt_title(s_name)
             me = await client.get_me()
