@@ -14,7 +14,7 @@ MAX_EPISODES = 30
 user_viewed = {}
 completed_series = set()
 last_episode_count = 0
-bot_info = None # لتخزين معلومات البوت وتجنب FloodWait
+bot_info = None 
 
 # ===== [3] جلب البيانات =====
 def get_series_list(db_query):
@@ -50,10 +50,9 @@ def create_series_keyboard(series_list, user_id=None):
                         is_new = True
             if is_new: btn_text += " 🆕"
 
-        # استخدام callback_data فقط للتحكم
         row.append(InlineKeyboardButton(btn_text, callback_data=f"v_{last_v_id}"))
         
-        if len(row) == 3: # تغيير ليكون 3 مسلسلات في السطر
+        if len(row) == 3: 
             keyboard.append(row)
             row = []
     if row: keyboard.append(row)
@@ -68,14 +67,13 @@ async def update_series_channel(client, db_query, force=False):
     
     if not force and current_count <= last_episode_count: return
 
-    # تجنب get_me المتكرر لتفادي FloodWait
     if not bot_info:
         bot_info = await client.get_me()
 
     series_list = get_series_list(db_query)
     if not series_list: return
     
-    text = "📺 **قائمة المسلسلات المتاحة**\n━━━━━━━━━━━━━━\n🔹 اضغط على المسلسل للمشاهدة فوراً"
+    text = "📺 **قائمة المسلسلات المتاحة**\n━━━━━━━━━━━━━━\n🔹 اضغط على المسلسل لمشاهدة الحلقة الأخيرة مباشرة في البوت"
     reply_markup = InlineKeyboardMarkup(create_series_keyboard(series_list))
 
     try:
@@ -88,7 +86,7 @@ async def update_series_channel(client, db_query, force=False):
     except Exception as e:
         logging.error(f"Error in update_menu: {e}")
 
-# ===== [6] معالج الضغط =====
+# ===== [6] معالج الضغط (إرسال الفيديو مباشرة) =====
 def register_handlers(app, db_query):
     
     @app.on_callback_query(filters.regex(r"^v_"))
@@ -96,14 +94,18 @@ def register_handlers(app, db_query):
         v_id = cb.data.replace("v_", "")
         user_id = cb.from_user.id
         
-        # جلب اسم المسلسل من v_id لتحديث علامة "جديد"
-        res = db_query("SELECT series_name FROM videos WHERE v_id = %s", (v_id,))
-        if res:
-            s_name = res[0][0]
-            if user_id not in user_viewed: user_viewed[user_id] = {}
-            user_viewed[user_id][s_name] = datetime.now()
+        # جلب بيانات الفيديو بالكامل
+        res = db_query("SELECT file_id, series_name, ep_num, caption FROM videos WHERE v_id = %s", (v_id,))
+        if not res:
+            return await cb.answer("⚠️ لم يتم العثور على الحلقة!", show_alert=True)
 
-        # تحديث القائمة للمستخدم فوراً لإخفاء علامة 🆕
+        file_id, s_name, ep_num, caption = res[0]
+
+        # تحديث علامة "جديد" للمستخدم
+        if user_id not in user_viewed: user_viewed[user_id] = {}
+        user_viewed[user_id][s_name] = datetime.now()
+
+        # تحديث القائمة للمستخدم في القناة
         series_list = get_series_list(db_query)
         try:
             await cb.edit_message_reply_markup(
@@ -111,10 +113,17 @@ def register_handlers(app, db_query):
             )
         except: pass
         
-        # التوجيه للمشاهدة (إرسال الرابط)
-        url = f"https://t.me/{bot_info.username}?start={v_id}"
-        await cb.answer("✅ تم اختيار المسلسل", show_alert=False)
-        await client.send_message(user_id, f"🎬 **مشاهدة أحدث حلقة مضافة:**\n{url}")
+        # إرسال الفيديو مباشرة للمستخدم في الخاص
+        await cb.answer(f"🍿 جاري إرسال حلقة {s_name}...", show_alert=False)
+        try:
+            await client.send_video(
+                chat_id=user_id,
+                video=file_id,
+                caption=f"🎬 **{s_name}** - الحلقة {ep_num}\n\n{caption if caption else ''}"
+            )
+        except Exception as e:
+            await cb.answer("⚠️ يرجى الضغط على Start في البوت أولاً!", show_alert=True)
+            logging.error(f"Failed to send video: {e}")
 
     @app.on_callback_query(filters.regex(r"^del_") & filters.user(ADMIN_ID))
     async def admin_del(client, cb):
