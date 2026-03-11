@@ -5,7 +5,7 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ===== [1] الإعدادات =====
-SERIES_CHANNEL = -1003894735143  # قناة عرض المسلسلات
+SERIES_CHANNEL = --1003227314572  # قناة عرض المسلسلات
 ADMIN_ID = 7720165591
 
 # ===== [2] متغيرات التخزين =====
