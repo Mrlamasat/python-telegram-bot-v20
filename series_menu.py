@@ -5,8 +5,8 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ===== [1] الإعدادات =====
-SERIES_CHANNEL = -1003227314572  # قناة المسلسلات الخاصة
-SOURCE_CHANNEL = -1003547072209  # قناة المصدر
+SERIES_CHANNEL = -1003227314572  # ✅ تم تغيير هذا الرقم فقط
+SOURCE_CHANNEL = -1003547072209
 ADMIN_ID = 7720165591
 
 # ===== [2] متغيرات التخزين =====
@@ -138,15 +138,15 @@ def register_handlers(app, db_query):
                 await record_view(user_id, s_name, v_id, db_query)
 
     # أمر تحديث قائمة المسلسلات
-    @app.on_message(filters.command("update_series_list") & filters.user(ADMIN_ID))
-    async def update_series_list_command(client, message):
+    @app.on_message(filters.command("update_series") & filters.user(ADMIN_ID))
+    async def update_series_command(client, message):
         msg = await message.reply_text("🔄 جاري تحديث قائمة المسلسلات...")
         await update_series_channel(client, db_query, force=True)
         await msg.edit_text("✅ تم تحديث قائمة المسلسلات")
 
     # أمر إعادة إنشاء القائمة من جديد
-    @app.on_message(filters.command("refresh_series_list") & filters.user(ADMIN_ID))
-    async def refresh_series_list_command(client, message):
+    @app.on_message(filters.command("refresh_series") & filters.user(ADMIN_ID))
+    async def refresh_series_command(client, message):
         global fixed_message_id
         fixed_message_id = None  # إعادة تعيين المعرف
         msg = await message.reply_text("🔄 جاري إنشاء قائمة المسلسلات من جديد...")
