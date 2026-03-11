@@ -9,16 +9,16 @@ from series_menu import refresh_series_menu
 
 logging.basicConfig(level=logging.INFO)
 
-# ===== # ===== [1] الإعدادات الجديدة =====
-API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
-BOT_TOKEN = "8619590433:AAFhbBbIdA4tGYpmn9gCwKv6TvZs4BbkSzM"  # توكن البوت الجديد
-DATABASE_URL = os.environ.get("DATABASE_URL")
+# ===== # ===== [1] الإعدادات =====
+API_ID = 35405228
+API_HASH = "dacba460d875d963bbd4462c5eb554d6"
+BOT_TOKEN = "8619590433:AAFhbBbIdA4tGYpmn9gCwKv6TvZs4BbkSzM"
+DATABASE_URL = "postgresql://postgres:TqPdcmimgOlWaFxqtRnJGFuFjLQiTFxZ@hopper.proxy.rlwy.net:31841/railway"
 
-SOURCE_CHANNEL = -1003547072209  # نفس قناة المصدر
+SOURCE_CHANNEL = -1003547072209
 ADMIN_ID = 7720165591
-BACKUP_CHANNEL_LINK = "https://t.me/+7AC_HNR8QFI5OWY0"
-PUBLISH_CHANNEL = -1003689965691  # القناة العامة الجديدة
+BACKUP_CHANNEL_LINK = "https://t.me/+pTT0n-NtJ7ZiMWZk"
+PUBLISH_CHANNEL = -1003689965691
 
 # ===== [1.1] التحكم في المزيد من الحلقات =====
 SHOW_MORE_BUTTONS = True
@@ -227,7 +227,7 @@ async def monitor_source(client, message):
                 # تحديث قائمة المسلسلات فوراً
                 await refresh_series_menu(client, db_query)
                 
-                # ===== النشر التلقائي في القناة العامة الجديدة =====
+                # ===== النشر التلقائي في القناة العامة =====
                 try:
                     encrypted = encrypt_title(series_name)
                     me = await client.get_me()
@@ -246,11 +246,11 @@ async def monitor_source(client, message):
                         reply_markup=btn
                     )
                     
-                    await message.reply_text(f"✅ تم النشر في القناة العامة الجديدة: {series_name} - حلقة {ep_num}")
+                    await message.reply_text(f"✅ تم النشر في القناة العامة: {series_name} - حلقة {ep_num}")
                     
                 except Exception as e:
                     logging.error(f"❌ فشل النشر: {e}")
-                    await message.reply_text(f"✅ تم حفظ الفيديو: {series_name} - حلقة {ep_num}\n⚠️ لكن فشل النشر في القناة العامة الجديدة: {e}")
+                    await message.reply_text(f"✅ تم حفظ الفيديو: {series_name} - حلقة {ep_num}\n⚠️ لكن فشل النشر في القناة العامة: {e}")
                 
             else:
                 # فيديو غير مكتمل → يحتاج بوستر
@@ -335,12 +335,12 @@ async def receive_episode(client, message):
                 reply_markup=btn
             )
             
-            logging.info(f"✅ تم النشر في القناة العامة الجديدة: {s_name} - حلقة {ep_num}")
-            await message.reply_text(f"✅ تم النشر في القناة العامة الجديدة: {s_name} - حلقة {ep_num}")
+            logging.info(f"✅ تم النشر في القناة العامة: {s_name} - حلقة {ep_num}")
+            await message.reply_text(f"✅ تم النشر في القناة العامة: {s_name} - حلقة {ep_num}")
             
         except Exception as e: 
-            logging.error(f"❌ فشل النشر في القناة العامة الجديدة: {e}")
-            await message.reply_text(f"❌ فشل النشر في القناة العامة الجديدة. تأكد أن البوت مشرف في القناة.\nالخطأ: {e}")
+            logging.error(f"❌ فشل النشر في القناة العامة: {e}")
+            await message.reply_text(f"❌ فشل النشر في القناة العامة. تأكد أن البوت مشرف في القناة.\nالخطأ: {e}")
             
     except Exception as e:
         logging.error(f"Error in receive_episode: {e}")
@@ -454,7 +454,7 @@ async def start_cmd(client, message):
 3️⃣ اختر الجودة
 4️⃣ أرسل رقم الحلقة
 
-✅ **نشر تلقائي في قناة النشر الجديدة**
+✅ **نشر تلقائي في قناة النشر**
 
 🆘 @Mohsen_7e"""
         await message.reply_text(welcome_text)
@@ -676,8 +676,8 @@ async def reset_pending(client, message):
 @app.on_message(filters.command("test_publish") & filters.user(ADMIN_ID))
 async def test_publish(client, message):
     try:
-        await client.send_message(PUBLISH_CHANNEL, "🧪 اختبار النشر التلقائي في القناة الجديدة - البوت يعمل ✅")
-        await message.reply_text("✅ تم إرسال رسالة اختبار إلى القناة العامة الجديدة")
+        await client.send_message(PUBLISH_CHANNEL, "🧪 اختبار النشر التلقائي - البوت يعمل ✅")
+        await message.reply_text("✅ تم إرسال رسالة اختبار إلى القناة العامة")
     except Exception as e:
         await message.reply_text(f"❌ فشل الإرسال: {e}")
 
@@ -702,23 +702,22 @@ async def check_channel_command(client, message):
         except:
             bot_status = "❌ ليس عضواً"
         
-        text = f"📊 **معلومات القناة العامة الجديدة**\n\n"
+        text = f"📊 **معلومات القناة العامة**\n\n"
         text += f"اسم القناة: {channel.title}\n"
         text += f"معرف القناة: `{PUBLISH_CHANNEL}`\n"
-        text += f"رابط القناة: {channel.invite_link or 'https://t.me/+pTT0n-NtJ7ZiMWZk'}\n"
         text += f"حالة البوت: {bot_status}\n\n"
         
         if bot_status == "administrator":
-            text += "✅ البوت مشرف - يمكنه النشر في القناة الجديدة"
+            text += "✅ البوت مشرف - يمكنه النشر"
         elif bot_status == "member":
-            text += "⚠️ البوت عضو فقط - يحتاج صلاحية مشرف للنشر في القناة الجديدة"
+            text += "⚠️ البوت عضو فقط - يحتاج صلاحية مشرف للنشر"
         else:
-            text += "❌ البوت ليس في القناة الجديدة - أضفه كمشرف"
+            text += "❌ البوت ليس في القناة - أضفه كمشرف"
         
         await message.reply_text(text)
         
     except Exception as e:
-        await message.reply_text(f"❌ خطأ في فحص القناة الجديدة: {e}")
+        await message.reply_text(f"❌ خطأ في فحص القناة: {e}")
 
 @app.on_message(filters.command("update_series") & filters.user(ADMIN_ID))
 async def update_series_command(client, message):
@@ -781,7 +780,6 @@ async def reindex_command(client, message):
         await message.reply_text(f"❌ خطأ: {e}")
 
 # ===== [19] إعداد قائمة المسلسلات =====
-# ملاحظة: تأكد من تعديل ملف series_menu لاستخدام القناة الجديدة إذا لزم الأمر
 try:
     from series_menu import setup_series_menu
     setup_series_menu(app, db_query)
@@ -791,9 +789,7 @@ except Exception as e:
 
 # ===== [20] التشغيل الرئيسي =====
 def main():
-    print("🚀 تشغيل البوت الذكي مع القناة الجديدة...")
-    print(f"📢 قناة النشر الجديدة: {PUBLISH_CHANNEL}")
-    print(f"🤖 توكن البوت الجديد: {BOT_TOKEN[:10]}...")
+    print("🚀 تشغيل البوت الذكي مع التحديث الفوري للأزرار...")
     init_database()
     
     while True:
