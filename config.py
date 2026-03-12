@@ -10,10 +10,12 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:TqPdcmimgOl
 SOURCE_CHANNEL = int(os.environ.get("SOURCE_CHANNEL", "-1003547072209"))
 PUBLISH_CHANNEL = int(os.environ.get("PUBLISH_CHANNEL", "-1003689965691"))
 FORCE_SUB_CHANNEL = int(os.environ.get("FORCE_SUB_CHANNEL", "-1003637472584"))
+SERIES_CHANNEL = int(os.environ.get("SERIES_CHANNEL", "-1003227314572"))  # 👈 هذه كانت ناقصة
 
 # ===== الإعدادات الثابتة =====
 ADMIN_ID = 7720165591
 FORCE_SUB_LINK = "https://t.me/+bJVu0tEtj9UyMmFk"  # رابط القناة الإجبارية (والاحتياطية)
+MAX_EPISODES = 30  # 👈 هذه أيضاً قد تكون مطلوبة
 
 # ===== التحكم في المزيد من الحلقات =====
 SHOW_MORE_BUTTONS = True
