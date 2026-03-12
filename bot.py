@@ -289,7 +289,7 @@ def check_rate_limit(user_id):
     user_last_request[user_id].append(now)
     return True, 0
 
-# ===== [14] أمر البدء مع الاشتراك الإجباري =====
+# ===== [14] أمر البدء مع الاشتراك الإجباري (معدل) =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     user_id = message.from_user.id
@@ -301,10 +301,13 @@ async def start_cmd(client, message):
         keyboard = InlineKeyboardMarkup([[force_btn]])
         await message.reply_text(
             "🔒 **عذراً، يجب الاشتراك في القناة أولاً**\n\n"
-            "للتمكن من مشاهدة الحلقات، الرجاء الاشتراك في القना ثم أعد المحاولة.",
+            "للتمكن من مشاهدة الحلقات، الرجاء الاشتراك في القناة ثم أعد المحاولة.",
             reply_markup=keyboard
         )
-        return
+        return  # المستخدم غير مشترك → نوقف التنفيذ
+    
+    # ✅ إذا وصلنا إلى هنا، المستخدم مشترك ونكمل
+    logging.info(f"✅ المستخدم {user_id} مشترك في القناة - نكمل التنفيذ")
     
     allowed, wait_time = check_rate_limit(user_id)
     if not allowed:
@@ -320,6 +323,7 @@ async def start_cmd(client, message):
     if len(message.command) > 1:
         v_id = message.command[1]
         data = db_query("SELECT series_name, ep_num, quality FROM videos WHERE v_id = %s", (v_id,))
+        
         if not data:
             series_name, ep_num, quality = await get_video_data_from_source(client, v_id)
             if not series_name:
@@ -328,7 +332,9 @@ async def start_cmd(client, message):
         else:
             series_name, ep_num, quality = data[0]
         
+        # بناء الأزرار
         keyboard = []
+        
         if SHOW_MORE_BUTTONS and series_name:
             all_series_eps = db_query("SELECT ep_num, v_id FROM videos WHERE series_name = %s ORDER BY ep_num ASC LIMIT 50", (series_name,))
             if all_series_eps and len(all_series_eps) > 1:
@@ -355,6 +361,7 @@ async def start_cmd(client, message):
             )
             db_query("INSERT INTO views_log (v_id) VALUES (%s)", (v_id,), fetch=False)
             db_query("UPDATE videos SET views = views + 1 WHERE v_id = %s", (v_id,), fetch=False)
+            
         except FloodWait as e:
             await message.reply_text(f"⏳ البوت مشغول، انتظر {e.value} ثانية")
             await asyncio.sleep(e.value)
