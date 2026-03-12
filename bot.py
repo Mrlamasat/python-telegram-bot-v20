@@ -6,6 +6,8 @@ from pyrogram.errors import FloodWait
 
 # استيراد دالة التحديث من series_menu
 from series_menu import refresh_series_menu
+# استيراد نظام فحص المسلسلات
+from series_scanner import setup_series_scanner
 
 logging.basicConfig(level=logging.INFO)
 
