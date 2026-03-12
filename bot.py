@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait, UserNotParticipant
+from pyrogram.enums import ChatMemberStatus
 
 # استيراد دوال التحديث
 from series_menu import refresh_series_menu
@@ -34,43 +35,15 @@ REQUEST_LIMIT = 5
 TIME_WINDOW = 10
 
 app = Client("railway_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-@app.on_message(filters.command("test_force") & filters.user(ADMIN_ID))
-async def test_force(client, message):
-    """اختبار صلاحيات البوت في القناة الإجبارية"""
-    try:
-        # محاولة جلب معلومات القناة
-        channel = await client.get_chat(FORCE_SUB_CHANNEL)
-        
-        # محاولة جلب معلومات البوت نفسه في القناة
-        try:
-            bot_member = await client.get_chat_member(FORCE_SUB_CHANNEL, "me")
-            bot_status = bot_member.status
-        except:
-            bot_status = "❌ ليس عضواً"
-        
-        text = f"📊 **معلومات القناة الإجبارية**\n\n"
-        text += f"اسم القناة: {channel.title}\n"
-        text += f"معرف القناة: `{FORCE_SUB_CHANNEL}`\n"
-        text += f"حالة البوت: {bot_status}\n\n"
-        
-        if bot_status == "administrator":
-            text += "✅ البوت مشرف - يمكنه التحقق من الاشتراكات"
-        elif bot_status == "member":
-            text += "⚠️ البوت عضو فقط - يحتاج صلاحية مشرف للتحقق من الاشتراكات"
-        else:
-            text += "❌ البوت ليس في القناة - أضفه كمشرف"
-        
-        await message.reply_text(text)
-        
-    except Exception as e:
-        await message.reply_text(f"❌ خطأ في فحص القناة: {e}")
-        
-# ===== [2] دوال التحقق من الاشتراك =====
+
+# ===== [2] دوال التحقق من الاشتراك (معدلة 100%) =====
 async def check_force_sub(client, user_id):
     """التحقق من اشتراك المستخدم في القناة الإجبارية"""
     try:
         member = await client.get_chat_member(FORCE_SUB_CHANNEL, user_id)
-        if member.status in ["member", "administrator", "creator"]:
+        
+        # التحقق من الحالة بشكل صحيح
+        if member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
             return True
         return False
     except UserNotParticipant:
@@ -86,7 +59,48 @@ async def get_force_sub_button():
         url=FORCE_SUB_LINK
     )
 
-# ===== [3] كلمات عشوائية للتشفير =====
+# ===== [3] أمر اختبار القناة الإجبارية (معدل) =====
+@app.on_message(filters.command("test_force") & filters.user(ADMIN_ID))
+async def test_force(client, message):
+    """اختبار صلاحيات البوت في القناة الإجبارية"""
+    try:
+        # محاولة جلب معلومات القناة
+        channel = await client.get_chat(FORCE_SUB_CHANNEL)
+        
+        # محاولة جلب معلومات البوت نفسه في القناة
+        try:
+            bot_member = await client.get_chat_member(FORCE_SUB_CHANNEL, "me")
+            bot_status = bot_member.status
+            # تحويل الحالة إلى نص
+            if bot_status == ChatMemberStatus.ADMINISTRATOR:
+                status_str = "ADMINISTRATOR (مشرف)"
+            elif bot_status == ChatMemberStatus.MEMBER:
+                status_str = "MEMBER (عضو)"
+            elif bot_status == ChatMemberStatus.OWNER:
+                status_str = "OWNER (مالك)"
+            else:
+                status_str = str(bot_status)
+        except Exception as e:
+            status_str = f"❌ خطأ: {e}"
+        
+        text = f"📊 **معلومات القناة الإجبارية**\n\n"
+        text += f"اسم القناة: {channel.title}\n"
+        text += f"معرف القناة: `{FORCE_SUB_CHANNEL}`\n"
+        text += f"حالة البوت: {status_str}\n\n"
+        
+        if bot_status == ChatMemberStatus.ADMINISTRATOR:
+            text += "✅ البوت مشرف - يمكنه التحقق من الاشتراكات"
+        elif bot_status == ChatMemberStatus.MEMBER:
+            text += "⚠️ البوت عضو فقط - يحتاج صلاحية مشرف للتحقق من الاشتراكات"
+        else:
+            text += "❌ البوت ليس مشرفاً - أضفه كمشرف مع صلاحية مشاهدة الرسائل"
+        
+        await message.reply_text(text)
+        
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ في فحص القناة: {e}")
+
+# ===== [4] كلمات عشوائية للتشفير =====
 ENCRYPTION_WORDS = ["حصري", "جديد", "متابعة", "الان", "مميز", "شاهد"]
 
 def encrypt_title(title):
@@ -97,7 +111,7 @@ def encrypt_title(title):
         return f"🎬 {word[::-1]} {random.randint(10,99)}"
     return f"🎬 {random.choice(ENCRYPTION_WORDS)} {random.randint(10,99)}"
 
-# ===== [4] دالة قاعدة البيانات =====
+# ===== [5] دالة قاعدة البيانات =====
 def db_query(query, params=(), fetch=True, retry=3):
     for attempt in range(retry):
         try:
@@ -115,7 +129,7 @@ def db_query(query, params=(), fetch=True, retry=3):
                 return [] if fetch else None
             time.sleep(1)
 
-# ===== [5] إنشاء الجداول =====
+# ===== [6] إنشاء الجداول =====
 def init_database():
     db_query("CREATE TABLE IF NOT EXISTS videos (v_id TEXT PRIMARY KEY, series_name TEXT, ep_num INTEGER DEFAULT 0, quality TEXT DEFAULT 'HD', views INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", fetch=False)
     db_query("CREATE TABLE IF NOT EXISTS posters (poster_id BIGINT PRIMARY KEY, series_name TEXT, video_id TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", fetch=False)
@@ -124,7 +138,7 @@ def init_database():
     db_query("CREATE TABLE IF NOT EXISTS views_log (id SERIAL PRIMARY KEY, v_id TEXT, viewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", fetch=False)
     print("✅ قاعدة البيانات جاهزة")
 
-# ===== [6] دوال الاستخراج =====
+# ===== [7] دوال الاستخراج =====
 def extract_series_name(text):
     if not text: return None
     text = text.strip()
@@ -159,7 +173,7 @@ def extract_episode_number(text):
     if nums: return int(nums[-1])
     return 0
 
-# ===== [7] دالة جلب بيانات الحلقة =====
+# ===== [8] دالة جلب بيانات الحلقة =====
 async def get_video_data_from_source(client, v_id):
     try:
         msg = await client.get_messages(SOURCE_CHANNEL, int(v_id))
@@ -177,7 +191,7 @@ async def get_video_data_from_source(client, v_id):
         logging.error(f"❌ خطأ في جلب بيانات {v_id}: {e}")
         return None, None, None
 
-# ===== [8] متابعة التعديلات على الفيديوهات =====
+# ===== [9] متابعة التعديلات على الفيديوهات =====
 @app.on_edited_message(filters.chat(SOURCE_CHANNEL) & filters.video)
 async def on_video_edit(client, message):
     try:
@@ -193,7 +207,7 @@ async def on_video_edit(client, message):
     except Exception as e:
         logging.error(f"Error in on_video_edit: {e}")
 
-# ===== [9] متابعة التعديلات على البوسترات =====
+# ===== [10] متابعة التعديلات على البوسترات =====
 @app.on_edited_message(filters.chat(SOURCE_CHANNEL) & filters.photo)
 async def on_poster_edit(client, message):
     try:
@@ -209,7 +223,7 @@ async def on_poster_edit(client, message):
     except Exception as e:
         logging.error(f"Error in on_poster_edit: {e}")
 
-# ===== [10] مراقبة قناة المصدر =====
+# ===== [11] مراقبة قناة المصدر =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & (filters.video | filters.photo))
 async def monitor_source(client, message):
     try:
@@ -257,7 +271,7 @@ async def monitor_source(client, message):
     except Exception as e: 
         logging.error(f"Error in monitor_source: {e}")
 
-# ===== [11] معالجة الجودة =====
+# ===== [12] معالجة الجودة =====
 @app.on_callback_query(filters.regex(r"^q_"))
 async def handle_quality(client, cb):
     try:
@@ -267,7 +281,7 @@ async def handle_quality(client, cb):
     except Exception as e:
         logging.error(f"Error in handle_quality: {e}")
 
-# ===== [12] استقبال رقم الحلقة =====
+# ===== [13] استقبال رقم الحلقة =====
 @app.on_message(filters.chat(SOURCE_CHANNEL) & filters.text & ~filters.regex(r"^/"))
 async def receive_episode(client, message):
     try:
@@ -305,7 +319,7 @@ async def receive_episode(client, message):
         logging.error(f"Error in receive_episode: {e}")
         await message.reply_text(f"❌ حدث خطأ: {e}")
 
-# ===== [13] نظام الحماية من FloodWait =====
+# ===== [14] نظام الحماية من FloodWait =====
 def check_rate_limit(user_id):
     now = datetime.now()
     if user_id in user_last_request:
@@ -319,7 +333,7 @@ def check_rate_limit(user_id):
     user_last_request[user_id].append(now)
     return True, 0
 
-# ===== [14] أمر البدء مع الاشتراك الإجباري (معدل) =====
+# ===== [15] أمر البدء مع الاشتراك الإجباري (معدل 100%) =====
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     user_id = message.from_user.id
@@ -336,7 +350,7 @@ async def start_cmd(client, message):
         )
         return  # المستخدم غير مشترك → نوقف التنفيذ
     
-    # ✅ إذا وصلنا إلى هنا، المستخدم مشترك ونكمل
+    # ✅ المستخدم مشترك - نكمل التنفيذ
     logging.info(f"✅ المستخدم {user_id} مشترك في القناة - نكمل التنفيذ")
     
     allowed, wait_time = check_rate_limit(user_id)
@@ -412,7 +426,7 @@ async def start_cmd(client, message):
 🆘 @Mohsen_7e"""
         await message.reply_text(welcome_text)
 
-# ===== [15] أوامر الإدارة =====
+# ===== [16] أوامر الإدارة =====
 
 @app.on_message(filters.command("delete") & filters.user(ADMIN_ID))
 async def delete_command(client, message):
@@ -731,7 +745,7 @@ async def reindex_command(client, message):
     except Exception as e:
         await message.reply_text(f"❌ خطأ: {e}")
 
-# ===== [16] إعداد قائمة المسلسلات =====
+# ===== [17] إعداد قائمة المسلسلات =====
 try:
     from series_menu import setup_series_menu
     setup_series_menu(app, db_query)
@@ -739,7 +753,7 @@ try:
 except Exception as e:
     print(f"⚠️ لم يتم تحميل قائمة المسلسلات: {e}")
 
-# ===== [17] إعداد نظام فحص المسلسلات =====
+# ===== [18] إعداد نظام فحص المسلسلات =====
 try:
     from series_scanner import setup_series_scanner
     setup_series_scanner(app, db_query)
@@ -747,7 +761,7 @@ try:
 except Exception as e:
     print(f"⚠️ لم يتم تحميل نظام فحص المسلسلات: {e}")
 
-# ===== [18] التشغيل الرئيسي =====
+# ===== [19] التشغيل الرئيسي =====
 def main():
     print("🚀 تشغيل البوت الذكي مع الاشتراك الإجباري...")
     init_database()
