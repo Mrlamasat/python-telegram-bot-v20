@@ -788,6 +788,13 @@ try:
     print("✅ تم تحميل نظام قائمة المسلسلات")
 except Exception as e:
     print(f"⚠️ لم يتم تحميل قائمة المسلسلات: {e}")
+    # ===== [20] إعداد نظام فحص المسلسلات =====
+try:
+    from series_scanner import setup_series_scanner
+    setup_series_scanner(app, db_query)
+    print("✅ تم تحميل نظام فحص المسلسلات")
+except Exception as e:
+    print(f"⚠️ لم يتم تحميل نظام فحص المسلسلات: {e}")
 
 # ===== [20] التشغيل الرئيسي =====
 def main():
