@@ -17,7 +17,7 @@ completed_series = set()
 last_episode_count = 0
 bot_info = None 
 
-# ===== [3] جلب البيانات من قاعدة البيانات =====
+# ===== [3] جلب البيانات من قاعدة البيانات (معدل) =====
 def get_series_list(db_query):
     return db_query("""
         SELECT 
@@ -26,7 +26,7 @@ def get_series_list(db_query):
             MAX(s.created_at) as last_episode_date,
             MAX(s.ep_num) as max_episode,
             MIN(s.ep_num) as min_episode,
-            (SELECT v_id FROM videos WHERE series_name = s.series_name ORDER BY created_at DESC LIMIT 1) as last_v_id,
+            (SELECT v_id FROM videos WHERE series_name = s.series_name ORDER BY ep_num DESC LIMIT 1) as last_v_id,
             (SELECT v_id FROM videos WHERE series_name = s.series_name ORDER BY ep_num ASC LIMIT 1) as first_v_id
         FROM videos s
         WHERE s.series_name IS NOT NULL AND s.series_name != ''
@@ -64,7 +64,7 @@ def is_new_for_user(series_name, last_date, user_id):
     
     return True
 
-# ===== [5] بناء الأزرار الذكية (معدل للقناة) =====
+# ===== [5] بناء الأزرار الذكية =====
 def create_series_keyboard(series_list, bot_username, user_id=None, show_in_channel=False):
     keyboard = []
     row = []
@@ -113,7 +113,7 @@ def create_series_keyboard(series_list, bot_username, user_id=None, show_in_chan
 
         # تحديد الرابط المناسب:
         # - إذا كان المسلسل مكتملاً ✅ → استخدم الحلقة الأولى
-        # - إذا كان غير مكتمل → استخدم آخر حلقة
+        # - إذا كان غير مكتمل → استخدم آخر حلقة (حسب رقم الحلقة وليس التاريخ)
         target_v_id = first_v_id if is_completed else last_v_id
         
         direct_url = f"https://t.me/{bot_username}?start={target_v_id}"
@@ -134,7 +134,7 @@ async def record_view(user_id, series_name, v_id, db_query):
         user_viewed[user_id] = {}
     user_viewed[user_id][series_name] = datetime.now()
 
-# ===== [7] دالة التحديث (معدلة للقناة) =====
+# ===== [7] دالة التحديث =====
 async def update_series_channel(client, db_query, force=False):
     global fixed_message_id, last_episode_count, bot_info
     
@@ -142,22 +142,18 @@ async def update_series_channel(client, db_query, force=False):
     current_count = get_total_episodes_count(db_query)
     has_new_episodes = current_count > last_episode_count
     
-    # إذا لم تكن هناك حلقات جديدة وليس force، لا تقم بالتحديث
     if not force and not has_new_episodes:
         logging.info("⏳ لا توجد حلقات جديدة - تخطي التحديث")
         return
 
-    # جلب معلومات البوت
     if not bot_info:
         bot_info = await client.get_me()
 
-    # جلب قائمة المسلسلات
     series_list = get_series_list(db_query)
     if not series_list:
         logging.warning("⚠️ لا توجد مسلسلات لعرضها")
         return
     
-    # إنشاء النص مع تاريخ التحديث
     update_time = datetime.now().strftime("%Y-%m-%d %H:%M")
     text = (
         f"🎬 **مكتبة المسلسلات الحصرية**\n"
@@ -168,7 +164,6 @@ async def update_series_channel(client, db_query, force=False):
         f"🔥 **حلقة جديدة (خلال 24 ساعة)**"
     )
 
-    # إنشاء الأزرار مع show_in_channel=True
     reply_markup = InlineKeyboardMarkup(create_series_keyboard(series_list, bot_info.username, show_in_channel=True))
 
     try:
@@ -195,7 +190,6 @@ async def update_series_channel(client, db_query, force=False):
             fixed_message_id = msg.id
             logging.info("✅ تم إنشاء قائمة المسلسلات")
         
-        # تحديث العدد الأخير
         last_episode_count = current_count
         
     except Exception as e:
@@ -203,7 +197,6 @@ async def update_series_channel(client, db_query, force=False):
 
 # ===== [8] مهمة المراقبة التلقائية =====
 async def auto_monitor_task(client, db_query):
-    """مهمة دورية للتحقق من وجود حلقات جديدة كل دقيقة"""
     global last_episode_count
     
     while True:
@@ -213,7 +206,7 @@ async def auto_monitor_task(client, db_query):
                 logging.info(f"🆕 اكتشاف {current_count - last_episode_count} حلقة جديدة!")
                 await update_series_channel(client, db_query, force=True)
             
-            await asyncio.sleep(60)  # فحص كل دقيقة
+            await asyncio.sleep(60)
             
         except Exception as e:
             logging.error(f"❌ خطأ في المراقبة: {e}")
@@ -234,14 +227,12 @@ def register_handlers(app, db_query):
                 s_name = res[0][0]
                 await record_view(user_id, s_name, v_id, db_query)
 
-    # أمر تحديث قائمة المسلسلات
     @app.on_message(filters.command("update_series_menu") & filters.user(ADMIN_ID))
     async def update_series_menu_command(client, message):
         msg = await message.reply_text("🔄 جاري تحديث قائمة المسلسلات...")
         await update_series_channel(client, db_query, force=True)
         await msg.edit_text("✅ تم تحديث قائمة المسلسلات")
 
-    # أمر إعادة إنشاء القائمة
     @app.on_message(filters.command("refresh_series_menu") & filters.user(ADMIN_ID))
     async def refresh_series_menu_command(client, message):
         global fixed_message_id
@@ -250,13 +241,11 @@ def register_handlers(app, db_query):
         await update_series_channel(client, db_query, force=True)
         await msg.edit_text("✅ تم إنشاء قائمة المسلسلات")
 
-    # أمر فحص العدد الحالي
     @app.on_message(filters.command("check_count") & filters.user(ADMIN_ID))
     async def check_count_command(client, message):
         current = get_total_episodes_count(db_query)
         await message.reply_text(f"📊 عدد الحلقات في قاعدة البيانات: {current}\nآخر عدد مسجل: {last_episode_count}")
 
-    # لوحة الإدارة
     @app.on_message(filters.command("admin_menu") & filters.user(ADMIN_ID))
     async def show_admin(client, message):
         series_list = get_series_list(db_query)
@@ -289,10 +278,7 @@ def setup_series_menu(app, db_query):
     
     register_handlers(app, db_query)
     
-    # تشغيل مهمة المراقبة التلقائية
     asyncio.get_event_loop().create_task(auto_monitor_task(app, db_query))
-    
-    # تحديث أولي
     asyncio.get_event_loop().create_task(update_series_channel(app, db_query, force=True))
     
     logging.info(f"✅ تم إعداد قائمة المسلسلات - العدد الحالي: {last_episode_count}")
