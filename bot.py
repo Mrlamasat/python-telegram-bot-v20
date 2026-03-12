@@ -34,7 +34,37 @@ REQUEST_LIMIT = 5
 TIME_WINDOW = 10
 
 app = Client("railway_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
+@app.on_message(filters.command("test_force") & filters.user(ADMIN_ID))
+async def test_force(client, message):
+    """اختبار صلاحيات البوت في القناة الإجبارية"""
+    try:
+        # محاولة جلب معلومات القناة
+        channel = await client.get_chat(FORCE_SUB_CHANNEL)
+        
+        # محاولة جلب معلومات البوت نفسه في القناة
+        try:
+            bot_member = await client.get_chat_member(FORCE_SUB_CHANNEL, "me")
+            bot_status = bot_member.status
+        except:
+            bot_status = "❌ ليس عضواً"
+        
+        text = f"📊 **معلومات القناة الإجبارية**\n\n"
+        text += f"اسم القناة: {channel.title}\n"
+        text += f"معرف القناة: `{FORCE_SUB_CHANNEL}`\n"
+        text += f"حالة البوت: {bot_status}\n\n"
+        
+        if bot_status == "administrator":
+            text += "✅ البوت مشرف - يمكنه التحقق من الاشتراكات"
+        elif bot_status == "member":
+            text += "⚠️ البوت عضو فقط - يحتاج صلاحية مشرف للتحقق من الاشتراكات"
+        else:
+            text += "❌ البوت ليس في القناة - أضفه كمشرف"
+        
+        await message.reply_text(text)
+        
+    except Exception as e:
+        await message.reply_text(f"❌ خطأ في فحص القناة: {e}")
+        
 # ===== [2] دوال التحقق من الاشتراك =====
 async def check_force_sub(client, user_id):
     """التحقق من اشتراك المستخدم في القناة الإجبارية"""
