@@ -25,7 +25,9 @@ def get_series_list(db_query):
             COUNT(*) as episode_count,
             MAX(s.created_at) as last_episode_date,
             MAX(s.ep_num) as max_episode,
-            (SELECT v_id FROM videos WHERE series_name = s.series_name ORDER BY created_at DESC LIMIT 1) as last_v_id
+            MIN(s.ep_num) as min_episode,
+            (SELECT v_id FROM videos WHERE series_name = s.series_name ORDER BY created_at DESC LIMIT 1) as last_v_id,
+            (SELECT v_id FROM videos WHERE series_name = s.series_name ORDER BY ep_num ASC LIMIT 1) as first_v_id
         FROM videos s
         WHERE s.series_name IS NOT NULL AND s.series_name != ''
         GROUP BY s.series_name
@@ -68,22 +70,27 @@ def create_series_keyboard(series_list, bot_username, user_id=None, show_in_chan
     row = []
     
     for item in series_list:
-        if len(item) < 5:
+        if len(item) < 7:
             continue
             
         s_name = item[0]
         count = item[1]
         last_date = item[2]
         max_ep = item[3]
-        last_v_id = item[4]
+        min_ep = item[4]
+        last_v_id = item[5]
+        first_v_id = item[6]
         
-        if not last_v_id:
+        if not last_v_id or not first_v_id:
             continue
         
         btn_text = s_name
         
+        # تحديد ما إذا كان المسلسل مكتملاً
+        is_completed = s_name in completed_series or (max_ep and max_ep >= MAX_EPISODES)
+        
         # ✅ المسلسلات المكتملة
-        if s_name in completed_series or (max_ep and max_ep >= MAX_EPISODES):
+        if is_completed:
             btn_text += " ✅"
         else:
             # 🔥 للعرض في القناة (يظهر للجميع إذا كانت الحلقة خلال 24 ساعة)
@@ -104,7 +111,12 @@ def create_series_keyboard(series_list, bot_username, user_id=None, show_in_chan
                 if user_id and is_new_for_user(s_name, last_date, user_id):
                     btn_text += " 🔥"
 
-        direct_url = f"https://t.me/{bot_username}?start={last_v_id}"
+        # تحديد الرابط المناسب:
+        # - إذا كان المسلسل مكتملاً ✅ → استخدم الحلقة الأولى
+        # - إذا كان غير مكتمل → استخدم آخر حلقة
+        target_v_id = first_v_id if is_completed else last_v_id
+        
+        direct_url = f"https://t.me/{bot_username}?start={target_v_id}"
         row.append(InlineKeyboardButton(btn_text, url=direct_url))
         
         if len(row) == 3: 
@@ -152,7 +164,7 @@ async def update_series_channel(client, db_query, force=False):
         f"━━━━━━━━━━━━━━━\n"
         f"🔄 آخر تحديث: {update_time}\n\n"
         f"اضغط على اسم المسلسل للمشاهدة الفورية 👇\n\n"
-        f"✅ **مسلسل مكتمل**\n"
+        f"✅ **مسلسل مكتمل (ينتقل للحلقة الأولى)**\n"
         f"🔥 **حلقة جديدة (خلال 24 ساعة)**"
     )
 
