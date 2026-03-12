@@ -62,8 +62,8 @@ def is_new_for_user(series_name, last_date, user_id):
     
     return True
 
-# ===== [5] بناء الأزرار الذكية =====
-def create_series_keyboard(series_list, bot_username, user_id=None):
+# ===== [5] بناء الأزرار الذكية (معدل للقناة) =====
+def create_series_keyboard(series_list, bot_username, user_id=None, show_in_channel=False):
     keyboard = []
     row = []
     
@@ -86,9 +86,23 @@ def create_series_keyboard(series_list, bot_username, user_id=None):
         if s_name in completed_series or (max_ep and max_ep >= MAX_EPISODES):
             btn_text += " ✅"
         else:
-            # 🔥 فقط إذا كان جديداً ولم يشاهده هذا المستخدم
-            if user_id and is_new_for_user(s_name, last_date, user_id):
-                btn_text += " 🔥"
+            # 🔥 للعرض في القناة (يظهر للجميع إذا كانت الحلقة خلال 24 ساعة)
+            if show_in_channel:
+                if last_date:
+                    if isinstance(last_date, str):
+                        try:
+                            last_date = datetime.fromisoformat(last_date.replace('Z', '+00:00'))
+                        except:
+                            last_date = None
+                    
+                    if last_date:
+                        time_diff = datetime.now() - last_date
+                        if time_diff.total_seconds() < 86400:  # 24 ساعة
+                            btn_text += " 🔥"
+            else:
+                # 🔥 للعرض في الخاص (يظهر فقط لمن لم يشاهد)
+                if user_id and is_new_for_user(s_name, last_date, user_id):
+                    btn_text += " 🔥"
 
         direct_url = f"https://t.me/{bot_username}?start={last_v_id}"
         row.append(InlineKeyboardButton(btn_text, url=direct_url))
@@ -108,7 +122,7 @@ async def record_view(user_id, series_name, v_id, db_query):
         user_viewed[user_id] = {}
     user_viewed[user_id][series_name] = datetime.now()
 
-# ===== [7] دالة التحديث (تتغير فقط عند وجود حلقات جديدة) =====
+# ===== [7] دالة التحديث (معدلة للقناة) =====
 async def update_series_channel(client, db_query, force=False):
     global fixed_message_id, last_episode_count, bot_info
     
@@ -139,11 +153,11 @@ async def update_series_channel(client, db_query, force=False):
         f"🔄 آخر تحديث: {update_time}\n\n"
         f"اضغط على اسم المسلسل للمشاهدة الفورية 👇\n\n"
         f"✅ **مسلسل مكتمل**\n"
-        f"🔥 **يظهر فقط لمن لم يشاهد الحلقة الجديدة (خلال 24 ساعة)**"
+        f"🔥 **حلقة جديدة (خلال 24 ساعة)**"
     )
 
-    # إنشاء الأزرار
-    reply_markup = InlineKeyboardMarkup(create_series_keyboard(series_list, bot_info.username))
+    # إنشاء الأزرار مع show_in_channel=True
+    reply_markup = InlineKeyboardMarkup(create_series_keyboard(series_list, bot_info.username, show_in_channel=True))
 
     try:
         if fixed_message_id:
