@@ -400,7 +400,7 @@ async def start_cmd(client, message):
         try:
             await client.copy_message(
                 message.chat.id, SOURCE_CHANNEL, int(v_id),
-                caption=f"🎬 {series_name} - الحلقة {ep_num}\n📺 الجودة: {quality}",
+                caption=f"🎬 الحلقة {ep_num}\n📺 الجودة: {quality}",
                 reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None
             )
             db_query("INSERT INTO views_log (v_id) VALUES (%s)", (v_id,), fetch=False)
