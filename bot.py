@@ -12,6 +12,7 @@ from database import db_query, init_database
 from force_sub import check_force_sub, get_force_sub_button, get_backup_channel_button, register_force_sub_commands
 from series_menu import setup_series_menu, refresh_series_menu
 from series_scanner import setup_series_scanner
+from stats import register_stats_commands  # تم إضافة هذا السطر
 
 logging.basicConfig(level=logging.INFO)
 
@@ -451,21 +452,8 @@ async def check_ep_command(client, message):
     except Exception as e:
         await message.reply_text(f"❌ خطأ: {e}")
 
-@app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
-async def stats_cmd(client, message):
-    total = db_query("SELECT COUNT(*) FROM videos")[0][0]
-    users = db_query("SELECT COUNT(*) FROM users")[0][0]
-    views_today = db_query("SELECT COUNT(*) FROM views_log WHERE viewed_at >= CURRENT_DATE")[0][0]
-    top = db_query("SELECT series_name, views FROM videos WHERE views > 0 ORDER BY views DESC LIMIT 5")
-    text = f"📊 **الإحصائيات**\n"
-    text += f"📁 الحلقات: {total}\n"
-    text += f"👥 المستخدمين: {users}\n"
-    text += f"👁️ مشاهدات اليوم: {views_today}\n"
-    text += f"🔘 المزيد: {'✅' if SHOW_MORE_BUTTONS else '❌'}\n\n"
-    text += f"🏆 **الأكثر مشاهدة:**\n"
-    for name, views in top:
-        text += f"• {name}: {views}\n"
-    await message.reply_text(text)
+# ===== تم حذف أمر stats القديم واستبداله بالملف المنفصل =====
+# الأمر stats موجود الآن في ملف stats.py
 
 @app.on_message(filters.command("check_pending") & filters.user(ADMIN_ID))
 async def check_pending(client, message):
@@ -582,6 +570,7 @@ def main():
     register_force_sub_commands(app)
     setup_series_menu(app)
     setup_series_scanner(app)
+    register_stats_commands(app)  # تم إضافة هذا السطر
     
     while True:
         try:
